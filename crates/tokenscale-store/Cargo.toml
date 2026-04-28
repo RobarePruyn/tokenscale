@@ -1,0 +1,21 @@
+[package]
+name        = "tokenscale-store"
+description = "SQLite schema, migrations, and query layer for tokenscale (sqlx, compile-time-verified)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tokenscale-core.workspace = true
+sqlx.workspace            = true
+chrono.workspace          = true
+thiserror.workspace       = true
+serde.workspace           = true
+tracing.workspace         = true
+tokio.workspace           = true

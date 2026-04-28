@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+/*
+ * tokenscale — global stylesheet.
+ *
+ * Tailwind v4 is the styling layer; this file is the import point for it and
+ * the home for any base-layer overrides we cannot express through utility
+ * classes.
+ *
+ * Theming uses CSS variables so a future dark mode is additive — no rewrite of
+ * component classes required.
+ */
+
+:root {
+  color-scheme: light;
+  --tokenscale-bg: #ffffff;
+  --tokenscale-fg: #0f172a;
+  --tokenscale-muted: #64748b;
+  --tokenscale-accent: #2563eb;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--tokenscale-bg);
+  color: var(--tokenscale-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

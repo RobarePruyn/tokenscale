@@ -1,0 +1,34 @@
+[package]
+name        = "tokenscale-cli"
+description = "Command-line entrypoint for the tokenscale dashboard."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+# The crate is named `tokenscale-cli`, but the produced binary is `tokenscale`
+# so users can type `tokenscale init` rather than `tokenscale-cli init`.
+[[bin]]
+name = "tokenscale"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace             = true
+clap.workspace               = true
+tokio.workspace              = true
+tracing.workspace            = true
+tracing-subscriber.workspace = true
+serde.workspace              = true
+toml.workspace               = true
+figment.workspace            = true
+directories.workspace        = true
+
+tokenscale-core.workspace      = true
+tokenscale-ingest-cc.workspace = true
+tokenscale-store.workspace     = true
+tokenscale-server.workspace    = true

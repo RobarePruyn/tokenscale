@@ -1,0 +1,159 @@
+# tokenscale environmental factors
+# Schema version: 1
+# All values reflect public sources as of the dates noted inline.
+# Updates flow through the proposals/ directory in the Cowork project,
+# are reviewed by the maintainer, and are merged into the Git repo.
+
+# ============================================================================
+# THIS IS A PLACEHOLDER FILE staged for the engineering scaffold.
+# Real v0.1 values are produced by the Cowork research project (deliverable 3)
+# and merged in by the maintainer. Until that merge, every numeric value below
+# is null. The file's *shape* is authoritative — its values are not.
+# Engineering MUST NOT invent or hard-code factor values; the application
+# parses this file and gracefully handles null values per the kickoff prompt.
+# ============================================================================
+
+schema_version = 1
+file_status = "placeholder"   # set to "production" when real v0.1 values are merged in
+
+# ----------------------------------------------------------------------------
+# [providers.<provider>.models.<model-id>]
+# ----------------------------------------------------------------------------
+# Each model block carries Wh-per-million-token (Wh/MTok) values for each
+# token type the application tracks. Token types match the schema in events
+# and env_factors:
+#   - input
+#   - output
+#   - cache_read
+#   - cache_write_5m
+#   - cache_write_1h
+#
+# Where a value is genuinely unknown, leave it as null and add a comment
+# explaining what we'd need to populate it. Where a value is an extrapolation
+# from a measured predecessor or vendor relative-efficiency claim, prefix the
+# comment with `# ESTIMATE:` and show the derivation.
+#
+# `valid_from` is the access date of the most recent source the value rests
+# on, in ISO-8601. `source_doc` references either a docs/sources.md anchor
+# (preferred) or a direct URL.
+# ----------------------------------------------------------------------------
+
+[providers.anthropic]
+display_name = "Anthropic"
+inference_provider = "aws"   # the cloud provider hosting inference; used to
+                             # join against grid_factors for facility math
+
+# ---- Opus models ----
+
+[providers.anthropic.models."claude-opus-4-7"]
+display_name = "Claude Opus 4.7"
+released_at = "2026-04-16"
+valid_from = "2026-04-28"
+source_doc = "docs/sources.md#G.1"
+wh_per_mtok_input = null            # UNKNOWN — populated in v0.1
+wh_per_mtok_output = null           # UNKNOWN — populated in v0.1
+wh_per_mtok_cache_read = null       # UNKNOWN — populated in v0.1
+wh_per_mtok_cache_write_5m = null   # UNKNOWN — populated in v0.1
+wh_per_mtok_cache_write_1h = null   # UNKNOWN — populated in v0.1
+notes = "Placeholder — production values pending Cowork deliverable 3 merge."
+
+[providers.anthropic.models."claude-opus-4-6"]
+display_name = "Claude Opus 4.6"
+valid_from = "2026-04-28"
+source_doc = "docs/sources.md#G.1"
+wh_per_mtok_input = null
+wh_per_mtok_output = null
+wh_per_mtok_cache_read = null
+wh_per_mtok_cache_write_5m = null
+wh_per_mtok_cache_write_1h = null
+notes = "Placeholder — production values pending Cowork deliverable 3 merge."
+
+# ---- Sonnet models ----
+
+[providers.anthropic.models."claude-sonnet-4-6"]
+display_name = "Claude Sonnet 4.6"
+valid_from = "2026-04-28"
+source_doc = "docs/sources.md#G.1"
+wh_per_mtok_input = null
+wh_per_mtok_output = null
+wh_per_mtok_cache_read = null
+wh_per_mtok_cache_write_5m = null
+wh_per_mtok_cache_write_1h = null
+notes = "Placeholder — production values pending Cowork deliverable 3 merge."
+
+# ---- Haiku models ----
+
+[providers.anthropic.models."claude-haiku-4-5"]
+display_name = "Claude Haiku 4.5"
+valid_from = "2026-04-28"
+source_doc = "docs/sources.md#G.1"
+wh_per_mtok_input = null
+wh_per_mtok_output = null
+wh_per_mtok_cache_read = null
+wh_per_mtok_cache_write_5m = null
+wh_per_mtok_cache_write_1h = null
+notes = "Placeholder — production values pending Cowork deliverable 3 merge. Of all v0.1 scope models, Haiku 4.5 has the strongest direct empirical anchor (Couch 2026-01-20)."
+
+# ----------------------------------------------------------------------------
+# [grid_factors.<region>]
+# ----------------------------------------------------------------------------
+# Per-region facility-level factors. Indexed by AWS region identifier.
+# These are the multipliers applied AFTER per-token energy is computed:
+#
+#   facility_wh = energy_wh * pue
+#   co2e_g      = facility_wh/1000 * co2e_kg_per_kwh * 1000
+#   water_l     = facility_wh/1000 * water_l_per_kwh
+#
+# Region attribution is configured by the user (config.default_inference_region),
+# not observed from request metadata.
+# ----------------------------------------------------------------------------
+
+[grid_factors."us-east-1"]
+display_name = "AWS US East (N. Virginia)"
+valid_from = "2026-04-28"
+co2e_kg_per_kwh = null         # UNKNOWN — populated from EPA eGRID2023rev2 (subregion SRVC, RFCE)
+water_l_per_kwh = null         # UNKNOWN — populated from AWS-disclosed WUE
+pue = null                     # UNKNOWN — fallback to AWS global PUE 1.15 if region-specific not disclosed
+source_url_co2e = "https://www.epa.gov/egrid"
+source_url_water = "https://aws.amazon.com/sustainability/data-centers/"
+source_url_pue = "https://aws.amazon.com/sustainability/data-centers/"
+source_accessed_at = "2026-04-28"
+notes = "Placeholder — production values pending Cowork deliverable 3 merge."
+
+[grid_factors."us-east-2"]
+display_name = "AWS US East (Ohio)"
+valid_from = "2026-04-28"
+co2e_kg_per_kwh = null
+water_l_per_kwh = null
+pue = null
+source_url_co2e = "https://www.epa.gov/egrid"
+source_url_water = "https://aws.amazon.com/sustainability/data-centers/"
+source_url_pue = "https://aws.amazon.com/sustainability/data-centers/"
+source_accessed_at = "2026-04-28"
+notes = "Placeholder — production values pending Cowork deliverable 3 merge."
+
+[grid_factors."us-west-2"]
+display_name = "AWS US West (Oregon)"
+valid_from = "2026-04-28"
+co2e_kg_per_kwh = null
+water_l_per_kwh = null
+pue = null
+source_url_co2e = "https://www.epa.gov/egrid"
+source_url_water = "https://aws.amazon.com/sustainability/data-centers/"
+source_url_pue = "https://aws.amazon.com/sustainability/data-centers/"
+source_accessed_at = "2026-04-28"
+notes = "Placeholder — production values pending Cowork deliverable 3 merge."
+
+# ----------------------------------------------------------------------------
+# [defaults]
+# ----------------------------------------------------------------------------
+# Application-wide defaults applied when a more specific value is unavailable.
+# ----------------------------------------------------------------------------
+
+[defaults]
+fallback_pue = 1.15            # AWS global PUE 2024 — see https://aws.amazon.com/sustainability/data-centers/
+                               # Used when a region's pue value is null.
+methodology = "google-comprehensive-aug-2025"
+                               # Reference methodology: include active model compute, idle machines,
+                               # host CPU/RAM, and PUE-weighted facility overhead. See:
+                               # https://cloud.google.com/blog/products/infrastructure/measuring-the-environmental-impact-of-ai-inference/

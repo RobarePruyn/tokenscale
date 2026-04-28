@@ -1,0 +1,28 @@
+[package]
+name        = "tokenscale-server"
+description = "axum HTTP server exposing the tokenscale REST API and serving the embedded React dashboard."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+authors.workspace      = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tokenscale-core.workspace  = true
+tokenscale-store.workspace = true
+axum.workspace             = true
+tower.workspace            = true
+tower-http.workspace       = true
+tokio.workspace            = true
+tracing.workspace          = true
+serde.workspace            = true
+serde_json.workspace       = true
+chrono.workspace           = true
+thiserror.workspace        = true
+# rust-embed is wired in once the frontend produces a build artefact at
+# frontend/dist/. Until then, the server serves a placeholder index page so
+# `cargo check` does not require a built frontend.

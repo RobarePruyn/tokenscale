@@ -1,0 +1,121 @@
+# tokenscale — workspace manifest.
+#
+# Each ingest source is a separate crate so adding a new provider in v2 is an
+# additive crate, not edits to a shared file. See docs/decisions.md for the
+# full rationale.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/tokenscale-cli",
+    "crates/tokenscale-core",
+    "crates/tokenscale-ingest-cc",
+    "crates/tokenscale-ingest-api",
+    "crates/tokenscale-store",
+    "crates/tokenscale-server",
+]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+rust-version = "1.78"
+license      = "Apache-2.0"
+repository   = "https://github.com/RobarePruyn/tokenscale"
+authors      = ["Robare Sarif"]
+
+# ----------------------------------------------------------------------------
+# Workspace-wide dependency registry. Member crates pull from this via
+# `dep.workspace = true` so that versions stay aligned across the workspace.
+# ----------------------------------------------------------------------------
+[workspace.dependencies]
+# --- Async runtime ---
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "signal", "time", "io-util"] }
+
+# --- Error handling ---
+# `thiserror` for library crates; `anyhow` for the CLI entrypoint and one-off contexts.
+anyhow    = "1"
+thiserror = "2"
+
+# --- Serialization ---
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml       = "0.8"
+
+# --- CLI ---
+clap = { version = "4", features = ["derive", "env"] }
+
+# --- Tracing / logging ---
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- HTTP server stack ---
+axum       = "0.8"
+tower      = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# --- HTTP client (Phase 2 Admin API) ---
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# --- Storage ---
+# sqlx 0.8 with compile-time-verified queries. CI uses SQLX_OFFLINE=true and the
+# committed `.sqlx/` cache; see docs/decisions.md for the contributor workflow.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate", "chrono"] }
+
+# --- Time ---
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+# --- Embedded frontend assets (rust-embed reads frontend/dist/ at build time) ---
+rust-embed = { version = "8", features = ["mime-guess"] }
+
+# --- Auth (Phase 3) ---
+webauthn-rs = "0.5"
+
+# --- Config ---
+figment = { version = "0.10", features = ["toml", "env"] }
+
+# --- Content-hash dedupe for JSONL rows missing request_id ---
+sha2 = "0.10"
+hex  = "0.4"
+
+# --- Path helpers (~/.config/tokenscale, ~/.claude, ProjectDirs) ---
+directories = "6"
+
+# --- Internal crates (relative paths so the workspace builds standalone) ---
+tokenscale-core       = { path = "crates/tokenscale-core",       version = "0.1.0" }
+tokenscale-ingest-cc  = { path = "crates/tokenscale-ingest-cc",  version = "0.1.0" }
+tokenscale-ingest-api = { path = "crates/tokenscale-ingest-api", version = "0.1.0" }
+tokenscale-store      = { path = "crates/tokenscale-store",      version = "0.1.0" }
+tokenscale-server     = { path = "crates/tokenscale-server",     version = "0.1.0" }
+
+# ----------------------------------------------------------------------------
+# Workspace-wide lints. Pedantic clippy is on by default with the noisiest
+# lints muted; individual crates can override via their own [lints] block.
+# ----------------------------------------------------------------------------
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all      = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Frequently-noisy pedantic lints, muted to keep signal-to-noise high:
+module_name_repetitions = "allow"
+missing_errors_doc      = "allow"
+missing_panics_doc      = "allow"
+must_use_candidate      = "allow"
+# `doc_markdown` flags any unbackticked proper noun in prose docs (SQLite, JSON,
+# REST, etc.) — too noisy to enforce, and we have other ways to keep prose
+# high-quality.
+doc_markdown            = "allow"
+# `as` casts are unavoidable for sqlx INTEGER (i64) <-> domain u64; review case-by-case.
+cast_possible_truncation = "allow"
+cast_sign_loss           = "allow"
+
+# ----------------------------------------------------------------------------
+# Release profile: optimize for binary size and start-up time. tokenscale is a
+# desktop tool that runs locally; we care more about a small, fast-starting
+# binary than the last few percent of throughput.
+# ----------------------------------------------------------------------------
+[profile.release]
+lto              = "thin"
+codegen-units    = 1
+strip            = "symbols"

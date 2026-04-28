@@ -1,0 +1,73 @@
+# --- Rust ---
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo lock is committed for the binary crate (this workspace produces a binary).
+# If we ever extract a library crate intended for downstream `cargo add`, revisit.
+# !Cargo.lock
+
+# --- sqlx ---
+# The query cache (.sqlx/) IS committed — required for offline-mode compile-time
+# verification in CI and for contributors without a live database.
+# Local-only sqlx scratch:
+/.sqlx-tmp/
+
+# --- Node / Vite ---
+node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.log
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
+# --- tokenscale runtime data (must never be committed) ---
+# The default data directory is outside the repo (~/.local/share/tokenscale or
+# platform equivalent). These patterns guard against an accidental in-repo
+# data dir during development.
+/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# --- IDE / editor ---
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# --- Claude Code per-machine state ---
+# Project-shared settings live in .claude/settings.json (committed); per-developer
+# permission allowlists live in .claude/settings.local.json (not committed).
+.claude/settings.local.json
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# --- Local config that should never be shared ---
+/config.local.toml
+/.env
+/.env.local
