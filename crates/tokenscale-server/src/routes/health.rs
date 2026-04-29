@@ -28,6 +28,10 @@ pub struct PricingStatus {
     /// `true` if `file_status != "production"` — drives the dashboard's
     /// review-pending banner.
     pub needs_review: bool,
+    /// Most recent `source_accessed_at` across the loaded models. The
+    /// dashboard surfaces this so users know the values are accurate as
+    /// of a specific date, not just "needs review."
+    pub accessed_at: Option<String>,
 }
 
 pub async fn handler(State(state): State<AppState>) -> Result<Json<HealthResponse>, ApiError> {
@@ -48,6 +52,7 @@ pub async fn handler(State(state): State<AppState>) -> Result<Json<HealthRespons
             file_status: pricing.file_status.clone(),
             model_count,
             needs_review: pricing.is_review_pending(),
+            accessed_at: pricing.most_recent_accessed_at().map(str::to_owned),
         },
     }))
 }

@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use tokenscale_store::{
-    delete_subscription, insert_subscription, list_subscriptions, Subscription,
+    delete_subscription, insert_subscription, list_subscriptions, update_subscription, Subscription,
 };
 
 use crate::error::ApiError;
@@ -62,11 +62,12 @@ pub struct CreateSubscriptionRequest {
     pub ended_at: Option<String>,
 }
 
-pub async fn create_handler(
-    State(state): State<AppState>,
-    Json(request): Json<CreateSubscriptionRequest>,
-) -> Result<(StatusCode, Json<SubscriptionDto>), ApiError> {
-    let plan_name = request.plan_name.trim();
+/// Validate a CreateSubscriptionRequest's fields without writing. Returns
+/// the canonicalized values; reused by both create and update handlers.
+fn validate_request(
+    request: &CreateSubscriptionRequest,
+) -> Result<(String, String, Option<String>), ApiError> {
+    let plan_name = request.plan_name.trim().to_owned();
     if plan_name.is_empty() {
         return Err(ApiError::BadRequest(
             "plan_name must not be empty".to_owned(),
@@ -89,16 +90,44 @@ pub async fn create_handler(
             ));
         }
     }
+    Ok((plan_name, started_at, ended_at))
+}
 
+pub async fn create_handler(
+    State(state): State<AppState>,
+    Json(request): Json<CreateSubscriptionRequest>,
+) -> Result<(StatusCode, Json<SubscriptionDto>), ApiError> {
+    let (plan_name, started_at, ended_at) = validate_request(&request)?;
     let inserted = insert_subscription(
         &state.database,
-        plan_name,
+        &plan_name,
         request.monthly_usd,
         &started_at,
         ended_at.as_deref(),
     )
     .await?;
     Ok((StatusCode::CREATED, Json(SubscriptionDto::from(inserted))))
+}
+
+pub async fn update_handler(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Json(request): Json<CreateSubscriptionRequest>,
+) -> Result<Json<SubscriptionDto>, ApiError> {
+    let (plan_name, started_at, ended_at) = validate_request(&request)?;
+    let updated = update_subscription(
+        &state.database,
+        id,
+        &plan_name,
+        request.monthly_usd,
+        &started_at,
+        ended_at.as_deref(),
+    )
+    .await?;
+    match updated {
+        Some(subscription) => Ok(Json(SubscriptionDto::from(subscription))),
+        None => Err(ApiError::BadRequest(format!("subscription {id} not found"))),
+    }
 }
 
 pub async fn delete_handler(

@@ -98,6 +98,10 @@ type HealthResponse = {
     file_status: string
     model_count: number
     needs_review: boolean
+    /** Most recent `source_accessed_at` across loaded models. The
+     *  dashboard surfaces this in the banner so the user can decide
+     *  whether the values are too stale to rely on. */
+    accessed_at: string | null
   }
 }
 
@@ -699,6 +703,8 @@ export default function App() {
     : []
   const pricingNeedsReview =
     healthState.status === 'ok' && healthState.data.pricing.needs_review
+  const pricingAccessedAt =
+    healthState.status === 'ok' ? healthState.data.pricing.accessed_at : null
 
   const filtersHaveSelection =
     selectedModels !== null || selectedTokenTypes !== null || selectedProjects !== null
@@ -730,21 +736,46 @@ export default function App() {
         </div>
       </header>
 
-      {pricingNeedsReview && (viewMode === 'billable' || viewMode === 'cost') && (
-        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 text-xs px-6 py-2">
-          <span className="font-medium">Pricing needs review:</span>{' '}
-          {viewMode === 'cost' ? 'cost figures are' : 'the cost-weighted view is'} using seed
-          values from <code className="bg-amber-100 px-1 rounded">pricing.toml</code>. Verify
-          against{' '}
-          <a
-            className="underline"
-            href="https://platform.claude.com/docs/en/about-claude/pricing"
-            target="_blank"
-            rel="noreferrer"
-          >
-            current Anthropic prices
-          </a>{' '}
-          before relying on these numbers.
+      {(viewMode === 'billable' || viewMode === 'cost') && pricingAccessedAt && (
+        <div
+          className={
+            'border-b text-xs px-6 py-2 ' +
+            (pricingNeedsReview
+              ? 'bg-amber-50 border-amber-200 text-amber-900'
+              : 'bg-slate-50 border-slate-200 text-slate-600')
+          }
+        >
+          {pricingNeedsReview ? (
+            <>
+              <span className="font-medium">Pricing as of {pricingAccessedAt}</span> — published
+              Anthropic list rates as recorded in{' '}
+              <code className="bg-amber-100 px-1 rounded">pricing.toml</code>. The maintainer
+              hasn't re-verified for this build, so re-check against{' '}
+              <a
+                className="underline"
+                href="https://platform.claude.com/docs/en/about-claude/pricing"
+                target="_blank"
+                rel="noreferrer"
+              >
+                current Anthropic prices
+              </a>{' '}
+              if rates may have changed since then.
+            </>
+          ) : (
+            <>
+              Pricing reflects published Anthropic list rates as of{' '}
+              <span className="font-medium">{pricingAccessedAt}</span> (
+              <a
+                className="underline"
+                href="https://platform.claude.com/docs/en/about-claude/pricing"
+                target="_blank"
+                rel="noreferrer"
+              >
+                source
+              </a>
+              ).
+            </>
+          )}
         </div>
       )}
 
@@ -1021,8 +1052,7 @@ export default function App() {
 
         <SubscriptionsPanel
           subscriptionsState={subscriptionsState}
-          onCreated={refreshSubscriptions}
-          onDeleted={refreshSubscriptions}
+          onMutated={refreshSubscriptions}
         />
       </main>
     </div>
@@ -1136,35 +1166,35 @@ function StatCard({ label, value, helpText, muted, emphasize }: StatCardProps) {
 // SubscriptionsPanel — list, add (inline form), delete.
 // ---------------------------------------------------------------------------
 
+type FormMode =
+  | { kind: 'closed' }
+  | { kind: 'create' }
+  | { kind: 'edit'; subscription: SubscriptionDto }
+
 type SubscriptionsPanelProps = {
   subscriptionsState: FetchState<SubscriptionsResponse>
-  onCreated: () => void
-  onDeleted: () => void
+  onMutated: () => void
 }
 
-function SubscriptionsPanel({
-  subscriptionsState,
-  onCreated,
-  onDeleted,
-}: SubscriptionsPanelProps) {
-  const [showForm, setShowForm] = useState(false)
+function SubscriptionsPanel({ subscriptionsState, onMutated }: SubscriptionsPanelProps) {
+  const [formMode, setFormMode] = useState<FormMode>({ kind: 'closed' })
   const [formError, setFormError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
   const subscriptions =
     subscriptionsState.status === 'ok' ? subscriptionsState.data.subscriptions : []
 
-  async function submitForm(formData: {
-    planName: string
-    monthlyUsd: number
-    startedAt: string
-    endedAt: string | null
-  }) {
+  async function submitForm(formData: SubscriptionFormData) {
     setSubmitting(true)
     setFormError(null)
     try {
-      const response = await fetch('/api/v1/subscriptions', {
-        method: 'POST',
+      const path =
+        formMode.kind === 'edit'
+          ? `/api/v1/subscriptions/${formMode.subscription.id}`
+          : '/api/v1/subscriptions'
+      const method = formMode.kind === 'edit' ? 'PUT' : 'POST'
+      const response = await fetch(path, {
+        method,
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           plan_name: formData.planName,
@@ -1179,8 +1209,8 @@ function SubscriptionsPanel({
         }
         throw new Error(body.error?.message ?? `HTTP ${response.status}`)
       }
-      setShowForm(false)
-      onCreated()
+      setFormMode({ kind: 'closed' })
+      onMutated()
     } catch (error) {
       setFormError((error as Error).message)
     } finally {
@@ -1194,10 +1224,8 @@ function SubscriptionsPanel({
       if (!response.ok && response.status !== 204) {
         throw new Error(`HTTP ${response.status}`)
       }
-      onDeleted()
+      onMutated()
     } catch (error) {
-      // For Phase 1, surface deletion errors via alert() — they're rare and
-      // don't warrant a dedicated error UI yet.
       window.alert(`Could not delete subscription: ${(error as Error).message}`)
     }
   }
@@ -1206,12 +1234,12 @@ function SubscriptionsPanel({
     <section className="bg-white rounded-lg border border-slate-200 p-5 space-y-4">
       <div className="flex items-baseline justify-between">
         <h2 className="text-base font-medium">Subscriptions</h2>
-        {!showForm && (
+        {formMode.kind === 'closed' && (
           <button
             type="button"
             className="text-sm text-blue-600 hover:underline"
             onClick={() => {
-              setShowForm(true)
+              setFormMode({ kind: 'create' })
               setFormError(null)
             }}
           >
@@ -1220,12 +1248,17 @@ function SubscriptionsPanel({
         )}
       </div>
 
-      {showForm && (
+      {formMode.kind !== 'closed' && (
         <SubscriptionForm
+          // Force remount when switching create→edit→another-edit so the
+          // form's internal state always starts fresh from initialValues.
+          key={formMode.kind === 'edit' ? `edit-${formMode.subscription.id}` : 'create'}
+          mode={formMode.kind}
+          initialValues={formMode.kind === 'edit' ? formMode.subscription : null}
           submitting={submitting}
           error={formError}
           onCancel={() => {
-            setShowForm(false)
+            setFormMode({ kind: 'closed' })
             setFormError(null)
           }}
           onSubmit={submitForm}
@@ -1240,12 +1273,14 @@ function SubscriptionsPanel({
           Could not load subscriptions: {subscriptionsState.message}
         </div>
       )}
-      {subscriptionsState.status === 'ok' && subscriptions.length === 0 && !showForm && (
-        <div className="text-sm text-slate-500">
-          No subscriptions yet. Add Claude Max, a Team seat, or any other flat-fee plan to see net
-          value over your selected date range.
-        </div>
-      )}
+      {subscriptionsState.status === 'ok' &&
+        subscriptions.length === 0 &&
+        formMode.kind === 'closed' && (
+          <div className="text-sm text-slate-500">
+            No subscriptions yet. Add Claude Max, a Team seat, or any other flat-fee plan to see
+            net value over your selected date range.
+          </div>
+        )}
       {subscriptions.length > 0 && (
         <ul className="divide-y divide-slate-100">
           {subscriptions.map((sub) => (
@@ -1261,17 +1296,29 @@ function SubscriptionsPanel({
                   {sub.ended_at ? `${sub.started_at} → ${sub.ended_at}` : `since ${sub.started_at}`}
                 </span>
               </div>
-              <button
-                type="button"
-                className="text-xs text-rose-600 hover:underline"
-                onClick={() => {
-                  if (window.confirm(`Delete subscription "${sub.plan_name}"?`)) {
-                    void deleteSubscription(sub.id)
-                  }
-                }}
-              >
-                Delete
-              </button>
+              <div className="flex items-center gap-3 text-xs">
+                <button
+                  type="button"
+                  className="text-blue-600 hover:underline"
+                  onClick={() => {
+                    setFormMode({ kind: 'edit', subscription: sub })
+                    setFormError(null)
+                  }}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  className="text-rose-600 hover:underline"
+                  onClick={() => {
+                    if (window.confirm(`Delete subscription "${sub.plan_name}"?`)) {
+                      void deleteSubscription(sub.id)
+                    }
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
             </li>
           ))}
         </ul>
@@ -1280,23 +1327,91 @@ function SubscriptionsPanel({
   )
 }
 
+// ---------------------------------------------------------------------------
+// SubscriptionForm — used in both create and edit modes.
+// ---------------------------------------------------------------------------
+
+type SubscriptionFormData = {
+  planName: string
+  monthlyUsd: number
+  startedAt: string
+  endedAt: string | null
+}
+
 type SubscriptionFormProps = {
+  mode: 'create' | 'edit'
+  initialValues: SubscriptionDto | null
   submitting: boolean
   error: string | null
   onCancel: () => void
-  onSubmit: (data: {
-    planName: string
-    monthlyUsd: number
-    startedAt: string
-    endedAt: string | null
-  }) => void
+  onSubmit: (data: SubscriptionFormData) => void
 }
 
-function SubscriptionForm({ submitting, error, onCancel, onSubmit }: SubscriptionFormProps) {
-  const [planName, setPlanName] = useState('Claude Max')
-  const [monthlyUsd, setMonthlyUsd] = useState<string>('200')
-  const [startedAt, setStartedAt] = useState<string>(() => isoDateDaysAgo(0))
-  const [endedAt, setEndedAt] = useState<string>('')
+/**
+ * Plan templates the user can pick from to pre-fill the form. Values are
+ * Anthropic's published list rates as known to this build's training data;
+ * the user can still edit any pre-filled value before saving. "Custom"
+ * is the no-op default.
+ *
+ * If Anthropic adds or repricers a tier, update this list — there is no
+ * config-file equivalent yet (though the `pricing.toml` discipline is
+ * the obvious upgrade path if these go stale).
+ */
+const SUBSCRIPTION_PLAN_TEMPLATES: ReadonlyArray<{
+  id: string
+  label: string
+  planName: string
+  monthlyUsd: number | null
+}> = [
+  { id: 'custom', label: 'Custom (enter values manually)', planName: '', monthlyUsd: null },
+  { id: 'pro', label: 'Claude Pro · $20/mo', planName: 'Claude Pro', monthlyUsd: 20 },
+  { id: 'max-5x', label: 'Claude Max 5× · $100/mo', planName: 'Claude Max 5×', monthlyUsd: 100 },
+  {
+    id: 'max-20x',
+    label: 'Claude Max 20× · $200/mo',
+    planName: 'Claude Max 20×',
+    monthlyUsd: 200,
+  },
+  {
+    id: 'team',
+    label: 'Claude Team · $25/seat/mo',
+    planName: 'Claude Team',
+    monthlyUsd: 25,
+  },
+  {
+    id: 'enterprise',
+    label: 'Claude Enterprise · custom pricing',
+    planName: 'Claude Enterprise',
+    monthlyUsd: 0,
+  },
+]
+
+function SubscriptionForm({
+  mode,
+  initialValues,
+  submitting,
+  error,
+  onCancel,
+  onSubmit,
+}: SubscriptionFormProps) {
+  const isEdit = mode === 'edit'
+  const [planName, setPlanName] = useState(initialValues?.plan_name ?? 'Claude Max 20×')
+  const [monthlyUsd, setMonthlyUsd] = useState<string>(
+    initialValues ? String(initialValues.monthly_usd) : '200',
+  )
+  const [startedAt, setStartedAt] = useState<string>(
+    initialValues?.started_at ?? isoDateDaysAgo(0),
+  )
+  const [endedAt, setEndedAt] = useState<string>(initialValues?.ended_at ?? '')
+  const [templateId, setTemplateId] = useState<string>('custom')
+
+  function applyTemplate(nextTemplateId: string) {
+    setTemplateId(nextTemplateId)
+    const template = SUBSCRIPTION_PLAN_TEMPLATES.find((t) => t.id === nextTemplateId)
+    if (!template || template.monthlyUsd === null) return
+    setPlanName(template.planName)
+    setMonthlyUsd(String(template.monthlyUsd))
+  }
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault()
@@ -1318,6 +1433,28 @@ function SubscriptionForm({ submitting, error, onCancel, onSubmit }: Subscriptio
       className="rounded-md border border-slate-200 bg-slate-50 p-4 space-y-3"
       onSubmit={handleSubmit}
     >
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-slate-700 uppercase tracking-wide">
+          {isEdit ? 'Edit subscription' : 'Add subscription'}
+        </span>
+        {!isEdit && (
+          <label className="text-xs text-slate-600 flex items-center gap-2">
+            <span>Pre-fill from plan:</span>
+            <select
+              value={templateId}
+              onChange={(event) => applyTemplate(event.target.value)}
+              className="border border-slate-300 rounded-md px-2 py-1 text-xs bg-white"
+            >
+              {SUBSCRIPTION_PLAN_TEMPLATES.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <label className="block">
           <span className="text-xs font-medium text-slate-600">Plan name</span>
@@ -1363,6 +1500,22 @@ function SubscriptionForm({ submitting, error, onCancel, onSubmit }: Subscriptio
         </label>
       </div>
 
+      {!isEdit && (
+        <p className="text-xs text-slate-500">
+          Plan-template prices reflect Anthropic's list rates as known when this build was
+          compiled — verify against{' '}
+          <a
+            className="underline"
+            href="https://www.anthropic.com/pricing"
+            target="_blank"
+            rel="noreferrer"
+          >
+            anthropic.com/pricing
+          </a>{' '}
+          and adjust before saving if your plan differs.
+        </p>
+      )}
+
       {error && <div className="text-xs text-rose-700">{error}</div>}
 
       <div className="flex items-center gap-2">
@@ -1371,7 +1524,7 @@ function SubscriptionForm({ submitting, error, onCancel, onSubmit }: Subscriptio
           disabled={submitting}
           className="bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md px-3 py-1 disabled:bg-slate-300"
         >
-          {submitting ? 'Saving…' : 'Save'}
+          {submitting ? 'Saving…' : isEdit ? 'Save changes' : 'Save'}
         </button>
         <button
           type="button"

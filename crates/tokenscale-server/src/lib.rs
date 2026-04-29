@@ -52,7 +52,8 @@ pub fn build_router(state: AppState) -> axum::Router {
         )
         .route(
             "/api/v1/subscriptions/{id}",
-            axum::routing::delete(routes::subscriptions::delete_handler),
+            axum::routing::delete(routes::subscriptions::delete_handler)
+                .put(routes::subscriptions::update_handler),
         )
         .fallback(embed::static_handler)
         .layer(TraceLayer::new_for_http())
@@ -391,6 +392,82 @@ source_accessed_at = "2026-04-28"
         let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["subscriptions"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn subscriptions_update_replaces_fields() {
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let app = build_router(AppState::new(database, test_pricing()));
+
+        // Create.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/subscriptions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "plan_name": "Old", "monthly_usd": 100.0,
+                            "started_at": "2025-01-01",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let created: Value = serde_json::from_slice(&bytes).unwrap();
+        let id = created["id"].as_i64().unwrap();
+
+        // Update.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/v1/subscriptions/{id}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "plan_name": "New", "monthly_usd": 250.0,
+                            "started_at": "2025-02-01",
+                            "ended_at": "2025-12-31",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let updated: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(updated["plan_name"], "New");
+        assert!((updated["monthly_usd"].as_f64().unwrap() - 250.0).abs() < f64::EPSILON);
+        assert_eq!(updated["started_at"], "2025-02-01");
+        assert_eq!(updated["ended_at"], "2025-12-31");
+
+        // Update unknown id → 400.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/subscriptions/99999")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "plan_name": "Z", "monthly_usd": 1.0, "started_at": "2025-01-01",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

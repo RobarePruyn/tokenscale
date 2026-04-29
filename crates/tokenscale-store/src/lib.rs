@@ -34,7 +34,7 @@ pub use queries::{
     RecentSessionRow, UsageByModelRow, ALL_PROVIDERS,
 };
 pub use subscriptions::{
-    delete_subscription, insert_subscription, list_subscriptions, Subscription,
+    delete_subscription, insert_subscription, list_subscriptions, update_subscription, Subscription,
 };
 
 #[cfg(test)]

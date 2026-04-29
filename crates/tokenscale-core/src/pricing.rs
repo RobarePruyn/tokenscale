@@ -125,6 +125,20 @@ impl PricingFile {
     pub fn is_review_pending(&self) -> bool {
         self.file_status != "production"
     }
+
+    /// The most recent `source_accessed_at` across all priced models in
+    /// the file. `None` for an empty file. ISO dates sort lexically so
+    /// `max()` returns the most recent. Used by the dashboard to surface
+    /// "pricing as of YYYY-MM-DD" — informative even when the file has
+    /// not yet been re-verified.
+    #[must_use]
+    pub fn most_recent_accessed_at(&self) -> Option<&str> {
+        self.providers
+            .values()
+            .flat_map(|provider| provider.models.values())
+            .map(|model| model.source_accessed_at.as_str())
+            .max()
+    }
 }
 
 #[cfg(test)]

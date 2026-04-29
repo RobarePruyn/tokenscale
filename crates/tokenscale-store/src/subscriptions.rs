@@ -86,6 +86,45 @@ pub async fn delete_subscription(database: &Database, id: i64) -> Result<bool> {
     Ok(result.rows_affected() > 0)
 }
 
+/// Replace the fields of an existing subscription. Returns `Some(updated)`
+/// when the id was found, `None` when it wasn't. Editing semantics are
+/// "replace all four fields" — the API doesn't currently support partial
+/// updates because subscriptions are small and the UX is "edit the form
+/// and save."
+pub async fn update_subscription(
+    database: &Database,
+    id: i64,
+    plan_name: &str,
+    monthly_usd: f64,
+    started_at: &str,
+    ended_at: Option<&str>,
+) -> Result<Option<Subscription>> {
+    let result = sqlx::query(
+        "UPDATE subscriptions
+            SET plan_name = ?, monthly_usd = ?, started_at = ?, ended_at = ?
+          WHERE id = ?",
+    )
+    .bind(plan_name)
+    .bind(monthly_usd)
+    .bind(started_at)
+    .bind(ended_at)
+    .bind(id)
+    .execute(database.pool())
+    .await?;
+
+    if result.rows_affected() == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(Subscription {
+        id,
+        plan_name: plan_name.to_owned(),
+        monthly_usd,
+        started_at: started_at.to_owned(),
+        ended_at: ended_at.map(str::to_owned),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,6 +169,41 @@ mod tests {
         assert_eq!(subs.len(), 2);
         assert_eq!(subs[0].plan_name, "Current plan"); // newer first
         assert_eq!(subs[1].plan_name, "Old plan");
+    }
+
+    #[tokio::test]
+    async fn update_returns_some_on_hit_none_on_miss() {
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let inserted = insert_subscription(&database, "Old", 100.0, "2025-01-01", None)
+            .await
+            .unwrap();
+
+        let updated = update_subscription(
+            &database,
+            inserted.id,
+            "New",
+            150.0,
+            "2025-02-01",
+            Some("2025-12-31"),
+        )
+        .await
+        .unwrap()
+        .expect("update should hit");
+        assert_eq!(updated.plan_name, "New");
+        assert!((updated.monthly_usd - 150.0).abs() < f64::EPSILON);
+        assert_eq!(updated.started_at, "2025-02-01");
+        assert_eq!(updated.ended_at.as_deref(), Some("2025-12-31"));
+
+        // Confirm the change persisted.
+        let listed = list_subscriptions(&database).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].plan_name, "New");
+
+        // Unknown id → None.
+        let miss = update_subscription(&database, 99_999, "Y", 1.0, "2025-01-01", None)
+            .await
+            .unwrap();
+        assert!(miss.is_none());
     }
 
     #[tokio::test]
