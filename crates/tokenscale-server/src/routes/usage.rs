@@ -15,6 +15,11 @@ use crate::state::AppState;
 
 const DEFAULT_WINDOW_DAYS: i64 = 30;
 
+/// Sentinel `project_id` value used by the `?project=__none__` query string
+/// to mean "filter to nothing." Real Claude Code cwd paths cannot contain
+/// these byte sequences, so the SQL IN-clause matches no rows.
+const NO_MATCH_SENTINEL: &str = "\u{0}__tokenscale_filter_none__\u{0}";
+
 /// The five token types tokenscale tracks. Stable order so the frontend's
 /// stack-by-token-type chart has a deterministic visual layout.
 const TOKEN_TYPES: [&str; 5] = [
@@ -54,6 +59,11 @@ impl UsageWindowParams {
 
         let projects: Vec<String> = match self.project.as_deref() {
             None | Some("" | "all") => Vec::new(),
+            // Sentinel for "the user explicitly selected zero projects" — a
+            // valid state from the chip UI's "Select none" button. We pass
+            // a value that cannot collide with any real Claude Code cwd so
+            // the IN-clause matches no rows.
+            Some("__none__") => vec![NO_MATCH_SENTINEL.to_owned()],
             Some(comma_separated) => comma_separated
                 .split(',')
                 .filter(|segment| !segment.is_empty())
