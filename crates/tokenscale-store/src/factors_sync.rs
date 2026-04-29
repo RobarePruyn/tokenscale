@@ -62,8 +62,9 @@ pub async fn sync_environmental_factors(
                     provider, model, valid_from, valid_to,
                     wh_per_mtok_input, wh_per_mtok_output, wh_per_mtok_cache_read,
                     wh_per_mtok_cache_write_5m, wh_per_mtok_cache_write_1h,
-                    source_doc, notes
-                 ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
+                    source_doc, notes,
+                    uncertainty_range_pct, confidence
+                 ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(provider_id)
             .bind(model_id)
@@ -75,6 +76,8 @@ pub async fn sync_environmental_factors(
             .bind(model.wh_per_mtok_cache_write_1h)
             .bind(model.source_doc.as_deref().unwrap_or(""))
             .bind(model.notes.as_deref())
+            .bind(model.uncertainty_range_pct)
+            .bind(model.confidence.as_deref())
             .execute(&mut *transaction)
             .await?;
 
@@ -92,29 +95,25 @@ pub async fn sync_environmental_factors(
 
     for (region_id, grid) in &factors_file.grid_factors {
         let valid_from = grid.valid_from.as_deref().unwrap_or("1970-01-01");
-        // `grid_factors` requires NOT NULL on `co2e_kg_per_kwh` and `pue`.
-        // For placeholder rows where these are absent in the TOML, fall
-        // back to the file's `defaults.fallback_pue` (or 1.0) and a 0.0
-        // sentinel for co2e. The Phase 2 compute path consults the
-        // in-memory snapshot's `Option<f64>` to decide "data available?";
-        // it doesn't see these sentinels.
-        let pue = grid
-            .pue
-            .or(factors_file.defaults.fallback_pue)
-            .unwrap_or(1.0);
-        let co2e = grid.co2e_kg_per_kwh.unwrap_or(0.0);
-
+        // Phase 2: `grid_factors.co2e_kg_per_kwh` and `pue` are nullable
+        // in the schema (migration 0002), so we pass through `Option<f64>`
+        // unchanged. The compute path consults these directly and falls
+        // back to `defaults.fallback_pue` / `defaults.fallback_wue_l_per_kwh`
+        // as needed — no sentinel fudging.
         sqlx::query(
             "INSERT INTO grid_factors (
                 region, valid_from, valid_to, co2e_kg_per_kwh, water_l_per_kwh,
-                pue, source_url, source_accessed_at
-             ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?)",
+                pue, egrid_subregion, egrid_subregion_full_name,
+                source_url, source_accessed_at
+             ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(region_id)
         .bind(valid_from)
-        .bind(co2e)
+        .bind(grid.co2e_kg_per_kwh)
         .bind(grid.water_l_per_kwh)
-        .bind(pue)
+        .bind(grid.pue)
+        .bind(grid.egrid_subregion.as_deref())
+        .bind(grid.egrid_subregion_full_name.as_deref())
         .bind(grid.source_url_co2e.as_deref().unwrap_or(""))
         .bind(grid.source_accessed_at.as_deref().unwrap_or(valid_from))
         .execute(&mut *transaction)

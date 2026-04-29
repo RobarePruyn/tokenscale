@@ -25,6 +25,7 @@ pub mod billable;
 mod error;
 mod event;
 pub mod factors;
+pub mod impact;
 pub mod pricing;
 
 pub use billable::BillableMultipliers;
@@ -32,6 +33,9 @@ pub use error::{CoreError, Result};
 pub use event::{Event, SourceKind};
 pub use factors::{
     EnvironmentalFactorsFile, FactorDefaults, GridFactors, ModelFactors, ProviderFactors,
+};
+pub use impact::{
+    compute_impact, EnvironmentalImpact, EventTokenCounts, FactorsProvenance, ImpactInputs,
 };
 pub use pricing::{ModelPricing, PricingFile, ProviderPricing};
 

@@ -1,6 +1,6 @@
 # tokenscale — Project Charter
 
-**Status:** v0.2 (incorporates v2 multi-provider scope and distribution/governance model)
+**Status:** v0.3 (broadens research scope to all major LLM providers from v1; adds methodology page; flags framework-extractable design lens)
 **Drafted:** 2026-04-28
 **Last revised:** 2026-04-28
 **Maintainer:** Robare Sarif
@@ -57,7 +57,8 @@ The v1 build is Anthropic-only, but the architecture is designed so that adding 
 - **Database schema.** The `events.source` field accepts new ingest types without a migration. Pricing and factor tables are vendor-agnostic in shape — adding a new provider's models is row insertions, not column additions.
 - **Connector layer.** Ingest is split into per-provider crates. v1 has Claude Code (JSONL) and Anthropic Admin API. v2 adds e.g. OpenAI usage API, Bedrock cross-vendor, etc., each as an independent crate that shares a common ingest interface. Providers are configurable on/off in the dashboard.
 - **Presentation.** The dashboard supports filtering and sorting by provider — view all-LLMs blended per token, Anthropic only, or any selection of configured providers.
-- **Research scope.** From v2 onward, the Cowork research agent's cyclical sweeps include non-Anthropic vendor environmental disclosures. v1 sweeps stay focused on Anthropic, AWS, peer-reviewed inference work, and grid intensity.
+- **Research scope is broader than application scope from v1.** The Cowork research agent crawls as wide a set of LLM providers and models as it can find good data for, *from v1 onward* — not gated on v2 ingest support. The application still only ingests from Anthropic in v1 (because that's what the user's data sources expose), but the factor file and methodology page cover the full landscape: Anthropic, OpenAI, Google Gemini, Meta LLaMA, DeepSeek, Mistral, and any provider with credible published data. This makes the public methodology page a more compelling community artifact and de-risks v2 ingest landings — factor data is already in place when the new ingest crate ships.
+- **Water deserves a dedicated research dimension.** Direct water (data-center cooling) and indirect water (power-plant cooling) per Ren et al.'s "Making AI Less Thirsty" methodology. v0.1 covers direct only; indirect is a v0.2 enhancement.
 
 ## Distribution and governance model
 
@@ -70,6 +71,34 @@ The v1 build is Anthropic-only, but the architecture is designed so that adding 
   2. **Local research mode (power users).** The user's local Claude (Cowork or otherwise) runs research and updates their own local factor model. Optionally periodically resyncs with upstream.
 - **In-browser research management.** The dashboard exposes a research-runs view backed by the `research_runs` table. Users can review proposals as diffs, see source attributions, and approve or reject — without having to come back to a Cowork chat for routine review work. The Cowork project remains the proposal engine; the dashboard is the review surface.
 - **Setup documentation** must explain (a) how to switch between pull and local-research modes, (b) how to configure a local factor model, and (c) how to schedule periodic syncs from the upstream maintainer's repo.
+
+## Methodology / transparency page
+
+`tokenscale` ships a built-in methodology and transparency page that exposes the provenance of every numeric value the dashboard displays. This is required, not optional. Without it, the project's environmental impact figures — which are heavily estimated — carry no credibility. With it, the project becomes a defensible community resource.
+
+The page surfaces, for every numeric value:
+
+- Where the data came from (URL + author/org).
+- When it was published and last polled by the Cowork research agent.
+- The methodology used to derive it.
+- Why the value is trusted (confidence tag, peer-reviewed vs not, primary vs secondary).
+- How the conclusion was reached (derivation when estimated, range when uncertain).
+- Why a reader should trust those conclusions (the full audit trail).
+
+Implementation is hybrid:
+
+- **Per-value provenance** is dynamic, backed by `env_factors.source_doc` joined to bundled `docs/sources.md` entries.
+- **Methodology narrative** is a static `docs/methodology.md` (Cowork-maintained, bundled into the binary).
+- **Bibliography** renders `docs/sources.md` with last-polled timestamps and confidence tags.
+- **Research log** renders `research_runs` table content.
+
+This is Phase 3 work for the engineering side, but the schema and data plumbing are in place from Phase 1.
+
+## Framework-extractable design lens
+
+The factor model and the math in `tokenscale-core` are deliberately written so they can be extracted into a standalone open-source AI cost / impact analysis framework if the project succeeds. This is not a v1 commitment — `tokenscale` ships as a single tool — but every architectural choice keeps the option open: factor-file schema is generic, `compute_impact` math has no dashboard-specific assumptions, and the research process (sources → research log → factor file) is portable.
+
+If a future spinout is desired, it is a packaging exercise, not a rewrite.
 
 ## Standards
 

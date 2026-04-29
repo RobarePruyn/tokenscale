@@ -36,12 +36,33 @@ const EMBEDDED_FACTORS_TOML: &str = include_str!("../../../environmental-factors
 pub struct EnvironmentalFactorsFile {
     pub schema_version: i64,
 
-    /// `"placeholder"` — every numeric value is `null` (Phase 1 ships
-    /// here, awaiting Cowork research's deliverable 3 merge).
-    /// `"production"` — values reviewed and merged.
+    /// `"placeholder"` — every numeric value is `null` (Phase 1 default).
+    /// `"production"` — values reviewed and merged (Phase 2 onwards).
     /// Other values treated as "review pending."
     #[serde(default = "default_file_status")]
     pub file_status: String,
+
+    /// Human-readable file version — e.g., `"0.1"`. Surfaced through
+    /// `/api/v1/health` so the dashboard can show "factors v0.1".
+    #[serde(default)]
+    pub file_version: Option<String>,
+
+    /// ISO date the file was published by the maintainer. Independent of
+    /// per-row `valid_from` — the file may be republished without rows
+    /// changing their validity windows.
+    #[serde(default)]
+    pub file_published: Option<String>,
+
+    /// Methodology identifier. Phase 2 expects
+    /// `"google-comprehensive-aug-2025"`. The compute path may dispatch
+    /// on this if/when alternative methodologies are supported.
+    #[serde(default)]
+    pub methodology: Option<String>,
+
+    /// URL the methodology is sourced from (e.g., the Elsworth et al.
+    /// arXiv link). Surfaced through health for the methodology page.
+    #[serde(default)]
+    pub methodology_source: Option<String>,
 
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderFactors>,
@@ -101,6 +122,19 @@ pub struct ModelFactors {
     #[serde(default)]
     pub wh_per_mtok_cache_write_1h: Option<f64>,
 
+    /// `"primary"` (vendor disclosure or peer-reviewed) /
+    /// `"secondary"` (independent benchmark, blog, derivation) /
+    /// `"superseded"`. v0.1 mostly populates this on every model.
+    #[serde(default)]
+    pub confidence: Option<String>,
+
+    /// Honest uncertainty band, in percent. v0.1 populates this on every
+    /// model — direct anchors are ±30%, derivations are ±35–60%. The API
+    /// surfaces the per-bucket maximum so the dashboard can render
+    /// "12.3 Wh ± 35%" rather than a false-precision point.
+    #[serde(default)]
+    pub uncertainty_range_pct: Option<i32>,
+
     #[serde(default)]
     pub notes: Option<String>,
 }
@@ -125,6 +159,14 @@ pub struct GridFactors {
     #[serde(default)]
     pub pue: Option<f64>,
 
+    /// EPA eGRID subregion code — e.g. `"SRVC"` for SERC Virginia/Carolina
+    /// (us-east-1). Surfaced through `/api/v1/health` so users can
+    /// understand which grid is being attributed to their usage.
+    #[serde(default)]
+    pub egrid_subregion: Option<String>,
+    #[serde(default)]
+    pub egrid_subregion_full_name: Option<String>,
+
     #[serde(default)]
     pub source_url_co2e: Option<String>,
     #[serde(default)]
@@ -146,8 +188,14 @@ pub struct FactorDefaults {
     #[serde(default)]
     pub fallback_pue: Option<f64>,
 
-    /// Identifier for the methodology the values follow. Phase 2's compute
-    /// path may dispatch on this.
+    /// Used when a region's `water_l_per_kwh` is null. Typically a
+    /// vendor's published global WUE (e.g., AWS 0.15 L/kWh for 2024).
+    #[serde(default)]
+    pub fallback_wue_l_per_kwh: Option<f64>,
+
+    /// Identifier for the methodology the values follow. Duplicated from
+    /// the top-level for backward compatibility — top-level is the
+    /// canonical location post-v0.1.
     #[serde(default)]
     pub methodology: Option<String>,
 }
@@ -232,6 +280,22 @@ impl EnvironmentalFactorsFile {
     pub fn region_count(&self) -> usize {
         self.grid_factors.len()
     }
+
+    /// Effective fallback PUE — the file's `defaults.fallback_pue` if
+    /// present, else `1.0` (the "no facility overhead" identity). Used
+    /// by `compute_impact` when a region's `pue` is null.
+    #[must_use]
+    pub fn effective_fallback_pue(&self) -> f64 {
+        self.defaults.fallback_pue.unwrap_or(1.0)
+    }
+
+    /// Effective fallback WUE in L/kWh. Returns `None` when neither the
+    /// region nor the defaults block carries a value — `compute_impact`
+    /// surfaces water as `Option<f64>` rather than substituting a sentinel.
+    #[must_use]
+    pub fn effective_fallback_wue_l_per_kwh(&self) -> Option<f64> {
+        self.defaults.fallback_wue_l_per_kwh
+    }
 }
 
 /// TOML 1.0 doesn't have a `null` literal, but the
@@ -281,6 +345,10 @@ mod tests {
     const VALID_TOML: &str = r#"
 schema_version = 1
 file_status = "placeholder"
+file_version = "0.0-test"
+file_published = "2026-04-28"
+methodology = "google-comprehensive-aug-2025"
+methodology_source = "https://arxiv.org/abs/2508.15734"
 
 [providers.anthropic]
 display_name = "Anthropic"
@@ -290,6 +358,8 @@ inference_provider = "aws"
 display_name = "Claude Opus 4.7"
 valid_from = "2026-04-28"
 source_doc = "docs/sources.md#G.1"
+confidence = "secondary"
+uncertainty_range_pct = 40
 wh_per_mtok_input = null
 wh_per_mtok_output = null
 wh_per_mtok_cache_read = null
@@ -299,6 +369,8 @@ wh_per_mtok_cache_write_1h = null
 [grid_factors."us-east-1"]
 display_name = "AWS US East (N. Virginia)"
 valid_from = "2026-04-28"
+egrid_subregion = "SRVC"
+egrid_subregion_full_name = "SERC Virginia/Carolina"
 co2e_kg_per_kwh = null
 water_l_per_kwh = null
 pue = null
@@ -311,6 +383,7 @@ source_accessed_at = "2026-03-15"
 
 [defaults]
 fallback_pue = 1.15
+fallback_wue_l_per_kwh = 0.15
 methodology = "google-comprehensive-aug-2025"
 "#;
 
@@ -366,6 +439,73 @@ methodology = "google-comprehensive-aug-2025"
     }
 
     #[test]
+    fn v0_1_phase2_fields_round_trip() {
+        // Confirms the loader exposes Phase 2 fields the API + migration
+        // depend on: confidence + uncertainty_range_pct on models;
+        // egrid_subregion + full name on grid; file_version /
+        // file_published / methodology / methodology_source at the top
+        // level; fallback_wue_l_per_kwh in defaults.
+        let parsed = EnvironmentalFactorsFile::parse(VALID_TOML).unwrap();
+
+        assert_eq!(parsed.file_version.as_deref(), Some("0.0-test"));
+        assert_eq!(parsed.file_published.as_deref(), Some("2026-04-28"));
+        assert_eq!(
+            parsed.methodology.as_deref(),
+            Some("google-comprehensive-aug-2025")
+        );
+        assert_eq!(
+            parsed.methodology_source.as_deref(),
+            Some("https://arxiv.org/abs/2508.15734")
+        );
+
+        let opus = parsed.lookup_model("anthropic", "claude-opus-4-7").unwrap();
+        assert_eq!(opus.confidence.as_deref(), Some("secondary"));
+        assert_eq!(opus.uncertainty_range_pct, Some(40));
+
+        let grid = parsed.lookup_grid("us-east-1").unwrap();
+        assert_eq!(grid.egrid_subregion.as_deref(), Some("SRVC"));
+        assert_eq!(
+            grid.egrid_subregion_full_name.as_deref(),
+            Some("SERC Virginia/Carolina")
+        );
+
+        assert!(
+            (parsed.effective_fallback_pue() - 1.15).abs() < f64::EPSILON,
+            "fallback_pue defaults to 1.15 in fixture"
+        );
+        assert_eq!(
+            parsed.effective_fallback_wue_l_per_kwh(),
+            Some(0.15),
+            "fallback_wue_l_per_kwh exposed via defaults"
+        );
+    }
+
+    #[test]
+    fn v0_1_production_repo_file_loads_with_phase2_fields() {
+        // The committed environmental-factors.toml should always carry the
+        // Phase 2 fields the API and the dashboard depend on. Catches
+        // accidental shape regressions in v0.x file edits.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("environmental-factors.toml");
+        let parsed = EnvironmentalFactorsFile::load_from_path(&path).unwrap();
+        // file_version is required from v0.1 onward
+        assert!(
+            parsed.file_version.is_some(),
+            "file_version must be populated from v0.1 onward"
+        );
+        assert!(parsed.methodology.is_some());
+        assert!(
+            parsed
+                .lookup_grid("us-east-1")
+                .and_then(|g| g.egrid_subregion.clone())
+                .is_some(),
+            "us-east-1 must have egrid_subregion populated"
+        );
+    }
+
+    #[test]
     fn missing_file_status_defaults_to_production() {
         let no_status = "schema_version = 1\n[providers.anthropic]\ndisplay_name = \"x\"\n";
         let parsed = EnvironmentalFactorsFile::parse(no_status).unwrap();
@@ -383,11 +523,11 @@ methodology = "google-comprehensive-aug-2025"
             .join("environmental-factors.toml");
         let parsed = EnvironmentalFactorsFile::load_from_path(&path).unwrap();
         assert_eq!(parsed.schema_version, 1);
-        // The pre-staged file is the placeholder shipped at scaffold time.
-        // Once the maintainer merges Cowork's values, this assertion will
-        // need to be relaxed — we keep it tight in Phase 1 so the
-        // placeholder→production transition is a deliberate change.
-        assert!(parsed.is_placeholder());
+        // The repo file flipped from placeholder to production when Cowork's
+        // v0.1 values landed (see docs/research-log.md, 2026-04-28). Keep
+        // this assertion narrow — schema parses, providers and grid_factors
+        // are populated — without locking to a specific file_status, since
+        // the maintainer may toggle that during local edits.
         assert!(!parsed.providers.is_empty());
         assert!(!parsed.grid_factors.is_empty());
     }
