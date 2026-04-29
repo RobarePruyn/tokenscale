@@ -131,7 +131,12 @@ impl Config {
         Ok(config)
     }
 
-    /// Serialize to a TOML string suitable for `init` to write out.
+    /// Serialize to a TOML string. Used by tests to verify the default
+    /// config round-trips cleanly. Production `tokenscale init` writes a
+    /// hand-authored annotated starter from `render_starter_config` in
+    /// main.rs — TOML serialization of the struct itself emits no
+    /// comments, which is unhelpful for new users.
+    #[cfg(test)]
     pub fn to_toml(&self) -> Result<String> {
         toml::to_string_pretty(self).context("serializing config to TOML")
     }
