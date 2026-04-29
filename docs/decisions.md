@@ -83,10 +83,11 @@ The goal here is simple: anyone (the maintainer, a future contributor, a future 
 
 ## 2026-04-28 — MSRV pinned in Cargo.toml; no `rust-toolchain.toml`
 
-**Decision.** Workspace `Cargo.toml` declares `rust-version = "1.78"`. We do not ship a `rust-toolchain.toml` file.
+**Decision.** Workspace `Cargo.toml` declares `rust-version = "1.82"` (revised from the original 1.78 baseline on 2026-04-29 when the JSONL ingester landed using `Option::is_none_or`). We do not ship a `rust-toolchain.toml` file.
 
 **Rationale.**
 
 - `rust-version` produces a friendly compiler error if a too-old toolchain is used.
 - A `rust-toolchain.toml` file would force every contributor to install a specific Rust version even if their installed version is newer and compatible. That is appropriate for a project pinned to a nightly feature; it is hostile for a stable-channel project.
-- 1.78 is conservative (released 2024-05) and gives us room to use `let-else`, `if-let-chains`, and 2021-edition features without forcing anyone to upgrade.
+- 1.82 (released October 2024) is still over 18 months old at scaffold time. The features it stabilized — `Option::is_none_or`, the precise capturing syntax — are useful enough that the cost of an MSRV bump beats the cost of working around them.
+- Future bumps follow the same rule: if a feature is genuinely useful and the version it was stabilized in is over a year old, bump and document. Else work around.

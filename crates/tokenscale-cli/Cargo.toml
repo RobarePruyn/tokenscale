@@ -32,3 +32,6 @@ tokenscale-core.workspace      = true
 tokenscale-ingest-cc.workspace = true
 tokenscale-store.workspace     = true
 tokenscale-server.workspace    = true
+
+[dev-dependencies]
+tempfile = "3"

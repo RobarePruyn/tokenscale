@@ -18,7 +18,9 @@ members = [
 [workspace.package]
 version      = "0.1.0"
 edition      = "2021"
-rust-version = "1.78"
+# 1.82 (Oct 2024) is the floor — we use `Option::is_none_or` and other
+# stabilizations from that release. See docs/decisions.md.
+rust-version = "1.82"
 license      = "Apache-2.0"
 repository   = "https://github.com/RobarePruyn/tokenscale"
 authors      = ["Robare Sarif"]
