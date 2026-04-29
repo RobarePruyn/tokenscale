@@ -242,6 +242,61 @@ source_accessed_at = "2026-04-28"
     }
 
     #[tokio::test]
+    async fn daily_usage_models_field_persists_when_project_filter_returns_nothing() {
+        // Regression for the bug where clicking "Select none" on Projects
+        // collapsed the Models chip list to empty. Models for the chip UI
+        // come from the window — independent of the project filter — so
+        // even when the project IN-clause matches no rows, the response's
+        // `models` field still lists what's in the window.
+        use chrono::{TimeZone, Utc};
+        use tokenscale_core::Event;
+        use tokenscale_store::insert_events;
+
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        insert_events(
+            &database,
+            &[Event {
+                source: "claude_code".to_owned(),
+                occurred_at: Utc.with_ymd_and_hms(2026, 4, 21, 12, 0, 0).unwrap(),
+                model: "claude-opus-4-7".to_owned(),
+                input_tokens: 1_000,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_5m_tokens: 0,
+                cache_write_1h_tokens: 0,
+                request_id: Some("r1".to_owned()),
+                content_hash: None,
+                session_id: Some("s".to_owned()),
+                project_id: Some("/proj/alpha".to_owned()),
+                workspace_id: None,
+                api_key_id: None,
+                raw: None,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let app = build_router(AppState::new(database, test_pricing()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/usage/daily?from=2026-04-21&to=2026-04-21&project=__none__")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+
+        // No matching rows because of the project filter...
+        assert_eq!(body["rows"], serde_json::json!([]));
+        // ...but the Models chip list still reflects the window.
+        assert_eq!(body["models"], serde_json::json!(["claude-opus-4-7"]));
+    }
+
+    #[tokio::test]
     async fn projects_endpoint_returns_distinct_projects_with_totals() {
         use chrono::{TimeZone, Utc};
         use tokenscale_core::Event;

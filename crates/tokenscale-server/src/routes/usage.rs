@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tokenscale_core::{BillableMultipliers, ModelPricing};
 use tokenscale_store::{
-    daily_usage_breakdown, usage_by_model, DailyUsageBreakdownRow, ALL_PROVIDERS,
+    daily_usage_breakdown, list_models_in_window, usage_by_model, DailyUsageBreakdownRow,
+    ALL_PROVIDERS,
 };
 
 use crate::error::ApiError;
@@ -160,6 +161,29 @@ pub async fn daily_handler(
     Query(params): Query<UsageWindowParams>,
 ) -> Result<Json<DailyUsageResponse>, ApiError> {
     let resolved = params.resolve()?;
+
+    // The Models chip list is computed at the WINDOW level — provider +
+    // date range only — so it doesn't collapse when the user narrows the
+    // project filter (or selects no projects at all). Without this, "Select
+    // none" on Projects would clear the Model chip list, leaving the user
+    // with no chips to click back to.
+    let models_in_window = list_models_in_window(
+        &state.database,
+        &resolved.from_date,
+        &resolved.to_date,
+        &resolved.provider,
+    )
+    .await?;
+    let visible_models: std::collections::HashSet<String> = models_in_window
+        .iter()
+        .map(|row| row.model.clone())
+        .collect();
+    let window_totals: BTreeMap<String, i64> = models_in_window
+        .iter()
+        .map(|row| (row.model.clone(), row.total_tokens))
+        .collect();
+
+    // The chart's per-(date, model) data still applies the project filter.
     let breakdown_rows = daily_usage_breakdown(
         &state.database,
         &resolved.from_date,
@@ -168,26 +192,6 @@ pub async fn daily_handler(
         &resolved.projects,
     )
     .await?;
-
-    // First pass: window-level totals per model, used to (a) sort models for
-    // the response and (b) drop any model whose entire window is zero —
-    // Claude Code emits a `<synthetic>` model identifier for internal events
-    // that never carry tokens, and surfacing it in the chart legend confuses
-    // users without adding signal.
-    let mut window_totals: BTreeMap<String, i64> = BTreeMap::new();
-    for row in &breakdown_rows {
-        let row_total = row.input_tokens
-            + row.output_tokens
-            + row.cache_read_tokens
-            + row.cache_write_5m_tokens
-            + row.cache_write_1h_tokens;
-        *window_totals.entry(row.model.clone()).or_default() += row_total;
-    }
-    let visible_models: std::collections::HashSet<String> = window_totals
-        .iter()
-        .filter(|(_, &total)| total > 0)
-        .map(|(name, _)| name.clone())
-        .collect();
 
     // For Phase 1, every visible model is provider=anthropic by virtue of
     // sources.provider being filtered to anthropic when applicable. We hand

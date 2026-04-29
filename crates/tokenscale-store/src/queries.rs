@@ -183,6 +183,66 @@ pub async fn daily_usage_breakdown(
 }
 
 // ----------------------------------------------------------------------------
+// list_models_in_window — models present in the window
+// ----------------------------------------------------------------------------
+
+/// One distinct `model` identifier in the window with its window-level
+/// total, ordered by total tokens descending. Mirrors
+/// `list_projects_with_totals` for the model dimension.
+///
+/// This query intentionally **does not** take a project filter — its
+/// purpose is to drive the dashboard's Model chip list, which should
+/// reflect "all models in this provider/window" regardless of what
+/// the user has done with the project filter. Using project-filtered
+/// model data for the chip list would mean clicking "Select none" on
+/// projects causes the model chips to vanish, leaving the user no way
+/// back.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelSummaryRow {
+    pub model: String,
+    pub total_tokens: i64,
+}
+
+pub async fn list_models_in_window(
+    database: &Database,
+    from_date: &str,
+    to_date: &str,
+    provider_filter: &str,
+) -> Result<Vec<ModelSummaryRow>> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT
+             events.model,
+             COALESCE(SUM(events.input_tokens
+                + events.output_tokens
+                + events.cache_read_tokens
+                + events.cache_write_5m_tokens
+                + events.cache_write_1h_tokens), 0) AS total_tokens
+           FROM events
+           JOIN sources ON sources.kind = events.source
+          WHERE date(events.occurred_at) BETWEEN ? AND ?
+            AND (? = ? OR sources.provider = ?)
+          GROUP BY events.model
+          HAVING total_tokens > 0
+          ORDER BY total_tokens DESC, events.model ASC",
+    )
+    .bind(from_date)
+    .bind(to_date)
+    .bind(provider_filter)
+    .bind(ALL_PROVIDERS)
+    .bind(provider_filter)
+    .fetch_all(database.pool())
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(model, total_tokens)| ModelSummaryRow {
+            model,
+            total_tokens,
+        })
+        .collect())
+}
+
+// ----------------------------------------------------------------------------
 // list_projects_with_totals — projects present in the window
 // ----------------------------------------------------------------------------
 
