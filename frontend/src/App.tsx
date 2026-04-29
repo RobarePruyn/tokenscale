@@ -166,11 +166,13 @@ const DEFAULT_RANGE_PRESET: RangePreset = '30d'
  */
 const PROJECTS_NONE_SENTINEL = '__none__'
 
-/** Lower bound for the "All time" preset. The server clamps to whatever's
- *  in the database, so picking a date well before any conceivable Claude
- *  Code session is the simplest "no lower bound" sentinel.
+/** Lower bound for the "All time" preset. ChatGPT's launch on
+ *  2022-11-30 is the practical "earliest possible LLM usage" date —
+ *  no provider tracked here predates it, so going earlier just produces
+ *  empty buckets. Padded to the 1st of December for a clean month
+ *  boundary in monthly granularity.
  */
-const ALL_TIME_FROM_DATE = '2000-01-01'
+const ALL_TIME_FROM_DATE = '2022-12-01'
 
 const TOKEN_TYPE_DISPLAY_NAMES: Record<string, string> = {
   input: 'Input',
@@ -233,6 +235,51 @@ const SHORT_MONTH_NAMES = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ]
+
+/** Enumerate every bucket-start date in `[fromDate, toDate]` for the given
+ *  granularity. Used to zero-fill the chart so the full requested window
+ *  is visible — sparse data on a wide window should render as a flat
+ *  baseline with the data spike where it actually is, not as a
+ *  data-only chart with no temporal context.
+ *
+ *  Bucket semantics match the SQLite expressions in `tokenscale-store`:
+ *  - day: each calendar day
+ *  - week: Monday-starting weeks; first bucket is the Monday on or before fromDate
+ *  - month: each calendar month start
+ */
+function enumerateBuckets(
+  fromDate: string,
+  toDate: string,
+  granularity: Granularity,
+): string[] {
+  const result: string[] = []
+  const fromMs = Date.parse(`${fromDate}T00:00:00Z`)
+  const toMs = Date.parse(`${toDate}T00:00:00Z`)
+  if (Number.isNaN(fromMs) || Number.isNaN(toMs) || fromMs > toMs) return result
+
+  const cursor = new Date(fromMs)
+  // Snap cursor to bucket start.
+  if (granularity === 'week') {
+    // getUTCDay(): 0 = Sunday … 6 = Saturday. ISO week starts Monday.
+    const weekday = cursor.getUTCDay()
+    const offsetToMonday = weekday === 0 ? -6 : 1 - weekday
+    cursor.setUTCDate(cursor.getUTCDate() + offsetToMonday)
+  } else if (granularity === 'month') {
+    cursor.setUTCDate(1)
+  }
+
+  while (cursor.getTime() <= toMs) {
+    result.push(cursor.toISOString().slice(0, 10))
+    if (granularity === 'day') {
+      cursor.setUTCDate(cursor.getUTCDate() + 1)
+    } else if (granularity === 'week') {
+      cursor.setUTCDate(cursor.getUTCDate() + 7)
+    } else {
+      cursor.setUTCMonth(cursor.getUTCMonth() + 1)
+    }
+  }
+  return result
+}
 
 /** Format a YYYY-MM-DD bucket label for display on the x-axis. The format
  *  depends on the bucket size: day/week show "Apr 27"; month shows "Apr
@@ -600,16 +647,26 @@ export default function App() {
       })
     }
 
+    // Zero-fill across the requested window. The server only returns
+    // buckets that actually have data, so a 1y view of a recently-started
+    // dataset would otherwise collapse to whatever 21 days have data —
+    // visually identical to a 30-day view, which the user reasonably
+    // flagged as a bug. Enumerating every bucket in the window and merging
+    // server data into it gives the chart the temporal context it needs.
+    const allBucketDates = enumerateBuckets(fromDate, toDate, data.granularity)
+    const dataByBucket = new Map(data.rows.map((row) => [row.date, row]))
+
     if (stackBy === 'model') {
       const series = visibleModels.map((modelId, index) => ({
         key: modelId,
         displayName: modelDisplayName(modelId),
         color: CHART_COLORS[index % CHART_COLORS.length],
       }))
-      const rows = data.rows.map((row) => {
-        const cells: Record<string, string | number> = { date: row.date }
+      const rows = allBucketDates.map((bucketDate) => {
+        const row = dataByBucket.get(bucketDate)
+        const cells: Record<string, string | number> = { date: bucketDate }
         for (const modelId of visibleModels) {
-          const tokens = row.byModel[modelId]
+          const tokens = row?.byModel[modelId]
           cells[modelId] = tokens
             ? sumSelectedTokenFields(
                 tokenFieldsForView(tokens, viewMode, data.pricingByModel[modelId]),
@@ -629,23 +686,26 @@ export default function App() {
       displayName: tokenTypeDisplayName(tokenType),
       color: CHART_COLORS[index % CHART_COLORS.length],
     }))
-    const rows = data.rows.map((row) => {
-      const cells: Record<string, string | number> = { date: row.date }
+    const rows = allBucketDates.map((bucketDate) => {
+      const row = dataByBucket.get(bucketDate)
+      const cells: Record<string, string | number> = { date: bucketDate }
       for (const tokenType of tokenTypeKeys) {
         let sum = 0
-        for (const modelId of visibleModels) {
-          const tokens = row.byModel[modelId]
-          if (!tokens) continue
-          sum += tokenFieldsForView(tokens, viewMode, data.pricingByModel[modelId])[
-            tokenType as keyof BillableBreakdown
-          ]
+        if (row) {
+          for (const modelId of visibleModels) {
+            const tokens = row.byModel[modelId]
+            if (!tokens) continue
+            sum += tokenFieldsForView(tokens, viewMode, data.pricingByModel[modelId])[
+              tokenType as keyof BillableBreakdown
+            ]
+          }
         }
         cells[tokenType] = sum
       }
       return cells
     })
     return { rows, series, hiddenInPricedView }
-  }, [dailyState, selectedModels, selectedTokenTypes, stackBy, viewMode])
+  }, [dailyState, selectedModels, selectedTokenTypes, stackBy, viewMode, fromDate, toDate])
 
   // Counterfactual cost = "what these tokens would have cost on the API at
   // list rates" — sum of `billable.X × input_price ÷ 1e6` across the chart's
