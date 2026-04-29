@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use tokenscale_core::{BillableMultipliers, ModelPricing};
 use tokenscale_store::{
     daily_usage_breakdown, list_models_in_window, usage_by_model, DailyUsageBreakdownRow,
-    ALL_PROVIDERS,
+    Granularity, ALL_PROVIDERS,
 };
 
 use crate::error::ApiError;
@@ -44,6 +44,8 @@ pub struct UsageWindowParams {
     /// into `Vec<String>`, so we use the comma-delimited convention here —
     /// project paths effectively never contain commas in practice.
     pub project: Option<String>,
+    /// Bucket granularity — `day` (default), `week`, or `month`.
+    pub granularity: Option<String>,
 }
 
 impl UsageWindowParams {
@@ -72,11 +74,14 @@ impl UsageWindowParams {
                 .collect(),
         };
 
+        let granularity = Granularity::parse_or_default(self.granularity.as_deref());
+
         Ok(ResolvedParams {
             from_date,
             to_date,
             provider,
             projects,
+            granularity,
         })
     }
 }
@@ -86,6 +91,7 @@ struct ResolvedParams {
     to_date: String,
     provider: String,
     projects: Vec<String>,
+    granularity: Granularity,
 }
 
 fn validate_iso_date(value: &str) -> Result<(), ApiError> {
@@ -154,6 +160,10 @@ pub struct DailyUsageResponse {
     /// total is missing for those. Surfaced so the dashboard can mark them.
     #[serde(rename = "modelsWithoutPricing")]
     pub models_without_pricing: Vec<String>,
+    /// Bucket size used for the rows. Echoed back so the frontend's x-axis
+    /// formatter can match what was actually rendered (auto granularity is
+    /// resolved client-side, but verifying server-side is cheap).
+    pub granularity: Granularity,
 }
 
 pub async fn daily_handler(
@@ -183,13 +193,14 @@ pub async fn daily_handler(
         .map(|row| (row.model.clone(), row.total_tokens))
         .collect();
 
-    // The chart's per-(date, model) data still applies the project filter.
+    // The chart's per-(bucket, model) data still applies the project filter.
     let breakdown_rows = daily_usage_breakdown(
         &state.database,
         &resolved.from_date,
         &resolved.to_date,
         &resolved.provider,
         &resolved.projects,
+        resolved.granularity,
     )
     .await?;
 
@@ -257,6 +268,7 @@ pub async fn daily_handler(
         models,
         token_types: TOKEN_TYPES.to_vec(),
         models_without_pricing: models_without_pricing.into_iter().collect(),
+        granularity: resolved.granularity,
     }))
 }
 

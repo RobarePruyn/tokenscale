@@ -25,6 +25,51 @@ use crate::Database;
 /// so SQL and HTTP stay in agreement about it.
 pub const ALL_PROVIDERS: &str = "all";
 
+/// Time bucket granularity for the per-period chart query. The dashboard's
+/// "Granularity" control maps to this; the SQL `GROUP BY` clause swaps
+/// based on the variant.
+///
+/// All three variants produce `YYYY-MM-DD` bucket labels — the start date
+/// of the bucket — so the frontend can render them on a single x-axis
+/// formatter without special-casing each granularity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Granularity {
+    Day,
+    Week,
+    Month,
+}
+
+impl Granularity {
+    /// Parse the value of the `?granularity=` query string. Falls back to
+    /// `Day` for unknown or missing inputs so the API stays forgiving.
+    #[must_use]
+    pub fn parse_or_default(raw: Option<&str>) -> Self {
+        match raw {
+            Some("week") => Self::Week,
+            Some("month") => Self::Month,
+            _ => Self::Day,
+        }
+    }
+
+    /// SQLite expression that produces the bucket label for one event row.
+    /// Used in both `SELECT` (as the alias) and `GROUP BY`.
+    ///
+    /// - Day: `date(occurred_at)` → `2026-04-29`
+    /// - Week: Monday of the week containing `occurred_at` → `2026-04-27`
+    /// - Month: first of the month → `2026-04-01`
+    fn bucket_expression(self) -> &'static str {
+        match self {
+            // SQLite's `weekday 0` modifier yields the next Sunday on or after
+            // the input. Subtracting 6 days produces the Monday at the start
+            // of that ISO-style week.
+            Self::Week => "date(events.occurred_at, 'weekday 0', '-6 days')",
+            Self::Month => "date(events.occurred_at, 'start of month')",
+            Self::Day => "date(events.occurred_at)",
+        }
+    }
+}
+
 // ----------------------------------------------------------------------------
 // daily_usage
 // ----------------------------------------------------------------------------
@@ -99,7 +144,7 @@ pub struct DailyUsageBreakdownRow {
     pub cache_write_1h_tokens: i64,
 }
 
-/// Per-(date, model) sums broken out by token type. Successor to
+/// Per-(bucket, model) sums broken out by token type. Successor to
 /// `daily_usage`, which collapses all token types into a single total —
 /// retained for the simpler historical callers.
 ///
@@ -107,18 +152,26 @@ pub struct DailyUsageBreakdownRow {
 /// allow-list of `project_id` values (Claude Code's `cwd` strings). The
 /// IN-clause is built dynamically with `sqlx::QueryBuilder` so each project
 /// argument is properly parameterized.
+///
+/// `granularity` swaps the bucket size between day, ISO-week (starting
+/// Monday), and calendar month. Bucket labels are always YYYY-MM-DD start
+/// dates so the frontend can format them uniformly.
 pub async fn daily_usage_breakdown(
     database: &Database,
     from_date: &str,
     to_date: &str,
     provider_filter: &str,
     project_filter: &[String],
+    granularity: Granularity,
 ) -> Result<Vec<DailyUsageBreakdownRow>> {
     use sqlx::QueryBuilder;
 
-    let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(
-        "SELECT
-             date(events.occurred_at) AS day,
+    let bucket_expr = granularity.bucket_expression();
+
+    let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new("SELECT ");
+    builder.push(bucket_expr);
+    builder.push(
+        " AS bucket,
              events.model              AS model,
              COALESCE(SUM(events.input_tokens), 0),
              COALESCE(SUM(events.output_tokens), 0),
@@ -149,7 +202,7 @@ pub async fn daily_usage_breakdown(
         separated.push_unseparated(")");
     }
 
-    builder.push(" GROUP BY day, events.model ORDER BY day ASC, events.model ASC");
+    builder.push(" GROUP BY bucket, events.model ORDER BY bucket ASC, events.model ASC");
 
     // The 7-element tuple is the row shape sqlx binds to; defining a struct
     // with `derive(FromRow)` to get the same thing would force sqlx imports
@@ -550,9 +603,16 @@ mod tests {
     #[tokio::test]
     async fn daily_usage_breakdown_returns_per_token_type_sums() {
         let database = fixture_database().await;
-        let rows = daily_usage_breakdown(&database, "2026-04-20", "2026-04-22", ALL_PROVIDERS, &[])
-            .await
-            .unwrap();
+        let rows = daily_usage_breakdown(
+            &database,
+            "2026-04-20",
+            "2026-04-22",
+            ALL_PROVIDERS,
+            &[],
+            Granularity::Day,
+        )
+        .await
+        .unwrap();
         // 5 (date, model) groups same as daily_usage above.
         assert_eq!(rows.len(), 5);
         // Every row's input_tokens equals the total in the fixture (since
@@ -601,10 +661,16 @@ mod tests {
         .unwrap();
 
         // No filter — both projects, total 350.
-        let no_filter =
-            daily_usage_breakdown(&database, "2026-04-20", "2026-04-20", ALL_PROVIDERS, &[])
-                .await
-                .unwrap();
+        let no_filter = daily_usage_breakdown(
+            &database,
+            "2026-04-20",
+            "2026-04-20",
+            ALL_PROVIDERS,
+            &[],
+            Granularity::Day,
+        )
+        .await
+        .unwrap();
         assert_eq!(no_filter.len(), 1);
         assert_eq!(no_filter[0].input_tokens, 350);
 
@@ -615,6 +681,7 @@ mod tests {
             "2026-04-20",
             ALL_PROVIDERS,
             &["/proj/alpha".to_owned()],
+            Granularity::Day,
         )
         .await
         .unwrap();
@@ -628,10 +695,113 @@ mod tests {
             "2026-04-20",
             ALL_PROVIDERS,
             &["/proj/alpha".to_owned(), "/proj/beta".to_owned()],
+            Granularity::Day,
         )
         .await
         .unwrap();
         assert_eq!(both[0].input_tokens, 350);
+    }
+
+    #[tokio::test]
+    async fn daily_usage_breakdown_buckets_by_week() {
+        // Insert events on three consecutive days that all fall in the same
+        // ISO week (Mon-Sun). Weekly granularity should collapse them into
+        // one row whose `date` is the Monday at the start of that week.
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let make_event = |day: &str, request_id: &str, tokens: u64| Event {
+            source: "claude_code".to_owned(),
+            occurred_at: chrono::DateTime::parse_from_rfc3339(&format!("{day}T12:00:00Z"))
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            model: "claude-opus-4-7".to_owned(),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
+            request_id: Some(request_id.to_owned()),
+            content_hash: None,
+            session_id: Some("s".to_owned()),
+            project_id: Some("/p".to_owned()),
+            workspace_id: None,
+            api_key_id: None,
+            raw: None,
+        };
+        // 2026-04-20 is a Monday, 21 = Tue, 22 = Wed — all same ISO week.
+        insert_events(
+            &database,
+            &[
+                make_event("2026-04-20", "r1", 100),
+                make_event("2026-04-21", "r2", 200),
+                make_event("2026-04-22", "r3", 50),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let rows = daily_usage_breakdown(
+            &database,
+            "2026-04-20",
+            "2026-04-26",
+            ALL_PROVIDERS,
+            &[],
+            Granularity::Week,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].date, "2026-04-20"); // Monday of the week
+        assert_eq!(rows[0].input_tokens, 350);
+    }
+
+    #[tokio::test]
+    async fn daily_usage_breakdown_buckets_by_month() {
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let make_event = |day: &str, request_id: &str, tokens: u64| Event {
+            source: "claude_code".to_owned(),
+            occurred_at: chrono::DateTime::parse_from_rfc3339(&format!("{day}T12:00:00Z"))
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            model: "claude-opus-4-7".to_owned(),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
+            request_id: Some(request_id.to_owned()),
+            content_hash: None,
+            session_id: Some("s".to_owned()),
+            project_id: Some("/p".to_owned()),
+            workspace_id: None,
+            api_key_id: None,
+            raw: None,
+        };
+        insert_events(
+            &database,
+            &[
+                make_event("2026-04-01", "r1", 100),
+                make_event("2026-04-15", "r2", 200),
+                make_event("2026-05-01", "r3", 50),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let rows = daily_usage_breakdown(
+            &database,
+            "2026-04-01",
+            "2026-05-31",
+            ALL_PROVIDERS,
+            &[],
+            Granularity::Month,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].date, "2026-04-01");
+        assert_eq!(rows[0].input_tokens, 300);
+        assert_eq!(rows[1].date, "2026-05-01");
+        assert_eq!(rows[1].input_tokens, 50);
     }
 
     #[tokio::test]

@@ -29,8 +29,8 @@ pub use files::{get_file_state, upsert_file_state, FileState};
 pub use queries::{
     daily_usage, daily_usage_breakdown, health_summary, list_models_in_window,
     list_projects_with_totals, recent_sessions, usage_by_model, DailyUsageBreakdownRow,
-    DailyUsageFlatRow, HealthSummary, ModelSummaryRow, ProjectSummaryRow, RecentSessionRow,
-    UsageByModelRow, ALL_PROVIDERS,
+    DailyUsageFlatRow, Granularity, HealthSummary, ModelSummaryRow, ProjectSummaryRow,
+    RecentSessionRow, UsageByModelRow, ALL_PROVIDERS,
 };
 
 #[cfg(test)]

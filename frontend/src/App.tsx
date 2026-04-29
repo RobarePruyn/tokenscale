@@ -22,8 +22,12 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   Area,
   AreaChart,
+  Bar,
+  BarChart,
   CartesianGrid,
   Legend,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -59,11 +63,14 @@ type DailyUsageRow = {
   byModel: Record<string, ModelTokens>
 }
 
+type Granularity = 'day' | 'week' | 'month'
+
 type DailyUsageResponse = {
   rows: DailyUsageRow[]
   models: string[]
   tokenTypes: string[]
   modelsWithoutPricing: string[]
+  granularity: Granularity
 }
 
 type ProjectsResponse = {
@@ -94,6 +101,14 @@ type HealthResponse = {
 type StackBy = 'model' | 'token-type'
 type ViewMode = 'all' | 'billable'
 type RangePreset = '7d' | '30d' | '90d' | '365d' | 'all' | 'custom'
+
+/** "auto" defers to a window-length heuristic; the rest map 1:1 to the
+ *  server's `?granularity=` values.
+ */
+type GranularityChoice = 'auto' | 'day' | 'week' | 'month'
+
+type ChartType = 'area' | 'bar' | 'line'
+type YAxisScale = 'linear' | 'log'
 
 /** A `null` selection means "everything selected" — preserves the all-on
  *  default without forcing us to seed the Set from data we haven't loaded
@@ -160,6 +175,51 @@ function isoDateDaysAgo(daysAgo: number): string {
   const now = new Date()
   now.setUTCDate(now.getUTCDate() - daysAgo)
   return now.toISOString().slice(0, 10)
+}
+
+const MILLIS_PER_DAY = 1000 * 60 * 60 * 24
+
+/** Choose a sensible default granularity for a window of `daysInWindow`
+ *  calendar days. Tuned so the chart never has more than ~60 buckets:
+ *  daily up to 60 days, weekly to a year, monthly beyond that.
+ */
+function autoGranularity(daysInWindow: number): Granularity {
+  if (daysInWindow <= 60) return 'day'
+  if (daysInWindow <= 365) return 'week'
+  return 'month'
+}
+
+function daysBetween(fromDate: string, toDate: string): number {
+  const fromMillis = Date.parse(`${fromDate}T00:00:00Z`)
+  const toMillis = Date.parse(`${toDate}T00:00:00Z`)
+  if (Number.isNaN(fromMillis) || Number.isNaN(toMillis)) return 0
+  return Math.max(0, Math.round((toMillis - fromMillis) / MILLIS_PER_DAY))
+}
+
+const SHORT_MONTH_NAMES = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+]
+
+/** Format a YYYY-MM-DD bucket label for display on the x-axis. The format
+ *  depends on the bucket size: day/week show "Apr 27"; month shows "Apr
+ *  2026" so the year is always visible at month resolution.
+ */
+function formatBucketLabel(bucketIsoDate: string, granularity: Granularity): string {
+  const parts = bucketIsoDate.split('-')
+  if (parts.length !== 3) return bucketIsoDate
+  const year = parts[0]
+  const monthIndex = Number.parseInt(parts[1], 10) - 1
+  const day = Number.parseInt(parts[2], 10)
+  if (Number.isNaN(monthIndex) || Number.isNaN(day)) return bucketIsoDate
+  const monthName = SHORT_MONTH_NAMES[monthIndex] ?? parts[1]
+  switch (granularity) {
+    case 'month':
+      return `${monthName} ${year}`
+    case 'week':
+    case 'day':
+      return `${monthName} ${day}`
+  }
 }
 
 function effectiveDateRange(
@@ -309,6 +369,17 @@ export default function App() {
   const [stackBy, setStackBy] = useState<StackBy>('model')
   const [viewMode, setViewMode] = useState<ViewMode>('all')
 
+  const [granularityChoice, setGranularityChoice] = useState<GranularityChoice>('auto')
+  const [chartType, setChartType] = useState<ChartType>('area')
+  const [yAxisScale, setYAxisScale] = useState<YAxisScale>('linear')
+
+  // Effective bucket size — auto = pick from window length, else honor
+  // the user's explicit choice. Server gets a concrete day/week/month.
+  const effectiveGranularity: Granularity =
+    granularityChoice === 'auto'
+      ? autoGranularity(daysBetween(fromDate, toDate))
+      : granularityChoice
+
   const [healthState, setHealthState] = useState<FetchState<HealthResponse>>({ status: 'idle' })
   const [projectsState, setProjectsState] = useState<FetchState<ProjectsResponse>>({
     status: 'idle',
@@ -357,7 +428,12 @@ export default function App() {
   useEffect(() => {
     const abort = new AbortController()
     setDailyState({ status: 'loading' })
-    const params = new URLSearchParams({ from: fromDate, to: toDate, provider: providerFilter })
+    const params = new URLSearchParams({
+      from: fromDate,
+      to: toDate,
+      provider: providerFilter,
+      granularity: effectiveGranularity,
+    })
     const projectParam = encodeProjectParam(selectedProjects)
     if (projectParam !== null) params.set('project', projectParam)
     fetch(`/api/v1/usage/daily?${params.toString()}`, { signal: abort.signal })
@@ -371,7 +447,7 @@ export default function App() {
         setDailyState({ status: 'error', message: (error as Error).message })
       })
     return () => abort.abort()
-  }, [providerFilter, selectedProjects, fromDate, toDate])
+  }, [providerFilter, selectedProjects, fromDate, toDate, effectiveGranularity])
 
   // ----- Derived chart config ---------------------------------------------
   const chartConfig = useMemo(() => {
@@ -626,7 +702,7 @@ export default function App() {
           </div>
 
           {/* Stack-by + view-mode radios */}
-          <div className="flex flex-wrap items-center gap-6 pt-1 border-t border-slate-100">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3 pt-1 border-t border-slate-100">
             <RadioGroup
               label="Stack by"
               value={stackBy}
@@ -645,6 +721,43 @@ export default function App() {
                 { value: 'billable', label: 'Cost-weighted' },
               ]}
               labelHelp="Raw counts each token equally. Cost-weighted weights each token type by its Anthropic API price relative to input — output ×5, cache_read ×0.1, cache writes ×1.25 (5m) and ×2 (1h). Use it when comparing expensive output against cheap cache reads on the same axis."
+            />
+          </div>
+
+          {/* Chart-display controls — granularity / chart type / scale */}
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+            <RadioGroup
+              label="Granularity"
+              value={granularityChoice}
+              onChange={setGranularityChoice}
+              options={[
+                { value: 'auto', label: `Auto (${effectiveGranularity})` },
+                { value: 'day', label: 'Day' },
+                { value: 'week', label: 'Week' },
+                { value: 'month', label: 'Month' },
+              ]}
+              labelHelp="Auto picks day for windows up to 60 days, week up to a year, month beyond that — chosen so the chart never has more than ~60 buckets."
+            />
+            <RadioGroup
+              label="Chart"
+              value={chartType}
+              onChange={setChartType}
+              options={[
+                { value: 'area', label: 'Area' },
+                { value: 'bar', label: 'Bar' },
+                { value: 'line', label: 'Line' },
+              ]}
+              labelHelp="Area and Bar stack series so the height is the total. Line shows each series independently — useful when you want to compare trends instead of composition."
+            />
+            <RadioGroup
+              label="Scale"
+              value={yAxisScale}
+              onChange={setYAxisScale}
+              options={[
+                { value: 'linear', label: 'Linear' },
+                { value: 'log', label: 'Log' },
+              ]}
+              labelHelp="Log compresses tall series so smaller ones become legible on the same axis. Useful when one model or one token type dominates."
             />
           </div>
 
@@ -695,39 +808,13 @@ export default function App() {
                 chartConfig.rows.length > 0 &&
                 chartConfig.series.length > 0 && (
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart
+                    <ChartByType
+                      chartType={chartType}
                       data={chartConfig.rows}
-                      margin={{ top: 8, right: 16, left: 8, bottom: 0 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                      <YAxis
-                        tick={{ fontSize: 12 }}
-                        tickFormatter={formatCompactNumber}
-                        width={56}
-                      />
-                      <Tooltip
-                        formatter={(rawValue, displayLabel) => [
-                          typeof rawValue === 'number'
-                            ? rawValue.toLocaleString()
-                            : String(rawValue),
-                          displayLabel,
-                        ]}
-                      />
-                      <Legend />
-                      {chartConfig.series.map((series) => (
-                        <Area
-                          key={series.key}
-                          type="monotone"
-                          dataKey={series.key}
-                          name={series.displayName}
-                          stackId="1"
-                          stroke={series.color}
-                          fill={series.color}
-                          fillOpacity={0.6}
-                        />
-                      ))}
-                    </AreaChart>
+                      series={chartConfig.series}
+                      yAxisScale={yAxisScale}
+                      granularity={dailyState.data.granularity}
+                    />
                   </ResponsiveContainer>
                 )}
             </div>
@@ -735,6 +822,114 @@ export default function App() {
         </section>
       </main>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ChartByType — render the appropriate Recharts chart for `chartType`.
+// Area/Bar stack series; Line shows them independently. Shared shell
+// (axes + tooltip + legend) is factored into a single fragment so each
+// chart-type branch is just the outer chart component plus per-series
+// children.
+// ---------------------------------------------------------------------------
+
+type ChartSeries = { key: string; displayName: string; color: string }
+
+type ChartByTypeProps = {
+  chartType: ChartType
+  data: Array<Record<string, string | number>>
+  series: ChartSeries[]
+  yAxisScale: YAxisScale
+  granularity: Granularity
+}
+
+function ChartByType({ chartType, data, series, yAxisScale, granularity }: ChartByTypeProps) {
+  const chartMargin = { top: 8, right: 16, left: 8, bottom: 0 }
+
+  // Recharts log-scale gotcha: domain has to start at a positive number,
+  // and zero values get clamped. `[1, 'auto']` works for token counts —
+  // the floor is one token. `allowDataOverflow` keeps clamped values
+  // visible at the floor instead of disappearing.
+  const yAxisDomain: [number | string, number | string] =
+    yAxisScale === 'log' ? [1, 'auto'] : ['auto', 'auto']
+
+  const sharedShell = (
+    <>
+      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+      <XAxis
+        dataKey="date"
+        tick={{ fontSize: 12 }}
+        tickFormatter={(value: string) => formatBucketLabel(value, granularity)}
+      />
+      <YAxis
+        tick={{ fontSize: 12 }}
+        tickFormatter={formatCompactNumber}
+        width={56}
+        scale={yAxisScale}
+        domain={yAxisDomain}
+        allowDataOverflow={yAxisScale === 'log'}
+      />
+      <Tooltip
+        labelFormatter={(label) =>
+          typeof label === 'string' ? formatBucketLabel(label, granularity) : String(label)
+        }
+        formatter={(rawValue, displayLabel) => [
+          typeof rawValue === 'number' ? rawValue.toLocaleString() : String(rawValue),
+          displayLabel,
+        ]}
+      />
+      <Legend />
+    </>
+  )
+
+  if (chartType === 'area') {
+    return (
+      <AreaChart data={data} margin={chartMargin}>
+        {sharedShell}
+        {series.map((s) => (
+          <Area
+            key={s.key}
+            type="monotone"
+            dataKey={s.key}
+            name={s.displayName}
+            stackId="1"
+            stroke={s.color}
+            fill={s.color}
+            fillOpacity={0.6}
+          />
+        ))}
+      </AreaChart>
+    )
+  }
+
+  if (chartType === 'bar') {
+    return (
+      <BarChart data={data} margin={chartMargin}>
+        {sharedShell}
+        {series.map((s) => (
+          <Bar key={s.key} dataKey={s.key} name={s.displayName} stackId="1" fill={s.color} />
+        ))}
+      </BarChart>
+    )
+  }
+
+  // chartType === 'line' — lines aren't stacked; each series shows its
+  // absolute value over time, which is the natural "compare trends" view.
+  return (
+    <LineChart data={data} margin={chartMargin}>
+      {sharedShell}
+      {series.map((s) => (
+        <Line
+          key={s.key}
+          type="monotone"
+          dataKey={s.key}
+          name={s.displayName}
+          stroke={s.color}
+          strokeWidth={2}
+          dot={false}
+        />
+      ))}
+    </LineChart>
   )
 }
 
