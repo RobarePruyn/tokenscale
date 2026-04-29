@@ -23,6 +23,9 @@ serde.workspace            = true
 serde_json.workspace       = true
 chrono.workspace           = true
 thiserror.workspace        = true
-# rust-embed is wired in once the frontend produces a build artefact at
-# frontend/dist/. Until then, the server serves a placeholder index page so
-# `cargo check` does not require a built frontend.
+anyhow.workspace           = true
+rust-embed.workspace       = true
+mime_guess                 = "2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

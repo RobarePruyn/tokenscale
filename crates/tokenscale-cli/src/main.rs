@@ -17,8 +17,10 @@ mod config;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokenscale_ingest_cc::run_scan;
+use tokenscale_server::{serve, AppState};
 use tokenscale_store::Database;
 use tracing::info;
 
@@ -82,10 +84,7 @@ async fn main() -> Result<()> {
     match arguments.command {
         TopLevelCommand::Init => command_init(&config_path).await,
         TopLevelCommand::Scan => command_scan(&config_path).await,
-        TopLevelCommand::Serve { bind: _ } => {
-            // Lands with the server crate in the next Phase 1 step.
-            anyhow::bail!("`tokenscale serve` is not yet implemented in this build")
-        }
+        TopLevelCommand::Serve { bind } => command_serve(&config_path, bind).await,
         TopLevelCommand::Factors { action } => match action {
             FactorsAction::Update | FactorsAction::Publish => {
                 println!("Phase 3 — not yet implemented");
@@ -139,6 +138,27 @@ async fn command_init(config_path: &std::path::Path) -> Result<()> {
     info!(path = %database_path.display(), "database initialized");
     println!("Database initialized at {}", database_path.display());
     Ok(())
+}
+
+/// Implementation of `tokenscale serve`.
+///
+/// Bind precedence: `--bind` flag > config `[server].bind` > built-in default
+/// `127.0.0.1:8787`. The default is loopback-only because the Phase 1 build
+/// has no auth.
+async fn command_serve(config_path: &std::path::Path, bind_override: Option<String>) -> Result<()> {
+    let config = Config::load_or_default(config_path)?;
+    let database_path = config.effective_database_path()?;
+    let database = Database::open(&database_path)
+        .await
+        .with_context(|| format!("opening database at {}", database_path.display()))?;
+
+    let bind_string = bind_override.unwrap_or_else(|| config.server.bind.clone());
+    let bind_address: SocketAddr = bind_string
+        .parse()
+        .with_context(|| format!("parsing bind address {bind_string:?}"))?;
+
+    info!(address = %bind_address, "starting tokenscale server");
+    serve(AppState::new(database), bind_address).await
 }
 
 /// Implementation of `tokenscale scan`.

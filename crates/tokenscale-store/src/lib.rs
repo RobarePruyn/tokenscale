@@ -20,11 +20,16 @@ mod database;
 mod error;
 mod events;
 mod files;
+mod queries;
 
 pub use database::Database;
 pub use error::{Result, StoreError};
 pub use events::{count_events, insert_events, list_source_kinds, InsertSummary};
 pub use files::{get_file_state, upsert_file_state, FileState};
+pub use queries::{
+    daily_usage, health_summary, recent_sessions, usage_by_model, DailyUsageFlatRow, HealthSummary,
+    RecentSessionRow, UsageByModelRow, ALL_PROVIDERS,
+};
 
 #[cfg(test)]
 mod tests {
