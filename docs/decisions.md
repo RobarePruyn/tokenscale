@@ -6,6 +6,18 @@ The goal here is simple: anyone (the maintainer, a future contributor, a future 
 
 ---
 
+## 2026-04-29 — TOML `= null` rewritten to comments at load time
+
+**Decision.** The factor-file loader pre-processes `key = null` lines into comments before handing the TOML to `serde`. Maintainers continue to use the kickoff-prompt convention of `wh_per_mtok_input = null` to mark "explicitly unknown"; missing keys then surface as `Option::None` through `#[serde(default)]`.
+
+**Why.** TOML 1.0 doesn't have a `null` literal. The pre-staged `environmental-factors.toml` uses `= null` extensively to flag values pending Cowork's deliverable 3 — that file is authoritative on shape (per the kickoff prompt), and the convention is more readable than omitting keys entirely. The pre-processor converts on load so the maintainer-facing format stays clean without forcing a change to the TOML spec.
+
+**How to apply.** Anyone editing `environmental-factors.toml` (or future factor-flavored TOMLs that adopt the same convention) can use `key = null` interchangeably with omitting the key. The loader treats both as "value not provided." The pre-processor only fires on lines whose right-hand side is exactly `null` (with optional trailing comment); it never alters content inside string literals.
+
+**Trade-off.** The convention isn't documented anywhere outside this entry and `factors.rs`'s doc comment on `rewrite_null_assignments`. A future maintainer who tries the same in a hand-rolled TOML parser will get a syntax error. Acceptable for Phase 1; if other tools start consuming the file, switch the convention to comments-only and drop the rewriter.
+
+---
+
 ## 2026-04-28 — License: Apache-2.0
 
 **Decision.** `tokenscale` ships under the Apache License, Version 2.0.

@@ -33,6 +33,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub auth: AuthConfig,
     pub pricing: PricingConfig,
+    pub factors: FactorsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +104,16 @@ pub struct PricingConfig {
     /// copy is used — the seed values shipped with this build of
     /// `tokenscale`. Set this to a local file when you want to ship custom
     /// or freshly-verified prices without rebuilding the binary.
+    pub file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FactorsConfig {
+    /// Override path for `environmental-factors.toml`. If unset, the
+    /// binary's embedded copy is used. Power users running the dashboard
+    /// against a locally-edited factor file (the "local research mode"
+    /// from the CHARTER) point this at their working copy.
     pub file: Option<PathBuf>,
 }
 

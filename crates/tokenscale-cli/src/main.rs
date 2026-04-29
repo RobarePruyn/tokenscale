@@ -20,10 +20,10 @@ use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokenscale_core::PricingFile;
+use tokenscale_core::{EnvironmentalFactorsFile, PricingFile};
 use tokenscale_ingest_cc::run_scan;
 use tokenscale_server::{serve, AppState};
-use tokenscale_store::Database;
+use tokenscale_store::{sync_environmental_factors, Database};
 use tracing::{info, warn};
 
 use crate::config::{resolve_config_path, Config};
@@ -165,13 +165,37 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
     }
     let pricing = Arc::new(pricing);
 
+    let factors = load_factors(&config)?;
+    info!(
+        schema_version = factors.schema_version,
+        file_status = %factors.file_status,
+        models = factors.model_count(),
+        regions = factors.region_count(),
+        "loaded environmental-factors.toml"
+    );
+    if factors.is_placeholder() {
+        warn!(
+            "environmental-factors.toml is a placeholder — every numeric value is null. The \
+             environmental-impact view ships in Phase 2 and will light up once Cowork research's \
+             deliverable 3 lands real values."
+        );
+    }
+    let sync_summary = sync_environmental_factors(&database, &factors)
+        .await
+        .context("syncing environmental factors into the database")?;
+    info!(
+        ?sync_summary,
+        "synced environmental factors into the database"
+    );
+    let factors = Arc::new(factors);
+
     let bind_string = bind_override.unwrap_or_else(|| config.server.bind.clone());
     let bind_address: SocketAddr = bind_string
         .parse()
         .with_context(|| format!("parsing bind address {bind_string:?}"))?;
 
     info!(address = %bind_address, "starting tokenscale server");
-    serve(AppState::new(database, pricing), bind_address).await
+    serve(AppState::new(database, pricing, factors), bind_address).await
 }
 
 /// Resolve and load the pricing file. Precedence: `[pricing].file` in the
@@ -184,6 +208,24 @@ fn load_pricing(config: &Config) -> Result<PricingFile> {
     }
     info!("loading embedded pricing.toml shipped with this build");
     PricingFile::embedded_default().context("parsing embedded pricing.toml")
+}
+
+/// Resolve and load the environmental factor file. Same precedence rules
+/// as `load_pricing`. The "local research mode" power-user workflow from
+/// the CHARTER points `[factors].file` at a working copy.
+fn load_factors(config: &Config) -> Result<EnvironmentalFactorsFile> {
+    if let Some(override_path) = config.factors.file.as_ref() {
+        info!(path = %override_path.display(), "loading environmental factors from configured override");
+        return EnvironmentalFactorsFile::load_from_path(override_path).with_context(|| {
+            format!(
+                "loading environmental factors from {}",
+                override_path.display()
+            )
+        });
+    }
+    info!("loading embedded environmental-factors.toml shipped with this build");
+    EnvironmentalFactorsFile::embedded_default()
+        .context("parsing embedded environmental-factors.toml")
 }
 
 /// Implementation of `tokenscale scan`.

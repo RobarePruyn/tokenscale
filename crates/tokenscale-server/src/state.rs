@@ -6,7 +6,7 @@
 //! one-place change.
 
 use std::sync::Arc;
-use tokenscale_core::PricingFile;
+use tokenscale_core::{EnvironmentalFactorsFile, PricingFile};
 use tokenscale_store::Database;
 
 #[derive(Clone)]
@@ -17,11 +17,24 @@ pub struct AppState {
     /// hot-swapped later (Phase 3 reload-on-SIGHUP) without breaking
     /// in-flight handlers.
     pub pricing: Arc<PricingFile>,
+    /// Environmental-factor snapshot loaded from `environmental-factors.toml`
+    /// at startup. Phase 1 only exposes the snapshot's status via
+    /// `/api/v1/health`; the per-event impact computation that consumes the
+    /// values is Phase 2.
+    pub factors: Arc<EnvironmentalFactorsFile>,
 }
 
 impl AppState {
     #[must_use]
-    pub fn new(database: Database, pricing: Arc<PricingFile>) -> Self {
-        Self { database, pricing }
+    pub fn new(
+        database: Database,
+        pricing: Arc<PricingFile>,
+        factors: Arc<EnvironmentalFactorsFile>,
+    ) -> Self {
+        Self {
+            database,
+            pricing,
+            factors,
+        }
     }
 }

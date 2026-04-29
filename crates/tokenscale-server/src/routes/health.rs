@@ -17,6 +17,7 @@ pub struct HealthResponse {
     pub total_events: i64,
     pub providers: Vec<String>,
     pub pricing: PricingStatus,
+    pub environmental: EnvironmentalStatus,
 }
 
 #[derive(Serialize)]
@@ -34,10 +35,30 @@ pub struct PricingStatus {
     pub accessed_at: Option<String>,
 }
 
+#[derive(Serialize)]
+pub struct EnvironmentalStatus {
+    pub schema_version: i64,
+    pub file_status: String,
+    /// Number of (provider, model) factor entries currently loaded.
+    pub model_count: usize,
+    /// Number of grid (region) factor entries currently loaded.
+    pub region_count: usize,
+    /// `true` when the file is the Phase 1 placeholder (every numeric
+    /// value `null`). The Phase 2 environmental view will key off this
+    /// to render "factor data unavailable" until Cowork's deliverable 3
+    /// merges real values.
+    pub is_placeholder: bool,
+    /// `true` if `file_status != "production"`.
+    pub needs_review: bool,
+    /// Most recent `source_accessed_at` across loaded grid factors.
+    pub accessed_at: Option<String>,
+}
+
 pub async fn handler(State(state): State<AppState>) -> Result<Json<HealthResponse>, ApiError> {
     let summary = health_summary(&state.database).await?;
     let pricing = &state.pricing;
-    let model_count = pricing
+    let factors = &state.factors;
+    let pricing_model_count = pricing
         .providers
         .values()
         .map(|provider| provider.models.len())
@@ -50,9 +71,18 @@ pub async fn handler(State(state): State<AppState>) -> Result<Json<HealthRespons
         pricing: PricingStatus {
             schema_version: pricing.schema_version,
             file_status: pricing.file_status.clone(),
-            model_count,
+            model_count: pricing_model_count,
             needs_review: pricing.is_review_pending(),
             accessed_at: pricing.most_recent_accessed_at().map(str::to_owned),
+        },
+        environmental: EnvironmentalStatus {
+            schema_version: factors.schema_version,
+            file_status: factors.file_status.clone(),
+            model_count: factors.model_count(),
+            region_count: factors.region_count(),
+            is_placeholder: factors.is_placeholder(),
+            needs_review: factors.is_review_pending(),
+            accessed_at: factors.most_recent_grid_accessed_at().map(str::to_owned),
         },
     }))
 }

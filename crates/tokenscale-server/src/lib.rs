@@ -77,7 +77,7 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use serde_json::Value;
     use std::sync::Arc;
-    use tokenscale_core::PricingFile;
+    use tokenscale_core::{EnvironmentalFactorsFile, PricingFile};
     use tokenscale_store::Database;
     use tower::util::ServiceExt;
 
@@ -107,9 +107,28 @@ source_accessed_at = "2026-04-28"
         Arc::new(PricingFile::parse(TEST_PRICING_TOML).unwrap())
     }
 
+    /// Minimal factors fixture — placeholder shape, all-null values.
+    /// Sufficient for tests that just need the AppState wired.
+    const TEST_FACTORS_TOML: &str = r#"
+schema_version = 1
+file_status = "placeholder"
+[providers.anthropic]
+display_name = "Anthropic"
+[providers.anthropic.models."claude-opus-4-7"]
+display_name = "Claude Opus 4.7"
+[grid_factors."us-east-1"]
+display_name = "AWS US East"
+[defaults]
+fallback_pue = 1.15
+"#;
+
+    fn test_factors() -> Arc<EnvironmentalFactorsFile> {
+        Arc::new(EnvironmentalFactorsFile::parse(TEST_FACTORS_TOML).unwrap())
+    }
+
     async fn build_test_app() -> axum::Router {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        build_router(AppState::new(database, test_pricing()))
+        build_router(AppState::new(database, test_pricing(), test_factors()))
     }
 
     #[tokio::test]
@@ -135,6 +154,13 @@ source_accessed_at = "2026-04-28"
         assert_eq!(body["pricing"]["file_status"], "production");
         assert_eq!(body["pricing"]["model_count"], 1);
         assert_eq!(body["pricing"]["needs_review"], false);
+        // Environmental block from the placeholder test factors fixture.
+        assert_eq!(body["environmental"]["schema_version"], 1);
+        assert_eq!(body["environmental"]["file_status"], "placeholder");
+        assert_eq!(body["environmental"]["model_count"], 1);
+        assert_eq!(body["environmental"]["region_count"], 1);
+        assert_eq!(body["environmental"]["is_placeholder"], true);
+        assert_eq!(body["environmental"]["needs_review"], true);
     }
 
     #[tokio::test]
@@ -211,7 +237,7 @@ source_accessed_at = "2026-04-28"
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -285,7 +311,7 @@ source_accessed_at = "2026-04-28"
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -308,7 +334,7 @@ source_accessed_at = "2026-04-28"
     #[tokio::test]
     async fn subscriptions_create_list_delete_roundtrip() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        let app = build_router(AppState::new(database, test_pricing()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
 
         // Empty list initially.
         let response = app
@@ -397,7 +423,7 @@ source_accessed_at = "2026-04-28"
     #[tokio::test]
     async fn subscriptions_update_replaces_fields() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        let app = build_router(AppState::new(database, test_pricing()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
 
         // Create.
         let response = app
@@ -473,7 +499,7 @@ source_accessed_at = "2026-04-28"
     #[tokio::test]
     async fn subscriptions_create_rejects_bad_inputs() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        let app = build_router(AppState::new(database, test_pricing()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
 
         let bad_cases = [
             // Empty plan name
@@ -544,7 +570,7 @@ source_accessed_at = "2026-04-28"
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -598,7 +624,7 @@ source_accessed_at = "2026-04-28"
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
 
         // Filter to alpha only.
         let response = app
@@ -667,7 +693,7 @@ source_accessed_at = "2026-04-28"
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
         let response = app
             .oneshot(
                 Request::builder()
