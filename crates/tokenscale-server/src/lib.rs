@@ -45,6 +45,7 @@ pub fn build_router(state: AppState) -> axum::Router {
             "/api/v1/sessions/recent",
             get(routes::sessions::recent_handler),
         )
+        .route("/api/v1/projects", get(routes::projects::list_handler))
         .fallback(embed::static_handler)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -238,6 +239,129 @@ source_accessed_at = "2026-04-28"
         assert_eq!(opus["cache_write_1h"], 0);
         // Billable total = 1000*1.0 + 100*5.0 = 1500
         assert_eq!(opus["billable_total"], 1_500);
+    }
+
+    #[tokio::test]
+    async fn projects_endpoint_returns_distinct_projects_with_totals() {
+        use chrono::{TimeZone, Utc};
+        use tokenscale_core::Event;
+        use tokenscale_store::insert_events;
+
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let make_event = |project: &str, request_id: &str, tokens: u64| Event {
+            source: "claude_code".to_owned(),
+            occurred_at: Utc.with_ymd_and_hms(2026, 4, 21, 12, 0, 0).unwrap(),
+            model: "claude-opus-4-7".to_owned(),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
+            request_id: Some(request_id.to_owned()),
+            content_hash: None,
+            session_id: Some("s".to_owned()),
+            project_id: Some(project.to_owned()),
+            workspace_id: None,
+            api_key_id: None,
+            raw: None,
+        };
+        insert_events(
+            &database,
+            &[
+                make_event("/proj/big", "r1", 1_000),
+                make_event("/proj/small", "r2", 10),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let app = build_router(AppState::new(database, test_pricing()));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/projects?from=2026-04-21&to=2026-04-21")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+
+        // Sorted by total tokens desc.
+        assert_eq!(body["projects"][0]["project_id"], "/proj/big");
+        assert_eq!(body["projects"][0]["total_tokens"], 1_000);
+        assert_eq!(body["projects"][1]["project_id"], "/proj/small");
+    }
+
+    #[tokio::test]
+    async fn daily_usage_filters_by_project_query_param() {
+        use chrono::{TimeZone, Utc};
+        use tokenscale_core::Event;
+        use tokenscale_store::insert_events;
+
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let make_event = |project: &str, request_id: &str, tokens: u64| Event {
+            source: "claude_code".to_owned(),
+            occurred_at: Utc.with_ymd_and_hms(2026, 4, 21, 12, 0, 0).unwrap(),
+            model: "claude-opus-4-7".to_owned(),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
+            request_id: Some(request_id.to_owned()),
+            content_hash: None,
+            session_id: Some("s".to_owned()),
+            project_id: Some(project.to_owned()),
+            workspace_id: None,
+            api_key_id: None,
+            raw: None,
+        };
+        insert_events(
+            &database,
+            &[
+                make_event("/proj/alpha", "r1", 100),
+                make_event("/proj/beta", "r2", 200),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let app = build_router(AppState::new(database, test_pricing()));
+
+        // Filter to alpha only.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/usage/daily?from=2026-04-21&to=2026-04-21&project=/proj/alpha")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let opus = &body["rows"][0]["byModel"]["claude-opus-4-7"];
+        assert_eq!(opus["input"], 100);
+
+        // Filter to both via comma-separated list.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/usage/daily?from=2026-04-21&to=2026-04-21&project=/proj/alpha,/proj/beta")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let opus = &body["rows"][0]["byModel"]["claude-opus-4-7"];
+        assert_eq!(opus["input"], 300);
     }
 
     #[tokio::test]

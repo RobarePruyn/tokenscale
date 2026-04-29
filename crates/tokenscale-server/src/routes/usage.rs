@@ -5,8 +5,10 @@ use axum::Json;
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tokenscale_core::BillableMultipliers;
-use tokenscale_store::{daily_usage_breakdown, usage_by_model, ALL_PROVIDERS};
+use tokenscale_core::{BillableMultipliers, ModelPricing};
+use tokenscale_store::{
+    daily_usage_breakdown, usage_by_model, DailyUsageBreakdownRow, ALL_PROVIDERS,
+};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -31,10 +33,15 @@ pub struct UsageWindowParams {
     pub to: Option<String>,
     /// `all` (default) or a specific provider slug like `anthropic`.
     pub provider: Option<String>,
+    /// Comma-separated `project_id` allow-list, or `all` (default) for no
+    /// filter. axum's `Query` extractor doesn't deserialize repeated params
+    /// into `Vec<String>`, so we use the comma-delimited convention here —
+    /// project paths effectively never contain commas in practice.
+    pub project: Option<String>,
 }
 
 impl UsageWindowParams {
-    fn resolve(self) -> Result<(String, String, String), ApiError> {
+    fn resolve(self) -> Result<ResolvedParams, ApiError> {
         let to_date = self
             .to
             .unwrap_or_else(|| Utc::now().date_naive().to_string());
@@ -44,8 +51,30 @@ impl UsageWindowParams {
         validate_iso_date(&from_date)?;
         validate_iso_date(&to_date)?;
         let provider = self.provider.unwrap_or_else(|| ALL_PROVIDERS.to_owned());
-        Ok((from_date, to_date, provider))
+
+        let projects: Vec<String> = match self.project.as_deref() {
+            None | Some("" | "all") => Vec::new(),
+            Some(comma_separated) => comma_separated
+                .split(',')
+                .filter(|segment| !segment.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        };
+
+        Ok(ResolvedParams {
+            from_date,
+            to_date,
+            provider,
+            projects,
+        })
     }
+}
+
+struct ResolvedParams {
+    from_date: String,
+    to_date: String,
+    provider: String,
+    projects: Vec<String>,
 }
 
 fn validate_iso_date(value: &str) -> Result<(), ApiError> {
@@ -59,10 +88,10 @@ fn validate_iso_date(value: &str) -> Result<(), ApiError> {
 // billable-equivalent total folded in when pricing is available.
 // ----------------------------------------------------------------------------
 
-/// One model's per-day token totals, broken out by token type. The optional
-/// `billable_total` is the sum weighted by API price multipliers — present
-/// when `pricing.toml` carries an entry for `(provider, model)`, absent when
-/// the model is unknown to the pricing file.
+/// One model's per-day token totals, broken out by token type. When
+/// `pricing.toml` has an entry for `(provider, model)`, a parallel
+/// `billable` breakdown lets the dashboard render "stack by token type +
+/// view billable" without needing to know multipliers itself.
 #[derive(Serialize)]
 pub struct ModelTokens {
     pub input: i64,
@@ -70,10 +99,25 @@ pub struct ModelTokens {
     pub cache_read: i64,
     pub cache_write_5m: i64,
     pub cache_write_1h: i64,
-    /// Input-token-equivalent total, ready to plot on the same axis as
-    /// raw counts. `null` when pricing is unavailable for the model.
+    /// Per-token-type billable equivalents, in input-token-equivalent units.
+    /// Absent when no pricing entry exists for this model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub billable: Option<BillableBreakdown>,
+    /// Sum of `billable.*` — convenient for the "stack by model + view
+    /// billable" view to skip a client-side reduce on every render.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub billable_total: Option<i64>,
+}
+
+/// Same five token-type fields as `ModelTokens`, but each pre-multiplied
+/// by the model's billable weight. Sum to get `billable_total`.
+#[derive(Serialize)]
+pub struct BillableBreakdown {
+    pub input: i64,
+    pub output: i64,
+    pub cache_read: i64,
+    pub cache_write_5m: i64,
+    pub cache_write_1h: i64,
 }
 
 /// One row per UTC date with a `byModel` dict so the frontend's stacked
@@ -105,9 +149,15 @@ pub async fn daily_handler(
     State(state): State<AppState>,
     Query(params): Query<UsageWindowParams>,
 ) -> Result<Json<DailyUsageResponse>, ApiError> {
-    let (from_date, to_date, provider_filter) = params.resolve()?;
-    let breakdown_rows =
-        daily_usage_breakdown(&state.database, &from_date, &to_date, &provider_filter).await?;
+    let resolved = params.resolve()?;
+    let breakdown_rows = daily_usage_breakdown(
+        &state.database,
+        &resolved.from_date,
+        &resolved.to_date,
+        &resolved.provider,
+        &resolved.projects,
+    )
+    .await?;
 
     // First pass: window-level totals per model, used to (a) sort models for
     // the response and (b) drop any model whose entire window is zero —
@@ -133,40 +183,33 @@ pub async fn daily_handler(
     // sources.provider being filtered to anthropic when applicable. We hand
     // that to the pricing lookup. v2 will need to carry the actual provider
     // through breakdown rows.
-    let provider_for_pricing = if provider_filter == ALL_PROVIDERS {
+    let provider_for_pricing = if resolved.provider == ALL_PROVIDERS {
         "anthropic"
     } else {
-        provider_filter.as_str()
+        resolved.provider.as_str()
     };
 
     let mut models_without_pricing: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
 
     // Second pass: group filtered rows into the nested by-date shape, with
-    // billable_total computed inline.
+    // billable breakdown + total computed inline.
     let mut grouped_by_date: BTreeMap<String, BTreeMap<String, ModelTokens>> = BTreeMap::new();
     for row in breakdown_rows {
         if !visible_models.contains(&row.model) {
             continue;
         }
 
-        let billable_total =
-            state
-                .pricing
-                .lookup(provider_for_pricing, &row.model)
-                .map(|model_pricing| {
-                    let multipliers = BillableMultipliers::from_pricing(model_pricing);
-                    multipliers.weight_total(
-                        row.input_tokens.max(0) as u64,
-                        row.output_tokens.max(0) as u64,
-                        row.cache_read_tokens.max(0) as u64,
-                        row.cache_write_5m_tokens.max(0) as u64,
-                        row.cache_write_1h_tokens.max(0) as u64,
-                    ) as i64
-                });
-        if billable_total.is_none() {
+        let billable_pair = state
+            .pricing
+            .lookup(provider_for_pricing, &row.model)
+            .map(|model_pricing| compute_billable_breakdown(model_pricing, &row));
+        let (billable, billable_total) = if let Some((breakdown, total)) = billable_pair {
+            (Some(breakdown), Some(total))
+        } else {
             models_without_pricing.insert(row.model.clone());
-        }
+            (None, None)
+        };
 
         grouped_by_date.entry(row.date).or_default().insert(
             row.model,
@@ -176,6 +219,7 @@ pub async fn daily_handler(
                 cache_read: row.cache_read_tokens,
                 cache_write_5m: row.cache_write_5m_tokens,
                 cache_write_1h: row.cache_write_1h_tokens,
+                billable,
                 billable_total,
             },
         );
@@ -202,6 +246,46 @@ pub async fn daily_handler(
     }))
 }
 
+/// Compute the per-token-type billable equivalents for one (date, model)
+/// breakdown row. Returns the per-type breakdown alongside the sum.
+///
+/// Intentional `as i64` casts: `BillableMultipliers::weight_total` returns
+/// `f64` for lossless internal math; we truncate at the API boundary because
+/// the dashboard doesn't render fractional tokens. The values are far below
+/// `f64`'s 2^53 mantissa limit even on years-of-data instances, so the
+/// `i64 → f64` casts on the input side are also intentional. The local
+/// `cache_write_5m` / `cache_write_1h` bindings mirror the Anthropic API's
+/// own naming for the two prompt-cache classes.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::similar_names
+)]
+fn compute_billable_breakdown(
+    model_pricing: &ModelPricing,
+    row: &DailyUsageBreakdownRow,
+) -> (BillableBreakdown, i64) {
+    let multipliers = BillableMultipliers::from_pricing(model_pricing);
+    let input = (row.input_tokens.max(0) as f64 * multipliers.input) as i64;
+    let output = (row.output_tokens.max(0) as f64 * multipliers.output) as i64;
+    let cache_read = (row.cache_read_tokens.max(0) as f64 * multipliers.cache_read) as i64;
+    let cache_write_5m =
+        (row.cache_write_5m_tokens.max(0) as f64 * multipliers.cache_write_5m) as i64;
+    let cache_write_1h =
+        (row.cache_write_1h_tokens.max(0) as f64 * multipliers.cache_write_1h) as i64;
+    let total = input + output + cache_read + cache_write_5m + cache_write_1h;
+    (
+        BillableBreakdown {
+            input,
+            output,
+            cache_read,
+            cache_write_5m,
+            cache_write_1h,
+        },
+        total,
+    )
+}
+
 // ----------------------------------------------------------------------------
 // by-model — totals across the window (unchanged by Iteration A)
 // ----------------------------------------------------------------------------
@@ -226,8 +310,14 @@ pub async fn by_model_handler(
     State(state): State<AppState>,
     Query(params): Query<UsageWindowParams>,
 ) -> Result<Json<ByModelResponse>, ApiError> {
-    let (from_date, to_date, provider) = params.resolve()?;
-    let rows = usage_by_model(&state.database, &from_date, &to_date, &provider).await?;
+    let resolved = params.resolve()?;
+    let rows = usage_by_model(
+        &state.database,
+        &resolved.from_date,
+        &resolved.to_date,
+        &resolved.provider,
+    )
+    .await?;
     let rows = rows
         .into_iter()
         .map(|row| ByModelRow {

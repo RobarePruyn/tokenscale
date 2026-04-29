@@ -27,9 +27,9 @@ pub use error::{Result, StoreError};
 pub use events::{count_events, insert_events, list_source_kinds, InsertSummary};
 pub use files::{get_file_state, upsert_file_state, FileState};
 pub use queries::{
-    daily_usage, daily_usage_breakdown, health_summary, recent_sessions, usage_by_model,
-    DailyUsageBreakdownRow, DailyUsageFlatRow, HealthSummary, RecentSessionRow, UsageByModelRow,
-    ALL_PROVIDERS,
+    daily_usage, daily_usage_breakdown, health_summary, list_projects_with_totals, recent_sessions,
+    usage_by_model, DailyUsageBreakdownRow, DailyUsageFlatRow, HealthSummary, ProjectSummaryRow,
+    RecentSessionRow, UsageByModelRow, ALL_PROVIDERS,
 };
 
 #[cfg(test)]

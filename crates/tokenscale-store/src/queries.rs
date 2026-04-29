@@ -102,17 +102,21 @@ pub struct DailyUsageBreakdownRow {
 /// Per-(date, model) sums broken out by token type. Successor to
 /// `daily_usage`, which collapses all token types into a single total —
 /// retained for the simpler historical callers.
+///
+/// `project_filter` is empty for "all projects", non-empty for a specific
+/// allow-list of `project_id` values (Claude Code's `cwd` strings). The
+/// IN-clause is built dynamically with `sqlx::QueryBuilder` so each project
+/// argument is properly parameterized.
 pub async fn daily_usage_breakdown(
     database: &Database,
     from_date: &str,
     to_date: &str,
     provider_filter: &str,
+    project_filter: &[String],
 ) -> Result<Vec<DailyUsageBreakdownRow>> {
-    // The 7-element tuple is the row shape sqlx::query_as binds to; defining
-    // a struct with `derive(FromRow)` to get the same thing would require
-    // moving sqlx imports into the public API. Local allow.
-    #[allow(clippy::type_complexity)]
-    let rows: Vec<(String, String, i64, i64, i64, i64, i64)> = sqlx::query_as(
+    use sqlx::QueryBuilder;
+
+    let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(
         "SELECT
              date(events.occurred_at) AS day,
              events.model              AS model,
@@ -123,18 +127,36 @@ pub async fn daily_usage_breakdown(
              COALESCE(SUM(events.cache_write_1h_tokens), 0)
            FROM events
            JOIN sources ON sources.kind = events.source
-          WHERE date(events.occurred_at) BETWEEN ? AND ?
-            AND (? = ? OR sources.provider = ?)
-          GROUP BY day, events.model
-          ORDER BY day ASC, events.model ASC",
-    )
-    .bind(from_date)
-    .bind(to_date)
-    .bind(provider_filter)
-    .bind(ALL_PROVIDERS)
-    .bind(provider_filter)
-    .fetch_all(database.pool())
-    .await?;
+          WHERE date(events.occurred_at) BETWEEN ",
+    );
+    builder.push_bind(from_date.to_owned());
+    builder.push(" AND ");
+    builder.push_bind(to_date.to_owned());
+    builder.push(" AND (");
+    builder.push_bind(provider_filter.to_owned());
+    builder.push(" = ");
+    builder.push_bind(ALL_PROVIDERS.to_owned());
+    builder.push(" OR sources.provider = ");
+    builder.push_bind(provider_filter.to_owned());
+    builder.push(")");
+
+    if !project_filter.is_empty() {
+        builder.push(" AND events.project_id IN (");
+        let mut separated = builder.separated(", ");
+        for project in project_filter {
+            separated.push_bind(project.clone());
+        }
+        separated.push_unseparated(")");
+    }
+
+    builder.push(" GROUP BY day, events.model ORDER BY day ASC, events.model ASC");
+
+    // The 7-element tuple is the row shape sqlx binds to; defining a struct
+    // with `derive(FromRow)` to get the same thing would force sqlx imports
+    // into the public API. Local allow.
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(String, String, i64, i64, i64, i64, i64)> =
+        builder.build_query_as().fetch_all(database.pool()).await?;
 
     Ok(rows
         .into_iter()
@@ -157,6 +179,63 @@ pub async fn daily_usage_breakdown(
                 cache_write_1h_tokens,
             },
         )
+        .collect())
+}
+
+// ----------------------------------------------------------------------------
+// list_projects_with_totals — projects present in the window
+// ----------------------------------------------------------------------------
+
+/// One distinct `project_id` (Claude Code `cwd` path) with its window-level
+/// rollup, ordered by total tokens descending so the dashboard can render
+/// the busiest projects first.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectSummaryRow {
+    pub project_id: String,
+    pub event_count: i64,
+    pub total_tokens: i64,
+}
+
+pub async fn list_projects_with_totals(
+    database: &Database,
+    from_date: &str,
+    to_date: &str,
+    provider_filter: &str,
+) -> Result<Vec<ProjectSummaryRow>> {
+    let rows: Vec<(Option<String>, i64, i64)> = sqlx::query_as(
+        "SELECT
+             events.project_id,
+             COUNT(*) AS event_count,
+             COALESCE(SUM(events.input_tokens
+                + events.output_tokens
+                + events.cache_read_tokens
+                + events.cache_write_5m_tokens
+                + events.cache_write_1h_tokens), 0) AS total_tokens
+           FROM events
+           JOIN sources ON sources.kind = events.source
+          WHERE date(events.occurred_at) BETWEEN ? AND ?
+            AND (? = ? OR sources.provider = ?)
+            AND events.project_id IS NOT NULL
+          GROUP BY events.project_id
+          ORDER BY total_tokens DESC",
+    )
+    .bind(from_date)
+    .bind(to_date)
+    .bind(provider_filter)
+    .bind(ALL_PROVIDERS)
+    .bind(provider_filter)
+    .fetch_all(database.pool())
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|(project_id, event_count, total_tokens)| {
+            project_id.map(|project_id| ProjectSummaryRow {
+                project_id,
+                event_count,
+                total_tokens,
+            })
+        })
         .collect())
 }
 
@@ -411,7 +490,7 @@ mod tests {
     #[tokio::test]
     async fn daily_usage_breakdown_returns_per_token_type_sums() {
         let database = fixture_database().await;
-        let rows = daily_usage_breakdown(&database, "2026-04-20", "2026-04-22", ALL_PROVIDERS)
+        let rows = daily_usage_breakdown(&database, "2026-04-20", "2026-04-22", ALL_PROVIDERS, &[])
             .await
             .unwrap();
         // 5 (date, model) groups same as daily_usage above.
@@ -425,6 +504,117 @@ mod tests {
         assert_eq!(opus_apr20.input_tokens, 150);
         assert_eq!(opus_apr20.output_tokens, 0);
         assert_eq!(opus_apr20.cache_read_tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn daily_usage_breakdown_filters_by_project() {
+        // Build a fixture with two projects, then filter to one.
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let make_event = |project: &str, request_id: &str, tokens: u64| Event {
+            source: "claude_code".to_owned(),
+            occurred_at: chrono::DateTime::parse_from_rfc3339("2026-04-20T01:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            model: "claude-opus-4-7".to_owned(),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
+            request_id: Some(request_id.to_owned()),
+            content_hash: None,
+            session_id: Some("s".to_owned()),
+            project_id: Some(project.to_owned()),
+            workspace_id: None,
+            api_key_id: None,
+            raw: None,
+        };
+        insert_events(
+            &database,
+            &[
+                make_event("/proj/alpha", "r1", 100),
+                make_event("/proj/beta", "r2", 200),
+                make_event("/proj/alpha", "r3", 50),
+            ],
+        )
+        .await
+        .unwrap();
+
+        // No filter — both projects, total 350.
+        let no_filter =
+            daily_usage_breakdown(&database, "2026-04-20", "2026-04-20", ALL_PROVIDERS, &[])
+                .await
+                .unwrap();
+        assert_eq!(no_filter.len(), 1);
+        assert_eq!(no_filter[0].input_tokens, 350);
+
+        // Filter to alpha only — total 150.
+        let alpha_only = daily_usage_breakdown(
+            &database,
+            "2026-04-20",
+            "2026-04-20",
+            ALL_PROVIDERS,
+            &["/proj/alpha".to_owned()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(alpha_only.len(), 1);
+        assert_eq!(alpha_only[0].input_tokens, 150);
+
+        // Filter to both explicitly — same as no filter.
+        let both = daily_usage_breakdown(
+            &database,
+            "2026-04-20",
+            "2026-04-20",
+            ALL_PROVIDERS,
+            &["/proj/alpha".to_owned(), "/proj/beta".to_owned()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(both[0].input_tokens, 350);
+    }
+
+    #[tokio::test]
+    async fn list_projects_with_totals_orders_by_largest_first() {
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let make_event = |project: &str, request_id: &str, tokens: u64| Event {
+            source: "claude_code".to_owned(),
+            occurred_at: chrono::DateTime::parse_from_rfc3339("2026-04-20T01:00:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+            model: "claude-opus-4-7".to_owned(),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
+            request_id: Some(request_id.to_owned()),
+            content_hash: None,
+            session_id: Some("s".to_owned()),
+            project_id: Some(project.to_owned()),
+            workspace_id: None,
+            api_key_id: None,
+            raw: None,
+        };
+        insert_events(
+            &database,
+            &[
+                make_event("/proj/small", "r1", 10),
+                make_event("/proj/big", "r2", 1000),
+                make_event("/proj/medium", "r3", 100),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let projects =
+            list_projects_with_totals(&database, "2026-04-20", "2026-04-20", ALL_PROVIDERS)
+                .await
+                .unwrap();
+        assert_eq!(projects.len(), 3);
+        assert_eq!(projects[0].project_id, "/proj/big");
+        assert_eq!(projects[0].total_tokens, 1000);
+        assert_eq!(projects[2].project_id, "/proj/small");
     }
 
     #[tokio::test]
