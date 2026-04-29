@@ -18,7 +18,7 @@
  *                                    projects, dates)
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   Area,
   AreaChart,
@@ -99,6 +99,18 @@ type HealthResponse = {
     model_count: number
     needs_review: boolean
   }
+}
+
+type SubscriptionDto = {
+  id: number
+  plan_name: string
+  monthly_usd: number
+  started_at: string
+  ended_at: string | null
+}
+
+type SubscriptionsResponse = {
+  subscriptions: SubscriptionDto[]
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +410,39 @@ function encodeProjectParam(selection: Selection): string | null {
   return Array.from(selection).join(',')
 }
 
+const AVERAGE_DAYS_PER_MONTH = 30.4375 // 365.25 / 12
+
+/** Pro-rate each subscription by its overlap with the chart's window.
+ *  A subscription that was active for half the window contributes half a
+ *  month of its `monthly_usd`. Subs that don't overlap contribute zero.
+ */
+function subscriptionCostOverWindow(
+  subscriptions: SubscriptionDto[],
+  fromDate: string,
+  toDate: string,
+): number {
+  const windowFromMs = Date.parse(`${fromDate}T00:00:00Z`)
+  const windowToMs = Date.parse(`${toDate}T23:59:59.999Z`)
+  if (Number.isNaN(windowFromMs) || Number.isNaN(windowToMs)) return 0
+
+  let total = 0
+  for (const sub of subscriptions) {
+    const subFromMs = Date.parse(`${sub.started_at}T00:00:00Z`)
+    const subToMs = sub.ended_at
+      ? Date.parse(`${sub.ended_at}T23:59:59.999Z`)
+      : Number.POSITIVE_INFINITY
+    if (Number.isNaN(subFromMs)) continue
+
+    const overlapStart = Math.max(windowFromMs, subFromMs)
+    const overlapEnd = Math.min(windowToMs, subToMs)
+    if (overlapEnd <= overlapStart) continue
+
+    const overlapDays = (overlapEnd - overlapStart) / MILLIS_PER_DAY
+    total += sub.monthly_usd * (overlapDays / AVERAGE_DAYS_PER_MONTH)
+  }
+  return total
+}
+
 // ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
@@ -435,6 +480,35 @@ export default function App() {
     status: 'idle',
   })
   const [dailyState, setDailyState] = useState<FetchState<DailyUsageResponse>>({ status: 'idle' })
+  const [subscriptionsState, setSubscriptionsState] = useState<FetchState<SubscriptionsResponse>>({
+    status: 'idle',
+  })
+
+  // Bumped after a subscription mutation so the GET re-runs.
+  const [subscriptionsRevision, setSubscriptionsRevision] = useState(0)
+  const refreshSubscriptions = () => setSubscriptionsRevision((current) => current + 1)
+
+  // Subscriptions — re-fetched on mount and after any CRUD mutation.
+  useEffect(() => {
+    let cancelled = false
+    setSubscriptionsState({ status: 'loading' })
+    fetch('/api/v1/subscriptions')
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return (await response.json()) as SubscriptionsResponse
+      })
+      .then((data) => {
+        if (!cancelled) setSubscriptionsState({ status: 'ok', data })
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setSubscriptionsState({ status: 'error', message: (error as Error).message })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [subscriptionsRevision])
 
   // Health — once on mount.
   useEffect(() => {
@@ -568,6 +642,55 @@ export default function App() {
     })
     return { rows, series, hiddenInPricedView }
   }, [dailyState, selectedModels, selectedTokenTypes, stackBy, viewMode])
+
+  // Counterfactual cost = "what these tokens would have cost on the API at
+  // list rates" — sum of `billable.X × input_price ÷ 1e6` across the chart's
+  // currently visible cells. Reflects the user's full filter set so the
+  // headline number always matches what's drawn.
+  const counterfactualCostUsd = useMemo(() => {
+    if (dailyState.status !== 'ok') return null
+    const data = dailyState.data
+    const visibleTokenTypes = new Set(
+      data.tokenTypes.filter((t) => isSelected(selectedTokenTypes, t)),
+    )
+    const visibleModels = data.models.filter((m) => isSelected(selectedModels, m))
+    let total = 0
+    for (const row of data.rows) {
+      for (const modelId of visibleModels) {
+        const tokens = row.byModel[modelId]
+        const pricing = data.pricingByModel[modelId]
+        if (!tokens || !tokens.billable || !pricing) continue
+        const dollarsPerBillableUnit = pricing.input_usd_per_mtok / 1_000_000
+        if (visibleTokenTypes.has('input'))
+          total += tokens.billable.input * dollarsPerBillableUnit
+        if (visibleTokenTypes.has('output'))
+          total += tokens.billable.output * dollarsPerBillableUnit
+        if (visibleTokenTypes.has('cache_read'))
+          total += tokens.billable.cache_read * dollarsPerBillableUnit
+        if (visibleTokenTypes.has('cache_write_5m'))
+          total += tokens.billable.cache_write_5m * dollarsPerBillableUnit
+        if (visibleTokenTypes.has('cache_write_1h'))
+          total += tokens.billable.cache_write_1h * dollarsPerBillableUnit
+      }
+    }
+    return total
+  }, [dailyState, selectedModels, selectedTokenTypes])
+
+  // Subscription cost is purely date-window based — your subscription costs
+  // what it costs regardless of which models / projects you used.
+  const subscriptionCostUsd = useMemo(() => {
+    if (subscriptionsState.status !== 'ok') return null
+    return subscriptionCostOverWindow(
+      subscriptionsState.data.subscriptions,
+      fromDate,
+      toDate,
+    )
+  }, [subscriptionsState, fromDate, toDate])
+
+  const netValueUsd =
+    counterfactualCostUsd !== null && subscriptionCostUsd !== null
+      ? counterfactualCostUsd - subscriptionCostUsd
+      : null
 
   const allModels = dailyState.status === 'ok' ? dailyState.data.models : []
   const allTokenTypes = dailyState.status === 'ok' ? dailyState.data.tokenTypes : []
@@ -829,6 +952,17 @@ export default function App() {
             </div>
           )}
 
+          <StatRow
+            counterfactualCostUsd={counterfactualCostUsd}
+            subscriptionCostUsd={subscriptionCostUsd}
+            netValueUsd={netValueUsd}
+            hasSubscriptions={
+              subscriptionsState.status === 'ok' &&
+              subscriptionsState.data.subscriptions.length > 0
+            }
+            pricingNeedsReview={pricingNeedsReview}
+          />
+
           <div>
             <h2 className="text-base font-medium mb-3">
               {viewMode === 'cost'
@@ -884,8 +1018,370 @@ export default function App() {
             </div>
           </div>
         </section>
+
+        <SubscriptionsPanel
+          subscriptionsState={subscriptionsState}
+          onCreated={refreshSubscriptions}
+          onDeleted={refreshSubscriptions}
+        />
       </main>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// StatRow — three KPIs above the chart: counterfactual cost, subscription
+// cost, net value. Renders only when we have a counterfactual figure
+// (i.e., the daily endpoint succeeded).
+// ---------------------------------------------------------------------------
+
+type StatRowProps = {
+  counterfactualCostUsd: number | null
+  subscriptionCostUsd: number | null
+  netValueUsd: number | null
+  hasSubscriptions: boolean
+  pricingNeedsReview: boolean
+}
+
+function StatRow({
+  counterfactualCostUsd,
+  subscriptionCostUsd,
+  netValueUsd,
+  hasSubscriptions,
+  pricingNeedsReview,
+}: StatRowProps) {
+  if (counterfactualCostUsd === null) return null
+
+  const counterfactualLabel = pricingNeedsReview
+    ? 'Counterfactual API cost (approx)'
+    : 'Counterfactual API cost'
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <StatCard
+        label={counterfactualLabel}
+        value={formatExactDollars(counterfactualCostUsd)}
+        helpText="What these tokens would have cost on the Anthropic API at list rates, summed across the chart's currently visible cells."
+      />
+      <StatCard
+        label="Subscriptions paid in window"
+        value={
+          subscriptionCostUsd === null
+            ? '—'
+            : formatExactDollars(subscriptionCostUsd)
+        }
+        helpText={
+          hasSubscriptions
+            ? 'Sum of declared subscriptions, pro-rated by the days each one overlaps the chart window.'
+            : 'No subscriptions declared yet. Add one below to see the net value of your plan.'
+        }
+        muted={!hasSubscriptions}
+      />
+      <StatCard
+        label="Net value"
+        value={
+          netValueUsd === null
+            ? '—'
+            : formatExactDollars(netValueUsd)
+        }
+        helpText="Counterfactual API cost minus subscriptions paid. Positive means your subscription is cheaper than running the same usage on the API."
+        emphasize={netValueUsd !== null && netValueUsd > 0}
+      />
+    </div>
+  )
+}
+
+type StatCardProps = {
+  label: string
+  value: string
+  helpText: string
+  muted?: boolean
+  emphasize?: boolean
+}
+
+function StatCard({ label, value, helpText, muted, emphasize }: StatCardProps) {
+  return (
+    <div
+      className={
+        'rounded-md border px-4 py-3 ' +
+        (emphasize
+          ? 'border-emerald-300 bg-emerald-50'
+          : muted
+            ? 'border-slate-200 bg-slate-50'
+            : 'border-slate-200 bg-white')
+      }
+    >
+      <div
+        className={
+          'text-xs font-medium cursor-help underline decoration-dotted decoration-slate-400 ' +
+          (muted ? 'text-slate-400' : 'text-slate-500')
+        }
+        title={helpText}
+      >
+        {label}
+      </div>
+      <div
+        className={
+          'mt-1 text-xl font-semibold tabular-nums ' +
+          (emphasize ? 'text-emerald-700' : muted ? 'text-slate-400' : 'text-slate-900')
+        }
+      >
+        {value}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// SubscriptionsPanel — list, add (inline form), delete.
+// ---------------------------------------------------------------------------
+
+type SubscriptionsPanelProps = {
+  subscriptionsState: FetchState<SubscriptionsResponse>
+  onCreated: () => void
+  onDeleted: () => void
+}
+
+function SubscriptionsPanel({
+  subscriptionsState,
+  onCreated,
+  onDeleted,
+}: SubscriptionsPanelProps) {
+  const [showForm, setShowForm] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  const subscriptions =
+    subscriptionsState.status === 'ok' ? subscriptionsState.data.subscriptions : []
+
+  async function submitForm(formData: {
+    planName: string
+    monthlyUsd: number
+    startedAt: string
+    endedAt: string | null
+  }) {
+    setSubmitting(true)
+    setFormError(null)
+    try {
+      const response = await fetch('/api/v1/subscriptions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          plan_name: formData.planName,
+          monthly_usd: formData.monthlyUsd,
+          started_at: formData.startedAt,
+          ended_at: formData.endedAt,
+        }),
+      })
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as {
+          error?: { message?: string }
+        }
+        throw new Error(body.error?.message ?? `HTTP ${response.status}`)
+      }
+      setShowForm(false)
+      onCreated()
+    } catch (error) {
+      setFormError((error as Error).message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function deleteSubscription(id: number) {
+    try {
+      const response = await fetch(`/api/v1/subscriptions/${id}`, { method: 'DELETE' })
+      if (!response.ok && response.status !== 204) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+      onDeleted()
+    } catch (error) {
+      // For Phase 1, surface deletion errors via alert() — they're rare and
+      // don't warrant a dedicated error UI yet.
+      window.alert(`Could not delete subscription: ${(error as Error).message}`)
+    }
+  }
+
+  return (
+    <section className="bg-white rounded-lg border border-slate-200 p-5 space-y-4">
+      <div className="flex items-baseline justify-between">
+        <h2 className="text-base font-medium">Subscriptions</h2>
+        {!showForm && (
+          <button
+            type="button"
+            className="text-sm text-blue-600 hover:underline"
+            onClick={() => {
+              setShowForm(true)
+              setFormError(null)
+            }}
+          >
+            + Add subscription
+          </button>
+        )}
+      </div>
+
+      {showForm && (
+        <SubscriptionForm
+          submitting={submitting}
+          error={formError}
+          onCancel={() => {
+            setShowForm(false)
+            setFormError(null)
+          }}
+          onSubmit={submitForm}
+        />
+      )}
+
+      {subscriptionsState.status === 'loading' && (
+        <div className="text-sm text-slate-500">Loading subscriptions…</div>
+      )}
+      {subscriptionsState.status === 'error' && (
+        <div className="text-sm text-rose-700">
+          Could not load subscriptions: {subscriptionsState.message}
+        </div>
+      )}
+      {subscriptionsState.status === 'ok' && subscriptions.length === 0 && !showForm && (
+        <div className="text-sm text-slate-500">
+          No subscriptions yet. Add Claude Max, a Team seat, or any other flat-fee plan to see net
+          value over your selected date range.
+        </div>
+      )}
+      {subscriptions.length > 0 && (
+        <ul className="divide-y divide-slate-100">
+          {subscriptions.map((sub) => (
+            <li key={sub.id} className="flex items-center justify-between py-2 text-sm">
+              <div>
+                <span className="font-medium text-slate-900">{sub.plan_name}</span>
+                <span className="text-slate-500">
+                  {' · '}
+                  {formatExactDollars(sub.monthly_usd)}/mo
+                </span>
+                <span className="text-slate-500">
+                  {' · '}
+                  {sub.ended_at ? `${sub.started_at} → ${sub.ended_at}` : `since ${sub.started_at}`}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="text-xs text-rose-600 hover:underline"
+                onClick={() => {
+                  if (window.confirm(`Delete subscription "${sub.plan_name}"?`)) {
+                    void deleteSubscription(sub.id)
+                  }
+                }}
+              >
+                Delete
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+type SubscriptionFormProps = {
+  submitting: boolean
+  error: string | null
+  onCancel: () => void
+  onSubmit: (data: {
+    planName: string
+    monthlyUsd: number
+    startedAt: string
+    endedAt: string | null
+  }) => void
+}
+
+function SubscriptionForm({ submitting, error, onCancel, onSubmit }: SubscriptionFormProps) {
+  const [planName, setPlanName] = useState('Claude Max')
+  const [monthlyUsd, setMonthlyUsd] = useState<string>('200')
+  const [startedAt, setStartedAt] = useState<string>(() => isoDateDaysAgo(0))
+  const [endedAt, setEndedAt] = useState<string>('')
+
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault()
+    const parsedAmount = Number.parseFloat(monthlyUsd)
+    if (!Number.isFinite(parsedAmount) || parsedAmount < 0) {
+      window.alert('Monthly USD must be a non-negative number.')
+      return
+    }
+    onSubmit({
+      planName: planName.trim(),
+      monthlyUsd: parsedAmount,
+      startedAt,
+      endedAt: endedAt || null,
+    })
+  }
+
+  return (
+    <form
+      className="rounded-md border border-slate-200 bg-slate-50 p-4 space-y-3"
+      onSubmit={handleSubmit}
+    >
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <label className="block">
+          <span className="text-xs font-medium text-slate-600">Plan name</span>
+          <input
+            type="text"
+            required
+            value={planName}
+            onChange={(event) => setPlanName(event.target.value)}
+            className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-sm bg-white"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs font-medium text-slate-600">Monthly (USD)</span>
+          <input
+            type="number"
+            required
+            min="0"
+            step="0.01"
+            value={monthlyUsd}
+            onChange={(event) => setMonthlyUsd(event.target.value)}
+            className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-sm bg-white"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs font-medium text-slate-600">Started</span>
+          <input
+            type="date"
+            required
+            value={startedAt}
+            onChange={(event) => setStartedAt(event.target.value)}
+            className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-sm bg-white"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs font-medium text-slate-600">Ended (optional)</span>
+          <input
+            type="date"
+            min={startedAt}
+            value={endedAt}
+            onChange={(event) => setEndedAt(event.target.value)}
+            className="mt-1 w-full border border-slate-300 rounded-md px-2 py-1 text-sm bg-white"
+          />
+        </label>
+      </div>
+
+      {error && <div className="text-xs text-rose-700">{error}</div>}
+
+      <div className="flex items-center gap-2">
+        <button
+          type="submit"
+          disabled={submitting}
+          className="bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-md px-3 py-1 disabled:bg-slate-300"
+        >
+          {submitting ? 'Saving…' : 'Save'}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="text-sm text-slate-600 hover:underline"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   )
 }
 

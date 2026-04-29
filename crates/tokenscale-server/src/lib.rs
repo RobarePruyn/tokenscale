@@ -46,6 +46,14 @@ pub fn build_router(state: AppState) -> axum::Router {
             get(routes::sessions::recent_handler),
         )
         .route("/api/v1/projects", get(routes::projects::list_handler))
+        .route(
+            "/api/v1/subscriptions",
+            get(routes::subscriptions::list_handler).post(routes::subscriptions::create_handler),
+        )
+        .route(
+            "/api/v1/subscriptions/{id}",
+            axum::routing::delete(routes::subscriptions::delete_handler),
+        )
         .fallback(embed::static_handler)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -294,6 +302,135 @@ source_accessed_at = "2026-04-28"
         assert_eq!(body["rows"], serde_json::json!([]));
         // ...but the Models chip list still reflects the window.
         assert_eq!(body["models"], serde_json::json!(["claude-opus-4-7"]));
+    }
+
+    #[tokio::test]
+    async fn subscriptions_create_list_delete_roundtrip() {
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let app = build_router(AppState::new(database, test_pricing()));
+
+        // Empty list initially.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/subscriptions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["subscriptions"], serde_json::json!([]));
+
+        // Create one.
+        let create_body = serde_json::json!({
+            "plan_name": "Claude Max",
+            "monthly_usd": 200.0,
+            "started_at": "2025-01-01",
+            "ended_at": null,
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/subscriptions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(create_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let created: Value = serde_json::from_slice(&bytes).unwrap();
+        let new_id = created["id"].as_i64().unwrap();
+        assert_eq!(created["plan_name"], "Claude Max");
+
+        // List has one.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/subscriptions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["subscriptions"].as_array().unwrap().len(), 1);
+
+        // Delete it.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/v1/subscriptions/{new_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        // Empty again.
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/subscriptions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["subscriptions"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn subscriptions_create_rejects_bad_inputs() {
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let app = build_router(AppState::new(database, test_pricing()));
+
+        let bad_cases = [
+            // Empty plan name
+            serde_json::json!({"plan_name": "", "monthly_usd": 100.0, "started_at": "2025-01-01"}),
+            // Negative monthly_usd
+            serde_json::json!({"plan_name": "x", "monthly_usd": -1.0, "started_at": "2025-01-01"}),
+            // Bad date format
+            serde_json::json!({"plan_name": "x", "monthly_usd": 100.0, "started_at": "yesterday"}),
+            // ended_at before started_at
+            serde_json::json!({
+                "plan_name": "x", "monthly_usd": 100.0,
+                "started_at": "2025-06-01", "ended_at": "2025-01-01",
+            }),
+        ];
+
+        for body in bad_cases {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/subscriptions")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "expected bad request for {body}",
+            );
+        }
     }
 
     #[tokio::test]

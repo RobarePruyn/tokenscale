@@ -21,6 +21,7 @@ mod error;
 mod events;
 mod files;
 mod queries;
+mod subscriptions;
 
 pub use database::Database;
 pub use error::{Result, StoreError};
@@ -31,6 +32,9 @@ pub use queries::{
     list_projects_with_totals, recent_sessions, usage_by_model, DailyUsageBreakdownRow,
     DailyUsageFlatRow, Granularity, HealthSummary, ModelSummaryRow, ProjectSummaryRow,
     RecentSessionRow, UsageByModelRow, ALL_PROVIDERS,
+};
+pub use subscriptions::{
+    delete_subscription, insert_subscription, list_subscriptions, Subscription,
 };
 
 #[cfg(test)]
