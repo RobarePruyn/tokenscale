@@ -32,6 +32,7 @@ pub struct Config {
     pub storage: StorageConfig,
     pub server: ServerConfig,
     pub auth: AuthConfig,
+    pub pricing: PricingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +94,16 @@ impl Default for AuthConfig {
             mode: "localhost".to_owned(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PricingConfig {
+    /// Override path for `pricing.toml`. If unset, the binary's embedded
+    /// copy is used — the seed values shipped with this build of
+    /// `tokenscale`. Set this to a local file when you want to ship custom
+    /// or freshly-verified prices without rebuilding the binary.
+    pub file: Option<PathBuf>,
 }
 
 impl Config {

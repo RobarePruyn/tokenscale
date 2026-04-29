@@ -1,0 +1,108 @@
+# tokenscale — pricing factors
+# Schema version: 1
+#
+# This file mirrors the structure of `environmental-factors.toml`. It carries
+# Anthropic's published per-model API list pricing, which the application uses
+# for two things:
+#
+#   1. The dashboard's "Billable tokens" view, which weights each token type
+#      by its API price relative to input and stacks the weighted total.
+#   2. The Phase 2 counterfactual-cost computation — "what would these tokens
+#      have cost at API rates" — answering the value-of-subscription question.
+#
+# ============================================================================
+# THIS FILE NEEDS REVIEW BEFORE PRODUCTION USE.
+#
+# The Phase 1 seed values below are sourced from public Anthropic
+# documentation as known to the project at scaffold time. Anthropic adjusts
+# pricing periodically; before relying on the dashboard's billable view or
+# any Phase 2 cost figure, verify each model's rates against:
+#
+#     https://platform.claude.com/docs/en/about-claude/pricing
+#
+# When you have verified, set `file_status = "production"` below to silence
+# the review banner the dashboard surfaces.
+# ============================================================================
+
+schema_version = 1
+file_status    = "needs_review"   # set to "production" after verification
+
+# ----------------------------------------------------------------------------
+# [providers.<provider>.models.<model-id>]
+# ----------------------------------------------------------------------------
+# Each model block carries:
+#   * `input_usd_per_mtok`        — fresh input tokens, USD per million.
+#   * `output_usd_per_mtok`       — output tokens, USD per million.
+#   * `cache_read_usd_per_mtok`   — replayed cached input tokens (typically
+#                                    10% of input price for Anthropic).
+#   * `cache_write_5m_multiplier` — 5-minute prompt-cache write tokens, as
+#                                    a multiplier on the input price (typically 1.25x).
+#   * `cache_write_1h_multiplier` — 1-hour prompt-cache write tokens, as
+#                                    a multiplier on the input price (typically 2.0x).
+#   * `valid_from`                 — ISO date these prices became effective for
+#                                    this build's records. NOT necessarily the
+#                                    date Anthropic announced them.
+#   * `source_url` / `source_accessed_at` — provenance.
+#
+# ----------------------------------------------------------------------------
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+# ---- Opus models ----
+# Anthropic's Opus tier — flagship coding/reasoning models. Pricing has been
+# stable across the Opus 4 family per the most recent vendor docs known to
+# this project; if Anthropic introduces a new tier or per-version pricing,
+# split into separate blocks.
+
+[providers.anthropic.models."claude-opus-4-7"]
+display_name              = "Claude Opus 4.7"
+valid_from                = "2026-04-28"
+input_usd_per_mtok        = 15.00
+output_usd_per_mtok       = 75.00
+cache_read_usd_per_mtok   = 1.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-04-28"
+notes                     = "Seed value — pricing assumed unchanged from Opus 4 family. Verify."
+
+[providers.anthropic.models."claude-opus-4-6"]
+display_name              = "Claude Opus 4.6"
+valid_from                = "2026-04-28"
+input_usd_per_mtok        = 15.00
+output_usd_per_mtok       = 75.00
+cache_read_usd_per_mtok   = 1.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-04-28"
+notes                     = "Seed value — Opus 4 family pricing. Verify."
+
+# ---- Sonnet models ----
+
+[providers.anthropic.models."claude-sonnet-4-6"]
+display_name              = "Claude Sonnet 4.6"
+valid_from                = "2026-04-28"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-04-28"
+notes                     = "Seed value — Sonnet 4 family pricing. Verify."
+
+# ---- Haiku models ----
+
+[providers.anthropic.models."claude-haiku-4-5"]
+display_name              = "Claude Haiku 4.5"
+valid_from                = "2026-04-28"
+input_usd_per_mtok        = 0.80
+output_usd_per_mtok       = 4.00
+cache_read_usd_per_mtok   = 0.08
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-04-28"
+notes                     = "Seed value — Haiku family pricing. Verify."

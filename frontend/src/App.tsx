@@ -26,17 +26,42 @@ import {
 
 type ProviderFilter = 'all' | 'anthropic'
 
+/** Per-token-type breakdown for one (date, model). Mirrors the server's
+ *  `ModelTokens` shape. `billable_total` is absent when pricing.toml has no
+ *  entry for the model — the dashboard falls back to raw counts in that case.
+ */
+type ModelTokens = {
+  input: number
+  output: number
+  cache_read: number
+  cache_write_5m: number
+  cache_write_1h: number
+  billable_total?: number
+}
+
 type DailyUsageRow = {
   /** ISO-8601 date — `YYYY-MM-DD`. */
   date: string
-  /** Per-model token totals for that day. Keys are model identifiers. */
-  byModel: Record<string, number>
+  /** Per-model breakdown for that day. Keys are model identifiers. */
+  byModel: Record<string, ModelTokens>
 }
 
 type DailyUsageResponse = {
   rows: DailyUsageRow[]
   /** Models that appear anywhere in `rows`, in chart-order. */
   models: string[]
+  /** Stable order for per-token-type controls (Iteration B). */
+  tokenTypes: string[]
+  /** Models that appeared in the data but had no pricing entry. */
+  modelsWithoutPricing: string[]
+}
+
+/** Sum the five token-type fields. Used as the chart value while Iteration A
+ *  keeps the existing "all tokens" view; Iteration B will replace this with
+ *  filter-aware aggregation.
+ */
+function totalTokensForModel(tokens: ModelTokens): number {
+  return tokens.input + tokens.output + tokens.cache_read + tokens.cache_write_5m + tokens.cache_write_1h
 }
 
 type FetchState =
@@ -97,13 +122,18 @@ export default function App() {
   // renders a visual cliff between adjacent days. With it, areas ramp
   // smoothly from zero — accurate when (e.g.) a new model release replaces
   // an older one mid-window.
+  //
+  // Iteration A still shows raw "all token types summed" per model. Iteration
+  // B will branch this on the upcoming view-mode and token-type filter
+  // controls.
   const chartRows = useMemo(() => {
     if (fetchState.status !== 'ok') return []
     const allModels = fetchState.data.models
     return fetchState.data.rows.map((row) => {
       const filled: Record<string, string | number> = { date: row.date }
       for (const modelIdentifier of allModels) {
-        filled[modelIdentifier] = row.byModel[modelIdentifier] ?? 0
+        const modelTokens = row.byModel[modelIdentifier]
+        filled[modelIdentifier] = modelTokens ? totalTokensForModel(modelTokens) : 0
       }
       return filled
     })

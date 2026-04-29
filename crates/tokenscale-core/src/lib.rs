@@ -21,11 +21,15 @@
 //! Phase 1 ships the `Event` type and the error type. The factor-model
 //! loader and computations land in Phase 2.
 
+pub mod billable;
 mod error;
 mod event;
+pub mod pricing;
 
+pub use billable::BillableMultipliers;
 pub use error::{CoreError, Result};
 pub use event::{Event, SourceKind};
+pub use pricing::{ModelPricing, PricingFile, ProviderPricing};
 
 #[cfg(test)]
 mod tests {

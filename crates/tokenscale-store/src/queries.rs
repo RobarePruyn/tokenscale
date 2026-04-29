@@ -81,6 +81,86 @@ pub async fn daily_usage(
 }
 
 // ----------------------------------------------------------------------------
+// daily_usage_breakdown — per-token-type rollup per (date, model)
+// ----------------------------------------------------------------------------
+
+/// One row per (UTC date, model) with per-token-type sums broken out.
+/// Returned in `(date ASC, model ASC)` order so the server can group it
+/// into the nested by-date shape without a second sort.
+#[derive(Debug, Clone, Serialize)]
+pub struct DailyUsageBreakdownRow {
+    /// `YYYY-MM-DD`, UTC.
+    pub date: String,
+    pub model: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_write_5m_tokens: i64,
+    pub cache_write_1h_tokens: i64,
+}
+
+/// Per-(date, model) sums broken out by token type. Successor to
+/// `daily_usage`, which collapses all token types into a single total —
+/// retained for the simpler historical callers.
+pub async fn daily_usage_breakdown(
+    database: &Database,
+    from_date: &str,
+    to_date: &str,
+    provider_filter: &str,
+) -> Result<Vec<DailyUsageBreakdownRow>> {
+    // The 7-element tuple is the row shape sqlx::query_as binds to; defining
+    // a struct with `derive(FromRow)` to get the same thing would require
+    // moving sqlx imports into the public API. Local allow.
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(String, String, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        "SELECT
+             date(events.occurred_at) AS day,
+             events.model              AS model,
+             COALESCE(SUM(events.input_tokens), 0),
+             COALESCE(SUM(events.output_tokens), 0),
+             COALESCE(SUM(events.cache_read_tokens), 0),
+             COALESCE(SUM(events.cache_write_5m_tokens), 0),
+             COALESCE(SUM(events.cache_write_1h_tokens), 0)
+           FROM events
+           JOIN sources ON sources.kind = events.source
+          WHERE date(events.occurred_at) BETWEEN ? AND ?
+            AND (? = ? OR sources.provider = ?)
+          GROUP BY day, events.model
+          ORDER BY day ASC, events.model ASC",
+    )
+    .bind(from_date)
+    .bind(to_date)
+    .bind(provider_filter)
+    .bind(ALL_PROVIDERS)
+    .bind(provider_filter)
+    .fetch_all(database.pool())
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                date,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_5m_tokens,
+                cache_write_1h_tokens,
+            )| DailyUsageBreakdownRow {
+                date,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_5m_tokens,
+                cache_write_1h_tokens,
+            },
+        )
+        .collect())
+}
+
+// ----------------------------------------------------------------------------
 // usage_by_model
 // ----------------------------------------------------------------------------
 
@@ -326,6 +406,25 @@ mod tests {
             .await
             .unwrap();
         assert!(zero_rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn daily_usage_breakdown_returns_per_token_type_sums() {
+        let database = fixture_database().await;
+        let rows = daily_usage_breakdown(&database, "2026-04-20", "2026-04-22", ALL_PROVIDERS)
+            .await
+            .unwrap();
+        // 5 (date, model) groups same as daily_usage above.
+        assert_eq!(rows.len(), 5);
+        // Every row's input_tokens equals the total in the fixture (since
+        // the fixture only sets input_tokens; everything else is zero).
+        let opus_apr20 = rows
+            .iter()
+            .find(|r| r.date == "2026-04-20" && r.model == "claude-opus-4-7")
+            .unwrap();
+        assert_eq!(opus_apr20.input_tokens, 150);
+        assert_eq!(opus_apr20.output_tokens, 0);
+        assert_eq!(opus_apr20.cache_read_tokens, 0);
     }
 
     #[tokio::test]

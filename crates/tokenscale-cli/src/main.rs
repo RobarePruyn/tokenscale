@@ -19,10 +19,12 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokenscale_core::PricingFile;
 use tokenscale_ingest_cc::run_scan;
 use tokenscale_server::{serve, AppState};
 use tokenscale_store::Database;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::{resolve_config_path, Config};
 
@@ -152,13 +154,36 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
         .await
         .with_context(|| format!("opening database at {}", database_path.display()))?;
 
+    let pricing = load_pricing(&config)?;
+    if pricing.is_review_pending() {
+        warn!(
+            file_status = %pricing.file_status,
+            "pricing.toml has not been reviewed against current Anthropic prices — \
+             the dashboard's billable view is approximate. Set file_status = \"production\" \
+             after verifying values."
+        );
+    }
+    let pricing = Arc::new(pricing);
+
     let bind_string = bind_override.unwrap_or_else(|| config.server.bind.clone());
     let bind_address: SocketAddr = bind_string
         .parse()
         .with_context(|| format!("parsing bind address {bind_string:?}"))?;
 
     info!(address = %bind_address, "starting tokenscale server");
-    serve(AppState::new(database), bind_address).await
+    serve(AppState::new(database, pricing), bind_address).await
+}
+
+/// Resolve and load the pricing file. Precedence: `[pricing].file` in the
+/// config wins; otherwise the embedded copy ships with the binary.
+fn load_pricing(config: &Config) -> Result<PricingFile> {
+    if let Some(override_path) = config.pricing.file.as_ref() {
+        info!(path = %override_path.display(), "loading pricing from configured override");
+        return PricingFile::load_from_path(override_path)
+            .with_context(|| format!("loading pricing from {}", override_path.display()));
+    }
+    info!("loading embedded pricing.toml shipped with this build");
+    PricingFile::embedded_default().context("parsing embedded pricing.toml")
 }
 
 /// Implementation of `tokenscale scan`.
