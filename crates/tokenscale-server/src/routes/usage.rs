@@ -71,18 +71,35 @@ pub async fn daily_handler(
     let (from_date, to_date, provider) = params.resolve()?;
     let flat_rows = daily_usage(&state.database, &from_date, &to_date, &provider).await?;
 
-    // Group flat (date, model, tokens) into the nested by-date shape.
-    let mut grouped_by_date: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
+    // First pass: total each model across the whole window. Used both to
+    // sort the model list (largest contributor first) and to filter out
+    // any model whose total is zero — Claude Code emits a `<synthetic>`
+    // model identifier for internal events that never carry tokens, and
+    // surfacing it in the chart legend confuses users without adding
+    // signal.
     let mut model_totals: BTreeMap<String, i64> = BTreeMap::new();
-    for row in flat_rows {
+    for row in &flat_rows {
         *model_totals.entry(row.model.clone()).or_default() += row.total_tokens;
+    }
+    let visible_models: std::collections::HashSet<String> = model_totals
+        .iter()
+        .filter(|(_, &total)| total > 0)
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    // Second pass: group filtered rows into the nested by-date shape.
+    let mut grouped_by_date: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
+    for row in flat_rows {
+        if !visible_models.contains(&row.model) {
+            continue;
+        }
         grouped_by_date
             .entry(row.date)
             .or_default()
             .insert(row.model, row.total_tokens);
     }
 
-    let mut models: Vec<String> = model_totals.keys().cloned().collect();
+    let mut models: Vec<String> = visible_models.into_iter().collect();
     // Sort by total desc, ties broken alphabetically for determinism.
     models.sort_by(|left, right| {
         model_totals[right]

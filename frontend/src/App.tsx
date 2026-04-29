@@ -92,9 +92,21 @@ export default function App() {
     return () => abortController.abort()
   }, [providerFilter, fromDate, toDate])
 
+  // Zero-fill missing (date, model) combos. Without this, a model that
+  // wasn't used on a given day shows up as undefined to Recharts, which
+  // renders a visual cliff between adjacent days. With it, areas ramp
+  // smoothly from zero — accurate when (e.g.) a new model release replaces
+  // an older one mid-window.
   const chartRows = useMemo(() => {
     if (fetchState.status !== 'ok') return []
-    return fetchState.data.rows.map((row) => ({ date: row.date, ...row.byModel }))
+    const allModels = fetchState.data.models
+    return fetchState.data.rows.map((row) => {
+      const filled: Record<string, string | number> = { date: row.date }
+      for (const modelIdentifier of allModels) {
+        filled[modelIdentifier] = row.byModel[modelIdentifier] ?? 0
+      }
+      return filled
+    })
   }, [fetchState])
 
   const chartModels = fetchState.status === 'ok' ? fetchState.data.models : []
@@ -152,20 +164,30 @@ export default function App() {
             )}
             {fetchState.status === 'ok' && chartRows.length > 0 && (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartRows} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                <AreaChart data={chartRows} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                   <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                  <YAxis tick={{ fontSize: 12 }} />
-                  <Tooltip />
+                  <YAxis
+                    tick={{ fontSize: 12 }}
+                    tickFormatter={formatCompactNumber}
+                    width={56}
+                  />
+                  <Tooltip
+                    formatter={(rawValue, modelDisplayLabel) => [
+                      typeof rawValue === 'number' ? rawValue.toLocaleString() : String(rawValue),
+                      modelDisplayLabel,
+                    ]}
+                  />
                   <Legend />
-                  {chartModels.map((modelName, index) => (
+                  {chartModels.map((modelIdentifier, modelIndex) => (
                     <Area
-                      key={modelName}
+                      key={modelIdentifier}
                       type="monotone"
-                      dataKey={modelName}
+                      dataKey={modelIdentifier}
+                      name={modelDisplayName(modelIdentifier)}
                       stackId="1"
-                      stroke={CHART_COLORS[index % CHART_COLORS.length]}
-                      fill={CHART_COLORS[index % CHART_COLORS.length]}
+                      stroke={CHART_COLORS[modelIndex % CHART_COLORS.length]}
+                      fill={CHART_COLORS[modelIndex % CHART_COLORS.length]}
                       fillOpacity={0.6}
                     />
                   ))}
@@ -184,3 +206,38 @@ export default function App() {
  * with the same model set produce the same colors.
  */
 const CHART_COLORS = ['#2563eb', '#16a34a', '#d97706', '#9333ea', '#dc2626', '#0891b2']
+
+/**
+ * Compact human-readable formatter for the y-axis. The dashboard's token
+ * counts run from thousands to billions, and rendering raw integers
+ * eats more horizontal space than the chart can spare.
+ */
+function formatCompactNumber(value: number): string {
+  const absoluteValue = Math.abs(value)
+  if (absoluteValue >= 1e9) return `${stripTrailingZero((value / 1e9).toFixed(1))}B`
+  if (absoluteValue >= 1e6) return `${stripTrailingZero((value / 1e6).toFixed(1))}M`
+  if (absoluteValue >= 1e3) return `${stripTrailingZero((value / 1e3).toFixed(1))}K`
+  return value.toString()
+}
+
+function stripTrailingZero(formatted: string): string {
+  return formatted.endsWith('.0') ? formatted.slice(0, -2) : formatted
+}
+
+/**
+ * Convert an Anthropic-style model identifier (`claude-opus-4-7`) into the
+ * marketing label users actually recognize (`Claude Opus 4.7`). Unknown
+ * identifiers pass through unchanged so v2 providers don't silently lose
+ * their labels — better to show the raw id than to invent a name.
+ */
+function modelDisplayName(modelIdentifier: string): string {
+  const claudeFamilyMatch = modelIdentifier.match(
+    /^claude-(opus|sonnet|haiku)-(\d+)-(\d+)$/,
+  )
+  if (claudeFamilyMatch) {
+    const [, modelFamily, majorVersion, minorVersion] = claudeFamilyMatch
+    const familyTitle = modelFamily.charAt(0).toUpperCase() + modelFamily.slice(1)
+    return `Claude ${familyTitle} ${majorVersion}.${minorVersion}`
+  }
+  return modelIdentifier
+}

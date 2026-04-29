@@ -129,6 +129,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn daily_usage_filters_out_zero_total_models() {
+        // Two models — one with real usage, one whose entire window is 0
+        // tokens (the `<synthetic>` case Claude Code emits). The zero-total
+        // model should not appear in the response.
+        use chrono::{TimeZone, Utc};
+        use tokenscale_core::Event;
+        use tokenscale_store::insert_events;
+
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let make_event = |model: &str, request_id: &str, tokens: u64| Event {
+            source: "claude_code".to_owned(),
+            occurred_at: Utc.with_ymd_and_hms(2026, 4, 21, 12, 0, 0).unwrap(),
+            model: model.to_owned(),
+            input_tokens: tokens,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
+            request_id: Some(request_id.to_owned()),
+            content_hash: None,
+            session_id: Some("s".to_owned()),
+            project_id: Some("/p".to_owned()),
+            workspace_id: None,
+            api_key_id: None,
+            raw: None,
+        };
+        insert_events(
+            &database,
+            &[
+                make_event("claude-opus-4-7", "r1", 1_000),
+                make_event("<synthetic>", "r2", 0),
+                make_event("<synthetic>", "r3", 0),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let app = build_router(AppState::new(database));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/usage/daily?from=2026-04-21&to=2026-04-21")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["models"], serde_json::json!(["claude-opus-4-7"]));
+        // The single row should also have only the visible model in byModel.
+        assert_eq!(body["rows"][0]["byModel"]["claude-opus-4-7"], 1_000);
+        assert!(body["rows"][0]["byModel"].get("<synthetic>").is_none());
+    }
+
+    #[tokio::test]
     async fn recent_sessions_endpoint_with_no_data_returns_empty_rows() {
         let app = build_test_app().await;
         let response = app
