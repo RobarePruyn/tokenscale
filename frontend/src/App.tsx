@@ -474,7 +474,7 @@ export default function App() {
 
       {pricingNeedsReview && viewMode === 'billable' && (
         <div className="bg-amber-50 border-b border-amber-200 text-amber-900 text-xs px-6 py-2">
-          <span className="font-medium">Pricing needs review:</span> the billable view is using
+          <span className="font-medium">Pricing needs review:</span> the cost-weighted view is using
           seed values from <code className="bg-amber-100 px-1 rounded">pricing.toml</code>. Verify
           against{' '}
           <a
@@ -637,27 +637,30 @@ export default function App() {
               ]}
             />
             <RadioGroup
-              label="Tokens"
+              label="Counting"
               value={viewMode}
               onChange={setViewMode}
               options={[
-                { value: 'all', label: 'All (raw count)' },
-                { value: 'billable', label: 'Billable' },
+                { value: 'all', label: 'Raw' },
+                { value: 'billable', label: 'Cost-weighted' },
               ]}
+              labelHelp="Raw counts each token equally. Cost-weighted weights each token type by its Anthropic API price relative to input — output ×5, cache_read ×0.1, cache writes ×1.25 (5m) and ×2 (1h). Use it when comparing expensive output against cheap cache reads on the same axis."
             />
           </div>
 
           {chartConfig.hiddenInBillable.length > 0 && (
             <div className="text-xs text-slate-500">
-              Hidden in billable view (no pricing entry):{' '}
+              Hidden in cost-weighted view (no pricing entry):{' '}
               {chartConfig.hiddenInBillable.map((m) => modelDisplayName(m)).join(', ')}
             </div>
           )}
 
           <div>
             <h2 className="text-base font-medium mb-3">
-              {viewMode === 'billable' ? 'Daily billable tokens' : 'Daily token usage'} ·{' '}
-              {stackBy === 'model' ? 'stacked by model' : 'stacked by token type'}
+              {viewMode === 'billable'
+                ? 'Daily cost-weighted tokens'
+                : 'Daily token usage'}{' '}
+              · {stackBy === 'model' ? 'stacked by model' : 'stacked by token type'}
             </h2>
 
             <div className="h-80">
@@ -827,12 +830,30 @@ type RadioGroupProps<T extends string> = {
   value: T
   onChange: (value: T) => void
   options: Array<{ value: T; label: string }>
+  /** Optional help text — when present, the label is rendered with a cursor
+   *  hint and a native browser tooltip (`title` attribute) carrying the text.
+   */
+  labelHelp?: string
 }
 
-function RadioGroup<T extends string>({ label, value, onChange, options }: RadioGroupProps<T>) {
+function RadioGroup<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+  labelHelp,
+}: RadioGroupProps<T>) {
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs font-medium text-slate-600">{label}:</span>
+      <span
+        className={
+          'text-xs font-medium text-slate-600 ' +
+          (labelHelp ? 'cursor-help underline decoration-dotted decoration-slate-400' : '')
+        }
+        title={labelHelp}
+      >
+        {label}:
+      </span>
       <div className="inline-flex rounded-md border border-slate-300 overflow-hidden">
         {options.map((option) => {
           const active = option.value === value
