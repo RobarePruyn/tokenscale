@@ -65,12 +65,19 @@ type DailyUsageRow = {
 
 type Granularity = 'day' | 'week' | 'month'
 
+type ModelPricingForResponse = {
+  input_usd_per_mtok: number
+}
+
 type DailyUsageResponse = {
   rows: DailyUsageRow[]
   models: string[]
   tokenTypes: string[]
   modelsWithoutPricing: string[]
   granularity: Granularity
+  /** Per-model `input_usd_per_mtok` so the frontend can convert `billable`
+   *  values to USD on the fly. Models without a pricing entry are absent. */
+  pricingByModel: Record<string, ModelPricingForResponse>
 }
 
 type ProjectsResponse = {
@@ -99,7 +106,17 @@ type HealthResponse = {
 // ---------------------------------------------------------------------------
 
 type StackBy = 'model' | 'token-type'
-type ViewMode = 'all' | 'billable'
+
+/** Three counting modes:
+ *  - `all`      raw token counts, all categories weighted equally
+ *  - `billable` weighted by API-price multipliers, in input-token-equivalent units
+ *  - `cost`     billable × per-model input price ÷ 1M, in USD
+ *
+ *  Both `billable` and `cost` require a pricing entry for the model;
+ *  `cost` additionally needs the per-model `input_usd_per_mtok`. Models
+ *  without pricing are hidden from those views.
+ */
+type ViewMode = 'all' | 'billable' | 'cost'
 type RangePreset = '7d' | '30d' | '90d' | '365d' | 'all' | 'custom'
 
 /** "auto" defers to a window-length heuristic; the rest map 1:1 to the
@@ -310,10 +327,43 @@ function stripTrailingZero(formatted: string): string {
   return formatted.endsWith('.0') ? formatted.slice(0, -2) : formatted
 }
 
+/** Compact dollar y-axis labels — "$1.2M", "$500", "$0.05".
+ *  Falls back to two-decimal precision below $1 so small days don't show
+ *  as "$0".
+ */
+function formatCompactDollars(value: number): string {
+  const absolute = Math.abs(value)
+  if (absolute >= 1e9) return `$${stripTrailingZero((value / 1e9).toFixed(1))}B`
+  if (absolute >= 1e6) return `$${stripTrailingZero((value / 1e6).toFixed(1))}M`
+  if (absolute >= 1e3) return `$${stripTrailingZero((value / 1e3).toFixed(1))}K`
+  if (absolute >= 1) return `$${value.toFixed(0)}`
+  return `$${value.toFixed(2)}`
+}
+
+/** Tooltip-friendly dollar formatter — "$1,234.56". */
+function formatExactDollars(value: number): string {
+  return `$${value.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
+}
+
 function tokenFieldsForView(
   modelTokens: ModelTokens,
   viewMode: ViewMode,
+  modelPricing: ModelPricingForResponse | undefined,
 ): BillableBreakdown {
+  if (viewMode === 'cost' && modelTokens.billable && modelPricing) {
+    // billable_value × $/MTok ÷ 1e6 = $ for that token type
+    const dollarsPerBillableUnit = modelPricing.input_usd_per_mtok / 1_000_000
+    return {
+      input: modelTokens.billable.input * dollarsPerBillableUnit,
+      output: modelTokens.billable.output * dollarsPerBillableUnit,
+      cache_read: modelTokens.billable.cache_read * dollarsPerBillableUnit,
+      cache_write_5m: modelTokens.billable.cache_write_5m * dollarsPerBillableUnit,
+      cache_write_1h: modelTokens.billable.cache_write_1h * dollarsPerBillableUnit,
+    }
+  }
   if (viewMode === 'billable' && modelTokens.billable) {
     return modelTokens.billable
   }
@@ -451,17 +501,21 @@ export default function App() {
 
   // ----- Derived chart config ---------------------------------------------
   const chartConfig = useMemo(() => {
-    if (dailyState.status !== 'ok') return { rows: [], series: [], hiddenInBillable: [] as string[] }
+    if (dailyState.status !== 'ok') {
+      return { rows: [], series: [], hiddenInPricedView: [] as string[] }
+    }
     const data = dailyState.data
     const visibleTokenTypes = new Set(
       data.tokenTypes.filter((t) => isSelected(selectedTokenTypes, t)),
     )
     let visibleModels = data.models.filter((m) => isSelected(selectedModels, m))
-    const hiddenInBillable: string[] = []
-    if (viewMode === 'billable') {
+    // Both 'billable' and 'cost' need a pricing entry — same gating, hide
+    // any unpriced model from the chart and surface the list as a footnote.
+    const hiddenInPricedView: string[] = []
+    if (viewMode === 'billable' || viewMode === 'cost') {
       visibleModels = visibleModels.filter((m) => {
         if (data.modelsWithoutPricing.includes(m)) {
-          hiddenInBillable.push(m)
+          hiddenInPricedView.push(m)
           return false
         }
         return true
@@ -479,12 +533,15 @@ export default function App() {
         for (const modelId of visibleModels) {
           const tokens = row.byModel[modelId]
           cells[modelId] = tokens
-            ? sumSelectedTokenFields(tokenFieldsForView(tokens, viewMode), visibleTokenTypes)
+            ? sumSelectedTokenFields(
+                tokenFieldsForView(tokens, viewMode, data.pricingByModel[modelId]),
+                visibleTokenTypes,
+              )
             : 0
         }
         return cells
       })
-      return { rows, series, hiddenInBillable }
+      return { rows, series, hiddenInPricedView }
     }
 
     // stackBy === 'token-type'
@@ -501,13 +558,15 @@ export default function App() {
         for (const modelId of visibleModels) {
           const tokens = row.byModel[modelId]
           if (!tokens) continue
-          sum += tokenFieldsForView(tokens, viewMode)[tokenType as keyof BillableBreakdown]
+          sum += tokenFieldsForView(tokens, viewMode, data.pricingByModel[modelId])[
+            tokenType as keyof BillableBreakdown
+          ]
         }
         cells[tokenType] = sum
       }
       return cells
     })
-    return { rows, series, hiddenInBillable }
+    return { rows, series, hiddenInPricedView }
   }, [dailyState, selectedModels, selectedTokenTypes, stackBy, viewMode])
 
   const allModels = dailyState.status === 'ok' ? dailyState.data.models : []
@@ -548,10 +607,11 @@ export default function App() {
         </div>
       </header>
 
-      {pricingNeedsReview && viewMode === 'billable' && (
+      {pricingNeedsReview && (viewMode === 'billable' || viewMode === 'cost') && (
         <div className="bg-amber-50 border-b border-amber-200 text-amber-900 text-xs px-6 py-2">
-          <span className="font-medium">Pricing needs review:</span> the cost-weighted view is using
-          seed values from <code className="bg-amber-100 px-1 rounded">pricing.toml</code>. Verify
+          <span className="font-medium">Pricing needs review:</span>{' '}
+          {viewMode === 'cost' ? 'cost figures are' : 'the cost-weighted view is'} using seed
+          values from <code className="bg-amber-100 px-1 rounded">pricing.toml</code>. Verify
           against{' '}
           <a
             className="underline"
@@ -719,8 +779,9 @@ export default function App() {
               options={[
                 { value: 'all', label: 'Raw' },
                 { value: 'billable', label: 'Cost-weighted' },
+                { value: 'cost', label: 'Cost (USD)' },
               ]}
-              labelHelp="Raw counts each token equally. Cost-weighted weights each token type by its Anthropic API price relative to input — output ×5, cache_read ×0.1, cache writes ×1.25 (5m) and ×2 (1h). Use it when comparing expensive output against cheap cache reads on the same axis."
+              labelHelp="Raw counts each token equally. Cost-weighted weights each token type by its Anthropic API price relative to input (output ×5, cache_read ×0.1, cache writes ×1.25/×2). Cost (USD) converts cost-weighted to dollars per the model's input price — what these tokens would have cost on the API. Models without pricing are hidden from the latter two views."
             />
           </div>
 
@@ -761,18 +822,20 @@ export default function App() {
             />
           </div>
 
-          {chartConfig.hiddenInBillable.length > 0 && (
+          {chartConfig.hiddenInPricedView.length > 0 && (
             <div className="text-xs text-slate-500">
-              Hidden in cost-weighted view (no pricing entry):{' '}
-              {chartConfig.hiddenInBillable.map((m) => modelDisplayName(m)).join(', ')}
+              Hidden ({viewMode === 'cost' ? 'no pricing entry → no cost' : 'no pricing entry'}):{' '}
+              {chartConfig.hiddenInPricedView.map((m) => modelDisplayName(m)).join(', ')}
             </div>
           )}
 
           <div>
             <h2 className="text-base font-medium mb-3">
-              {viewMode === 'billable'
-                ? 'Daily cost-weighted tokens'
-                : 'Daily token usage'}{' '}
+              {viewMode === 'cost'
+                ? 'Daily cost (USD, API list)'
+                : viewMode === 'billable'
+                  ? 'Daily cost-weighted tokens'
+                  : 'Daily token usage'}{' '}
               · {stackBy === 'model' ? 'stacked by model' : 'stacked by token type'}
             </h2>
 
@@ -814,6 +877,7 @@ export default function App() {
                       series={chartConfig.series}
                       yAxisScale={yAxisScale}
                       granularity={dailyState.data.granularity}
+                      viewMode={viewMode}
                     />
                   </ResponsiveContainer>
                 )}
@@ -841,17 +905,32 @@ type ChartByTypeProps = {
   series: ChartSeries[]
   yAxisScale: YAxisScale
   granularity: Granularity
+  viewMode: ViewMode
 }
 
-function ChartByType({ chartType, data, series, yAxisScale, granularity }: ChartByTypeProps) {
+function ChartByType({
+  chartType,
+  data,
+  series,
+  yAxisScale,
+  granularity,
+  viewMode,
+}: ChartByTypeProps) {
   const chartMargin = { top: 8, right: 16, left: 8, bottom: 0 }
+  const isCostMode = viewMode === 'cost'
 
-  // Recharts log-scale gotcha: domain has to start at a positive number,
-  // and zero values get clamped. `[1, 'auto']` works for token counts —
-  // the floor is one token. `allowDataOverflow` keeps clamped values
-  // visible at the floor instead of disappearing.
+  // Log-scale floor: $1 in cost mode (sub-$1 days clamp here), 1 token
+  // otherwise. `allowDataOverflow` keeps clamped values visible at the
+  // floor rather than vanishing.
   const yAxisDomain: [number | string, number | string] =
-    yAxisScale === 'log' ? [1, 'auto'] : ['auto', 'auto']
+    yAxisScale === 'log' ? [isCostMode ? 0.01 : 1, 'auto'] : ['auto', 'auto']
+
+  const yTickFormatter = isCostMode ? formatCompactDollars : formatCompactNumber
+  const tooltipValueFormatter = (rawValue: unknown): string => {
+    if (typeof rawValue !== 'number') return String(rawValue)
+    return isCostMode ? formatExactDollars(rawValue) : rawValue.toLocaleString()
+  }
+  const yAxisWidth = isCostMode ? 64 : 56
 
   const sharedShell = (
     <>
@@ -863,8 +942,8 @@ function ChartByType({ chartType, data, series, yAxisScale, granularity }: Chart
       />
       <YAxis
         tick={{ fontSize: 12 }}
-        tickFormatter={formatCompactNumber}
-        width={56}
+        tickFormatter={yTickFormatter}
+        width={yAxisWidth}
         scale={yAxisScale}
         domain={yAxisDomain}
         allowDataOverflow={yAxisScale === 'log'}
@@ -873,10 +952,7 @@ function ChartByType({ chartType, data, series, yAxisScale, granularity }: Chart
         labelFormatter={(label) =>
           typeof label === 'string' ? formatBucketLabel(label, granularity) : String(label)
         }
-        formatter={(rawValue, displayLabel) => [
-          typeof rawValue === 'number' ? rawValue.toLocaleString() : String(rawValue),
-          displayLabel,
-        ]}
+        formatter={(rawValue, displayLabel) => [tooltipValueFormatter(rawValue), displayLabel]}
       />
       <Legend />
     </>

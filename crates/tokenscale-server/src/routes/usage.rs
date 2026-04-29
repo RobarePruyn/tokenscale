@@ -164,6 +164,24 @@ pub struct DailyUsageResponse {
     /// formatter can match what was actually rendered (auto granularity is
     /// resolved client-side, but verifying server-side is cheap).
     pub granularity: Granularity,
+    /// Per-model pricing snippet (`input_usd_per_mtok` only — sufficient
+    /// for the dashboard to convert `billable` into USD via
+    /// `billable_value × input_price ÷ 1_000_000`). Models without a
+    /// pricing entry are absent from this map; same set as
+    /// `modelsWithoutPricing`. Sized by model count, not row count, so
+    /// the wire cost is trivial.
+    #[serde(rename = "pricingByModel")]
+    pub pricing_by_model: BTreeMap<String, ModelPricingForResponse>,
+}
+
+/// The slice of `ModelPricing` the dashboard needs to render the "Cost
+/// (USD)" view. Kept narrow on purpose: the full pricing record stays
+/// server-side, both to avoid leaking values the user hasn't asked for
+/// and to keep the API surface stable when more fields appear in the
+/// pricing schema later.
+#[derive(Serialize)]
+pub struct ModelPricingForResponse {
+    pub input_usd_per_mtok: f64,
 }
 
 pub async fn daily_handler(
@@ -263,12 +281,32 @@ pub async fn daily_handler(
         .map(|(date, by_model)| DailyUsageRow { date, by_model })
         .collect();
 
+    // Build the per-model pricing snippet for visible models that have an
+    // entry. Sized by model count, not row count.
+    let pricing_by_model: BTreeMap<String, ModelPricingForResponse> = models
+        .iter()
+        .filter_map(|model_id| {
+            state
+                .pricing
+                .lookup(provider_for_pricing, model_id)
+                .map(|model_pricing| {
+                    (
+                        model_id.clone(),
+                        ModelPricingForResponse {
+                            input_usd_per_mtok: model_pricing.input_usd_per_mtok,
+                        },
+                    )
+                })
+        })
+        .collect();
+
     Ok(Json(DailyUsageResponse {
         rows,
         models,
         token_types: TOKEN_TYPES.to_vec(),
         models_without_pricing: models_without_pricing.into_iter().collect(),
         granularity: resolved.granularity,
+        pricing_by_model,
     }))
 }
 
