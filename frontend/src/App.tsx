@@ -48,6 +48,18 @@ type BillableBreakdown = {
   cache_write_1h: number
 }
 
+type ModelImpact = {
+  energy_wh: number
+  facility_wh: number
+  co2eG: number | null
+  waterL: number | null
+  maxUncertaintyPct: number
+  eventsMissingEnvFactor: number
+  eventsUsingFallbackPue: number
+  eventsUsingFallbackWue: number
+  eventsCount: number
+}
+
 type ModelTokens = {
   input: number
   output: number
@@ -56,6 +68,11 @@ type ModelTokens = {
   cache_write_1h: number
   billable?: BillableBreakdown
   billable_total?: number
+  /** Per-(bucket, model) environmental impact, time-anchored against
+   *  factor rows authoritative at each event's `occurred_at`. Always
+   *  present when the cell has events; co2eG/waterL may be null when
+   *  no event in the bucket had a usable grid factor. */
+  impact: ModelImpact
 }
 
 type DailyUsageRow = {
@@ -74,6 +91,11 @@ type DailyUsageResponse = {
   models: string[]
   tokenTypes: string[]
   modelsWithoutPricing: string[]
+  /** Models present in the data but missing from the env_factor file —
+   *  environmental views render these as "factor data unavailable". */
+  modelsWithoutFactors: string[]
+  /** Configured AWS region the impact figures are attributed to. */
+  configuredRegion: string
   granularity: Granularity
   /** Per-model `input_usd_per_mtok` so the frontend can convert `billable`
    *  values to USD on the fly. Models without a pricing entry are absent. */
@@ -102,6 +124,22 @@ type HealthResponse = {
      *  dashboard surfaces this in the banner so the user can decide
      *  whether the values are too stale to rely on. */
     accessed_at: string | null
+  }
+  environmental: {
+    schema_version: number
+    file_status: string
+    file_version: string | null
+    file_published: string | null
+    methodology: string | null
+    methodology_source: string | null
+    model_count: number
+    region_count: number
+    is_placeholder: boolean
+    needs_review: boolean
+    accessed_at: string | null
+    configured_region: string
+    configured_region_egrid_subregion: string | null
+    configured_region_egrid_subregion_full_name: string | null
   }
 }
 
@@ -409,6 +447,38 @@ function formatExactDollars(value: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`
+}
+
+/** Energy in Wh, auto-scaled to MWh / kWh / Wh / mWh. */
+function formatEnergy(wattHours: number): string {
+  const absolute = Math.abs(wattHours)
+  if (absolute >= 1e6) return `${stripTrailingZero((wattHours / 1e6).toFixed(2))} MWh`
+  if (absolute >= 1e3) return `${stripTrailingZero((wattHours / 1e3).toFixed(2))} kWh`
+  if (absolute >= 1) return `${stripTrailingZero(wattHours.toFixed(2))} Wh`
+  if (absolute >= 1e-3)
+    return `${stripTrailingZero((wattHours * 1000).toFixed(2))} mWh`
+  return `${stripTrailingZero((wattHours * 1_000_000).toFixed(2))} µWh`
+}
+
+/** CO₂ in grams, auto-scaled to t / kg / g / mg. */
+function formatCo2(grams: number): string {
+  const absolute = Math.abs(grams)
+  if (absolute >= 1_000_000)
+    return `${stripTrailingZero((grams / 1_000_000).toFixed(2))} t CO₂e`
+  if (absolute >= 1000)
+    return `${stripTrailingZero((grams / 1000).toFixed(2))} kg CO₂e`
+  if (absolute >= 1) return `${stripTrailingZero(grams.toFixed(2))} g CO₂e`
+  if (absolute >= 1e-3)
+    return `${stripTrailingZero((grams * 1000).toFixed(2))} mg CO₂e`
+  return `${stripTrailingZero(grams.toFixed(4))} g CO₂e`
+}
+
+/** Water in liters, auto-scaled to kL / L / mL. */
+function formatWater(liters: number): string {
+  const absolute = Math.abs(liters)
+  if (absolute >= 1000) return `${stripTrailingZero((liters / 1000).toFixed(2))} kL`
+  if (absolute >= 1) return `${stripTrailingZero(liters.toFixed(2))} L`
+  return `${stripTrailingZero((liters * 1000).toFixed(2))} mL`
 }
 
 function tokenFieldsForView(
@@ -756,6 +826,57 @@ export default function App() {
       ? counterfactualCostUsd - subscriptionCostUsd
       : null
 
+  // Window-total environmental impact, summed across the chart's currently
+  // visible (model) cells. Token-type filter is intentionally NOT applied
+  // — impact is computed at the per-event factor level upstream of the
+  // bucket, so chopping by token type after the fact would mis-attribute
+  // facility overhead. Models are filtered to honor the chip selection.
+  const windowImpact = useMemo(() => {
+    if (dailyState.status !== 'ok') return null
+    const data = dailyState.data
+    const visibleModels = data.models.filter((m) => isSelected(selectedModels, m))
+    let energyWh = 0
+    let facilityWh = 0
+    let co2eG = 0
+    let waterL = 0
+    let maxUncertaintyPct = 0
+    let eventsMissingFactor = 0
+    let eventsCount = 0
+    let anyCo2 = false
+    let anyWater = false
+    for (const row of data.rows) {
+      for (const modelId of visibleModels) {
+        const cell = row.byModel[modelId]
+        if (!cell) continue
+        const impact = cell.impact
+        energyWh += impact.energy_wh
+        facilityWh += impact.facility_wh
+        if (impact.co2eG !== null) {
+          co2eG += impact.co2eG
+          anyCo2 = true
+        }
+        if (impact.waterL !== null) {
+          waterL += impact.waterL
+          anyWater = true
+        }
+        if (impact.maxUncertaintyPct > maxUncertaintyPct) {
+          maxUncertaintyPct = impact.maxUncertaintyPct
+        }
+        eventsMissingFactor += impact.eventsMissingEnvFactor
+        eventsCount += impact.eventsCount
+      }
+    }
+    return {
+      energyWh,
+      facilityWh,
+      co2eG: anyCo2 ? co2eG : null,
+      waterL: anyWater ? waterL : null,
+      maxUncertaintyPct,
+      eventsMissingFactor,
+      eventsCount,
+    }
+  }, [dailyState, selectedModels])
+
   const allModels = dailyState.status === 'ok' ? dailyState.data.models : []
   const allTokenTypes = dailyState.status === 'ok' ? dailyState.data.tokenTypes : []
   const allProjectIds = projectsState.status === 'ok'
@@ -765,6 +886,15 @@ export default function App() {
     healthState.status === 'ok' && healthState.data.pricing.needs_review
   const pricingAccessedAt =
     healthState.status === 'ok' ? healthState.data.pricing.accessed_at : null
+  const environmentalHealth =
+    healthState.status === 'ok' ? healthState.data.environmental : null
+  // Environmental views are meaningful only when the factor file is
+  // production-grade. Phase 1's placeholder file flips this off so the
+  // banner doesn't promise data that isn't there.
+  const environmentalReady =
+    environmentalHealth !== null &&
+    environmentalHealth.file_status === 'production' &&
+    !environmentalHealth.is_placeholder
 
   const filtersHaveSelection =
     selectedModels !== null || selectedTokenTypes !== null || selectedProjects !== null
@@ -795,6 +925,48 @@ export default function App() {
           <span className="text-xs text-slate-500">Phase 1 — local Claude Code only</span>
         </div>
       </header>
+
+      {environmentalReady && environmentalHealth && (
+        <div className="border-b border-emerald-200 bg-emerald-50 text-emerald-900 text-xs px-6 py-2">
+          <span className="font-medium">
+            Environmental factors v{environmentalHealth.file_version ?? '?'}
+            {environmentalHealth.file_published
+              ? ` · ${environmentalHealth.file_published}`
+              : ''}
+          </span>
+          {' · '}
+          Region:{' '}
+          <span className="font-mono">{environmentalHealth.configured_region}</span>
+          {environmentalHealth.configured_region_egrid_subregion && (
+            <>
+              {' → eGRID '}
+              <span className="font-mono">
+                {environmentalHealth.configured_region_egrid_subregion}
+              </span>
+              {environmentalHealth.configured_region_egrid_subregion_full_name && (
+                <>
+                  {' ('}
+                  {environmentalHealth.configured_region_egrid_subregion_full_name}
+                  {')'}
+                </>
+              )}
+            </>
+          )}
+          {environmentalHealth.methodology_source && (
+            <>
+              {' · '}
+              <a
+                className="underline"
+                href={environmentalHealth.methodology_source}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {environmentalHealth.methodology ?? 'methodology'}
+              </a>
+            </>
+          )}
+        </div>
+      )}
 
       {(viewMode === 'billable' || viewMode === 'cost') && pricingAccessedAt && (
         <div
@@ -1054,6 +1226,15 @@ export default function App() {
             pricingNeedsReview={pricingNeedsReview}
           />
 
+          {environmentalReady && windowImpact && (
+            <EnvironmentalStatRow
+              impact={windowImpact}
+              modelsWithoutFactors={
+                dailyState.status === 'ok' ? dailyState.data.modelsWithoutFactors : []
+              }
+            />
+          )}
+
           <div>
             <h2 className="text-base font-medium mb-3">
               {viewMode === 'cost'
@@ -1177,6 +1358,72 @@ function StatRow({
         helpText="Counterfactual API cost minus subscriptions paid. Positive means your subscription is cheaper than running the same usage on the API."
         emphasize={netValueUsd !== null && netValueUsd > 0}
       />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// EnvironmentalStatRow — three KPIs: total energy, CO₂e, water for the
+// chart's currently visible cells, with the bucket-max uncertainty
+// percentage applied to all three. Renders only when the factor file is
+// production-grade; "factor data unavailable" is communicated via the
+// `modelsWithoutFactors` footnote.
+// ---------------------------------------------------------------------------
+
+type EnvironmentalStatRowProps = {
+  impact: {
+    energyWh: number
+    facilityWh: number
+    co2eG: number | null
+    waterL: number | null
+    maxUncertaintyPct: number
+    eventsMissingFactor: number
+    eventsCount: number
+  }
+  modelsWithoutFactors: string[]
+}
+
+function EnvironmentalStatRow({
+  impact,
+  modelsWithoutFactors,
+}: EnvironmentalStatRowProps) {
+  const uncertaintySuffix =
+    impact.maxUncertaintyPct > 0 ? ` ± ${impact.maxUncertaintyPct}%` : ''
+  const co2eValue =
+    impact.co2eG === null ? '—' : `${formatCo2(impact.co2eG)}${uncertaintySuffix}`
+  const waterValue =
+    impact.waterL === null
+      ? '—'
+      : `${formatWater(impact.waterL)}${uncertaintySuffix}`
+  const energyValue = `${formatEnergy(impact.facilityWh)}${uncertaintySuffix}`
+
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <StatCard
+          label="Energy (facility)"
+          value={energyValue}
+          helpText="Per-event energy summed across visible cells, including PUE-weighted facility overhead. Uncertainty is the widest model band in the window."
+        />
+        <StatCard
+          label="CO₂e"
+          value={co2eValue}
+          helpText="Greenhouse-gas emissions attributed via the configured region's grid intensity. Anthropic does not disclose which region served any given request — region is your declared assumption."
+          muted={impact.co2eG === null}
+        />
+        <StatCard
+          label="Water"
+          value={waterValue}
+          helpText="Direct datacenter water (cooling) using the configured region's WUE, falling back to the file's defaults.fallback_wue_l_per_kwh when absent. Indirect (power-plant) water is a v0.2 enhancement."
+          muted={impact.waterL === null}
+        />
+      </div>
+      {modelsWithoutFactors.length > 0 && (
+        <div className="text-xs text-slate-500">
+          Factor data unavailable:{' '}
+          {modelsWithoutFactors.map((m) => modelDisplayName(m)).join(', ')}
+        </div>
+      )}
     </div>
   )
 }
