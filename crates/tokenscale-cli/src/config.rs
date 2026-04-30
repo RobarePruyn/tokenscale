@@ -13,6 +13,14 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use tracing::warn;
+
+/// Default AWS region applied when neither `[inference]
+/// .default_inference_region` nor the legacy top-level
+/// `default_inference_region` is set. v1 ships with us-east-1 as the
+/// dominant Anthropic-on-AWS region; users in other regions override
+/// in their config.
+pub const DEFAULT_INFERENCE_REGION: &str = "us-east-1";
 
 /// In-memory representation of the configuration file.
 ///
@@ -23,17 +31,37 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// AWS region to apply when looking up grid factors. Anthropic does not
-    /// disclose which region served any given request — this is a declared
-    /// user assumption, surfaced prominently in the dashboard.
+    /// **Deprecated:** the canonical home is `[inference]
+    /// .default_inference_region`. Kept here so v0.x configs that wrote
+    /// the field at the top level continue to load. When both this and
+    /// `[inference].default_inference_region` are set, the
+    /// `[inference]` value wins; when only this is set, it is used and
+    /// a one-time warning fires on load.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default_inference_region: Option<String>,
 
+    pub inference: InferenceConfig,
     pub ingest: IngestConfig,
     pub storage: StorageConfig,
     pub server: ServerConfig,
     pub auth: AuthConfig,
     pub pricing: PricingConfig,
     pub factors: FactorsConfig,
+}
+
+/// Per-event impact compute settings. Lives in its own table because
+/// Phase 2's environmental view exposes more knobs over time (water
+/// methodology selection, uncertainty rendering) and grouping them
+/// keeps the file readable as the surface grows.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InferenceConfig {
+    /// AWS region to apply when looking up grid factors. Anthropic does
+    /// not disclose which region served any given request — this is a
+    /// declared user assumption, surfaced prominently in the dashboard.
+    /// Defaults to [`DEFAULT_INFERENCE_REGION`] when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_inference_region: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +148,12 @@ pub struct FactorsConfig {
 impl Config {
     /// Load the config from `path`, or return defaults if the file does not
     /// exist. Parse errors are surfaced as anyhow errors with context.
+    ///
+    /// If the config carries the deprecated top-level
+    /// `default_inference_region` without an `[inference]
+    /// .default_inference_region` shadowing it, a one-time warning is
+    /// emitted via `tracing::warn` on the first load. The value is
+    /// still honored — back-compat does not break.
     pub fn load_or_default(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
@@ -128,7 +162,28 @@ impl Config {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let config: Self =
             toml::from_str(&contents).with_context(|| format!("parsing {}", path.display()))?;
+        if config.default_inference_region.is_some()
+            && config.inference.default_inference_region.is_none()
+        {
+            warn!(
+                "config field `default_inference_region` is at the top level; \
+                 move it under `[inference]` — top-level reads are deprecated \
+                 and will be removed in a future version."
+            );
+        }
         Ok(config)
+    }
+
+    /// Resolved inference region, preferring `[inference]
+    /// .default_inference_region`, then the deprecated top-level
+    /// field, then [`DEFAULT_INFERENCE_REGION`]. Returned as `&str` so
+    /// callers can pass it directly into the factor-lookup queries.
+    pub fn effective_inference_region(&self) -> &str {
+        self.inference
+            .default_inference_region
+            .as_deref()
+            .or(self.default_inference_region.as_deref())
+            .unwrap_or(DEFAULT_INFERENCE_REGION)
     }
 
     /// Serialize to a TOML string. Used by tests to verify the default
@@ -205,6 +260,47 @@ mod tests {
         let path = temp.path().join("does-not-exist.toml");
         let config = Config::load_or_default(&path).unwrap();
         assert!(config.default_inference_region.is_none());
+        assert!(config.inference.default_inference_region.is_none());
+        assert_eq!(config.effective_inference_region(), DEFAULT_INFERENCE_REGION);
+    }
+
+    #[test]
+    fn inference_section_overrides_top_level_for_back_compat() {
+        let toml_with_both = r#"
+default_inference_region = "us-east-2"
+[inference]
+default_inference_region = "us-west-2"
+"#;
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, toml_with_both).unwrap();
+        let config = Config::load_or_default(&path).unwrap();
+        assert_eq!(config.effective_inference_region(), "us-west-2");
+    }
+
+    #[test]
+    fn legacy_top_level_only_still_resolves() {
+        let toml_legacy = r#"
+default_inference_region = "us-east-2"
+"#;
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, toml_legacy).unwrap();
+        let config = Config::load_or_default(&path).unwrap();
+        assert_eq!(config.effective_inference_region(), "us-east-2");
+    }
+
+    #[test]
+    fn inference_section_only_resolves() {
+        let toml_inference = r#"
+[inference]
+default_inference_region = "us-east-2"
+"#;
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, toml_inference).unwrap();
+        let config = Config::load_or_default(&path).unwrap();
+        assert_eq!(config.effective_inference_region(), "us-east-2");
     }
 
     #[test]

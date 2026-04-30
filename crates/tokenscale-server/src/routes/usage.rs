@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tokenscale_core::{BillableMultipliers, ModelPricing};
 use tokenscale_store::{
-    daily_usage_breakdown, list_models_in_window, usage_by_model, DailyUsageBreakdownRow,
-    Granularity, ALL_PROVIDERS,
+    aggregate_impact_by_bucket, list_models_in_window, usage_by_model, Granularity,
+    ImpactByBucketRow, ImpactQueryFactors, ALL_PROVIDERS,
 };
 
 use crate::error::ApiError;
@@ -124,6 +124,52 @@ pub struct ModelTokens {
     /// billable" view to skip a client-side reduce on every render.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub billable_total: Option<i64>,
+    /// Environmental impact for this (bucket, model) cell — the per-event
+    /// time-anchored aggregate of energy / facility energy / CO₂e / water,
+    /// plus the provenance counters the dashboard shows in tooltips.
+    /// Always present when the row carries any events; energy is `0.0`
+    /// when no env_factor row was found for any event in the bucket
+    /// (counted in `events_missing_env_factor`).
+    pub impact: ModelImpact,
+}
+
+/// Per-(bucket, model) environmental impact rollup. Mirrors the field
+/// set produced by `tokenscale_store::aggregate_impact_by_bucket`,
+/// minus the dimensions used for grouping.
+#[derive(Serialize)]
+pub struct ModelImpact {
+    /// Pre-PUE per-token energy summed across events.
+    pub energy_wh: f64,
+    /// Energy after PUE multiplier — the "facility-side" energy a
+    /// data center actually drew, including overhead.
+    pub facility_wh: f64,
+    /// Grams of CO₂-equivalent. `null` when no event in the bucket had
+    /// a usable grid `co2e_kg_per_kwh` — the dashboard renders that as
+    /// "—" rather than 0 g.
+    #[serde(rename = "co2eG")]
+    pub co2e_g: Option<f64>,
+    /// Liters of water. `null` when no event had a usable grid water
+    /// factor and no fallback was configured.
+    #[serde(rename = "waterL")]
+    pub water_l: Option<f64>,
+    /// Maximum per-event uncertainty inside the bucket (in percent).
+    /// The dashboard renders this as the cell's `± X%` band — a
+    /// conservative widest-band-wins choice.
+    #[serde(rename = "maxUncertaintyPct")]
+    pub max_uncertainty_pct: i32,
+    /// Number of events whose env_factor row was missing entirely. The
+    /// dashboard surfaces this as "X events without factor data".
+    #[serde(rename = "eventsMissingEnvFactor")]
+    pub events_missing_env_factor: i64,
+    /// Number of events that fell back to `defaults.fallback_pue`.
+    #[serde(rename = "eventsUsingFallbackPue")]
+    pub events_using_fallback_pue: i64,
+    /// Number of events that fell back to
+    /// `defaults.fallback_wue_l_per_kwh`.
+    #[serde(rename = "eventsUsingFallbackWue")]
+    pub events_using_fallback_wue: i64,
+    #[serde(rename = "eventsCount")]
+    pub events_count: i64,
 }
 
 /// Same five token-type fields as `ModelTokens`, but each pre-multiplied
@@ -160,6 +206,18 @@ pub struct DailyUsageResponse {
     /// total is missing for those. Surfaced so the dashboard can mark them.
     #[serde(rename = "modelsWithoutPricing")]
     pub models_without_pricing: Vec<String>,
+    /// Models that appeared in the data but had no env_factor row at any
+    /// of the events' `occurred_at` dates — environmental views render
+    /// these as "factor data unavailable" rather than zero. v0.1 ships
+    /// real factor values for the major Anthropic models, so this is
+    /// usually empty in practice.
+    #[serde(rename = "modelsWithoutFactors")]
+    pub models_without_factors: Vec<String>,
+    /// Configured AWS region the impact figures are attributed to.
+    /// Echoed back so the dashboard's environmental banner can render
+    /// "us-east-1 (SRVC)" without a separate /health round-trip.
+    #[serde(rename = "configuredRegion")]
+    pub configured_region: String,
     /// Bucket size used for the rows. Echoed back so the frontend's x-axis
     /// formatter can match what was actually rendered (auto granularity is
     /// resolved client-side, but verifying server-side is cheap).
@@ -184,6 +242,11 @@ pub struct ModelPricingForResponse {
     pub input_usd_per_mtok: f64,
 }
 
+// The body coordinates several pieces — visible-models lookup, impact
+// aggregation, billable derivation, response assembly. Splitting it
+// further would just add tiny single-call helpers that are harder to
+// follow than the linear flow here.
+#[allow(clippy::too_many_lines)]
 pub async fn daily_handler(
     State(state): State<AppState>,
     Query(params): Query<UsageWindowParams>,
@@ -211,21 +274,30 @@ pub async fn daily_handler(
         .map(|row| (row.model.clone(), row.total_tokens))
         .collect();
 
-    // The chart's per-(bucket, model) data still applies the project filter.
-    let breakdown_rows = daily_usage_breakdown(
+    // Per-(bucket, model) impact aggregation is the unified data source —
+    // it carries token sums AND factor-anchored impact in one query. The
+    // dashboard always gets the full impact block; "show / hide
+    // environmental view" is a frontend concern.
+    let impact_factors = ImpactQueryFactors {
+        region: state.inference_region.as_str(),
+        fallback_pue: state.factors.effective_fallback_pue(),
+        fallback_wue_l_per_kwh: state.factors.effective_fallback_wue_l_per_kwh(),
+    };
+    let impact_rows = aggregate_impact_by_bucket(
         &state.database,
         &resolved.from_date,
         &resolved.to_date,
         &resolved.provider,
         &resolved.projects,
         resolved.granularity,
+        &impact_factors,
     )
     .await?;
 
     // For Phase 1, every visible model is provider=anthropic by virtue of
     // sources.provider being filtered to anthropic when applicable. We hand
     // that to the pricing lookup. v2 will need to carry the actual provider
-    // through breakdown rows.
+    // through breakdown rows — which the impact_rows now do.
     let provider_for_pricing = if resolved.provider == ALL_PROVIDERS {
         "anthropic"
     } else {
@@ -235,10 +307,10 @@ pub async fn daily_handler(
     let mut models_without_pricing: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
 
-    // Second pass: group filtered rows into the nested by-date shape, with
-    // billable breakdown + total computed inline.
+    // Group impact rows into the nested by-date shape, with billable +
+    // impact attached per (date, model) cell.
     let mut grouped_by_date: BTreeMap<String, BTreeMap<String, ModelTokens>> = BTreeMap::new();
-    for row in breakdown_rows {
+    for row in impact_rows {
         if !visible_models.contains(&row.model) {
             continue;
         }
@@ -254,27 +326,59 @@ pub async fn daily_handler(
             (None, None)
         };
 
-        grouped_by_date.entry(row.date).or_default().insert(
-            row.model,
-            ModelTokens {
-                input: row.input_tokens,
-                output: row.output_tokens,
-                cache_read: row.cache_read_tokens,
-                cache_write_5m: row.cache_write_5m_tokens,
-                cache_write_1h: row.cache_write_1h_tokens,
-                billable,
-                billable_total,
+        let bucket = row.bucket.clone();
+        let model_key = row.model.clone();
+        let model_tokens = ModelTokens {
+            input: row.input_tokens,
+            output: row.output_tokens,
+            cache_read: row.cache_read_tokens,
+            cache_write_5m: row.cache_write_5m_tokens,
+            cache_write_1h: row.cache_write_1h_tokens,
+            billable,
+            billable_total,
+            impact: ModelImpact {
+                energy_wh: row.energy_wh,
+                facility_wh: row.facility_wh,
+                co2e_g: row.co2e_g,
+                water_l: row.water_l,
+                max_uncertainty_pct: row.max_uncertainty_pct,
+                events_missing_env_factor: row.events_missing_env_factor,
+                events_using_fallback_pue: row.events_using_fallback_pue,
+                events_using_fallback_wue: row.events_using_fallback_wue,
+                events_count: row.events_count,
             },
-        );
+        };
+        grouped_by_date
+            .entry(bucket)
+            .or_default()
+            .insert(model_key, model_tokens);
     }
 
-    let mut models: Vec<String> = visible_models.into_iter().collect();
+    let mut models: Vec<String> = visible_models.iter().cloned().collect();
     // Sort by raw total desc, ties broken alphabetically for determinism.
     models.sort_by(|left, right| {
         window_totals[right]
             .cmp(&window_totals[left])
             .then_with(|| left.cmp(right))
     });
+
+    // Models present in the data but missing from the in-memory factor
+    // snapshot. The aggregate query also surfaces per-event missing-factor
+    // counts via `events_missing_env_factor`; this list is the model-level
+    // answer for dashboard banners ("Claude Opus 4.7: factor data unavailable").
+    let models_without_factors: Vec<String> = visible_models
+        .iter()
+        .filter(|model_id| {
+            !state
+                .factors
+                .providers
+                .get(provider_for_pricing)
+                .is_some_and(|provider| provider.models.contains_key(*model_id))
+        })
+        .cloned()
+        .collect();
+    let mut models_without_factors = models_without_factors;
+    models_without_factors.sort();
 
     let rows = grouped_by_date
         .into_iter()
@@ -305,6 +409,8 @@ pub async fn daily_handler(
         models,
         token_types: TOKEN_TYPES.to_vec(),
         models_without_pricing: models_without_pricing.into_iter().collect(),
+        models_without_factors,
+        configured_region: state.inference_region.clone(),
         granularity: resolved.granularity,
         pricing_by_model,
     }))
@@ -327,7 +433,7 @@ pub async fn daily_handler(
 )]
 fn compute_billable_breakdown(
     model_pricing: &ModelPricing,
-    row: &DailyUsageBreakdownRow,
+    row: &ImpactByBucketRow,
 ) -> (BillableBreakdown, i64) {
     let multipliers = BillableMultipliers::from_pricing(model_pricing);
     let input = (row.input_tokens.max(0) as f64 * multipliers.input) as i64;

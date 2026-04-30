@@ -18,10 +18,16 @@ pub struct AppState {
     /// in-flight handlers.
     pub pricing: Arc<PricingFile>,
     /// Environmental-factor snapshot loaded from `environmental-factors.toml`
-    /// at startup. Phase 1 only exposes the snapshot's status via
-    /// `/api/v1/health`; the per-event impact computation that consumes the
-    /// values is Phase 2.
+    /// at startup. The factor *values* live in the DB (synced on boot); this
+    /// snapshot carries the file-level metadata (methodology, file version,
+    /// `[defaults]` fallbacks, display names) that the dashboard reads.
     pub factors: Arc<EnvironmentalFactorsFile>,
+    /// Configured AWS region used as the grid-factor lookup key for every
+    /// event. Derived from `[inference].default_inference_region` (with
+    /// back-compat for the legacy top-level field). Anthropic does not
+    /// disclose which region served any given request, so this is a declared
+    /// user assumption — surfaced in the dashboard's environmental banner.
+    pub inference_region: String,
 }
 
 impl AppState {
@@ -30,11 +36,13 @@ impl AppState {
         database: Database,
         pricing: Arc<PricingFile>,
         factors: Arc<EnvironmentalFactorsFile>,
+        inference_region: String,
     ) -> Self {
         Self {
             database,
             pricing,
             factors,
+            inference_region,
         }
     }
 }

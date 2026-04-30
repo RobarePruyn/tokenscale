@@ -39,6 +39,18 @@ pub struct PricingStatus {
 pub struct EnvironmentalStatus {
     pub schema_version: i64,
     pub file_status: String,
+    /// Human-readable file version — e.g. `"0.1"`. Surfaced as
+    /// "Environmental factors v0.1" in the dashboard banner.
+    pub file_version: Option<String>,
+    /// ISO date the file was published. Pairs with `file_version` so
+    /// the banner can show "v0.1, 2026-04-28".
+    pub file_published: Option<String>,
+    /// Methodology identifier — e.g. `"google-comprehensive-aug-2025"`.
+    /// Drives the methodology page's title and copy.
+    pub methodology: Option<String>,
+    /// URL the methodology is sourced from. The methodology page
+    /// links here so users can verify the math against the original.
+    pub methodology_source: Option<String>,
     /// Number of (provider, model) factor entries currently loaded.
     pub model_count: usize,
     /// Number of grid (region) factor entries currently loaded.
@@ -52,6 +64,16 @@ pub struct EnvironmentalStatus {
     pub needs_review: bool,
     /// Most recent `source_accessed_at` across loaded grid factors.
     pub accessed_at: Option<String>,
+    /// Configured AWS region used to attribute grid factors to events.
+    /// Comes from `[inference].default_inference_region` in the user's
+    /// config (default `"us-east-1"`).
+    pub configured_region: String,
+    /// EPA eGRID subregion code for the configured region — e.g.
+    /// `"SRVC"` (us-east-1). Sourced from the in-memory factor file's
+    /// grid entry. `None` when the region isn't in the file.
+    pub configured_region_egrid_subregion: Option<String>,
+    /// Human-readable expansion — e.g. `"SERC Virginia/Carolina"`.
+    pub configured_region_egrid_subregion_full_name: Option<String>,
 }
 
 pub async fn handler(State(state): State<AppState>) -> Result<Json<HealthResponse>, ApiError> {
@@ -78,11 +100,24 @@ pub async fn handler(State(state): State<AppState>) -> Result<Json<HealthRespons
         environmental: EnvironmentalStatus {
             schema_version: factors.schema_version,
             file_status: factors.file_status.clone(),
+            file_version: factors.file_version.clone(),
+            file_published: factors.file_published.clone(),
+            methodology: factors.methodology.clone(),
+            methodology_source: factors.methodology_source.clone(),
             model_count: factors.model_count(),
             region_count: factors.region_count(),
             is_placeholder: factors.is_placeholder(),
             needs_review: factors.is_review_pending(),
             accessed_at: factors.most_recent_grid_accessed_at().map(str::to_owned),
+            configured_region: state.inference_region.clone(),
+            configured_region_egrid_subregion: factors
+                .grid_factors
+                .get(&state.inference_region)
+                .and_then(|grid| grid.egrid_subregion.clone()),
+            configured_region_egrid_subregion_full_name: factors
+                .grid_factors
+                .get(&state.inference_region)
+                .and_then(|grid| grid.egrid_subregion_full_name.clone()),
         },
     }))
 }

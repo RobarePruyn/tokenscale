@@ -128,7 +128,7 @@ fallback_pue = 1.15
 
     async fn build_test_app() -> axum::Router {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        build_router(AppState::new(database, test_pricing(), test_factors()))
+        build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()))
     }
 
     #[tokio::test]
@@ -237,7 +237,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -311,7 +311,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -334,7 +334,7 @@ fallback_pue = 1.15
     #[tokio::test]
     async fn subscriptions_create_list_delete_roundtrip() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
 
         // Empty list initially.
         let response = app
@@ -423,7 +423,7 @@ fallback_pue = 1.15
     #[tokio::test]
     async fn subscriptions_update_replaces_fields() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
 
         // Create.
         let response = app
@@ -499,7 +499,7 @@ fallback_pue = 1.15
     #[tokio::test]
     async fn subscriptions_create_rejects_bad_inputs() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
 
         let bad_cases = [
             // Empty plan name
@@ -570,7 +570,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -624,7 +624,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
 
         // Filter to alpha only.
         let response = app
@@ -693,7 +693,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -713,6 +713,216 @@ fallback_pue = 1.15
         assert_eq!(
             body["modelsWithoutPricing"],
             serde_json::json!(["claude-future-9-9"])
+        );
+    }
+
+    /// Production-shaped factor fixture with non-null Wh and grid values
+    /// for one Anthropic model in us-east-1. Used by the impact-flow
+    /// integration test below — gives `compute_impact`-equivalent math
+    /// in SQL a real numeric anchor to assert against.
+    const PROD_FACTORS_TOML: &str = r#"
+schema_version = 1
+file_status = "production"
+file_version = "0.1"
+file_published = "2026-04-28"
+methodology = "google-comprehensive-aug-2025"
+methodology_source = "https://arxiv.org/abs/2508.15734"
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+[providers.anthropic.models."claude-sonnet-4-6"]
+display_name = "Claude Sonnet 4.6"
+valid_from = "2026-01-01"
+source_doc = "docs/sources.md#G.1"
+wh_per_mtok_input = 0.5
+wh_per_mtok_output = 2.0
+wh_per_mtok_cache_read = 0.05
+wh_per_mtok_cache_write_5m = 0.5
+wh_per_mtok_cache_write_1h = 0.5
+uncertainty_range_pct = 35
+confidence = "secondary"
+
+[grid_factors."us-east-1"]
+display_name = "AWS US East"
+valid_from = "2026-01-01"
+co2e_kg_per_kwh = 0.30
+water_l_per_kwh = 0.20
+pue = 1.15
+egrid_subregion = "SRVC"
+egrid_subregion_full_name = "SERC Virginia/Carolina"
+source_accessed_at = "2026-04-28"
+
+[defaults]
+fallback_pue = 1.15
+fallback_wue_l_per_kwh = 0.15
+"#;
+
+    #[tokio::test]
+    async fn daily_endpoint_attaches_impact_block_with_known_math() {
+        // Mirrors the impact_query golden test: 1M input + 100K output
+        // on Sonnet 4.6 in us-east-1 → energy 0.7 Wh, facility 0.805 Wh,
+        // co2e 0.2415 g, water 0.000_161 L. Bucket-level uncertainty
+        // tracks the model's 35% band.
+        use chrono::{TimeZone, Utc};
+        use tokenscale_core::{Event, EnvironmentalFactorsFile};
+        use tokenscale_store::{insert_events, sync_environmental_factors};
+
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let factors = Arc::new(EnvironmentalFactorsFile::parse(PROD_FACTORS_TOML).unwrap());
+        sync_environmental_factors(&database, &factors).await.unwrap();
+        insert_events(
+            &database,
+            &[Event {
+                source: "claude_code".to_owned(),
+                occurred_at: Utc.with_ymd_and_hms(2026, 4, 21, 12, 0, 0).unwrap(),
+                model: "claude-sonnet-4-6".to_owned(),
+                input_tokens: 1_000_000,
+                output_tokens: 100_000,
+                cache_read_tokens: 0,
+                cache_write_5m_tokens: 0,
+                cache_write_1h_tokens: 0,
+                request_id: Some("r-impact".to_owned()),
+                content_hash: None,
+                session_id: None,
+                project_id: None,
+                workspace_id: None,
+                api_key_id: None,
+                raw: None,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let app = build_router(AppState::new(
+            database,
+            test_pricing(),
+            factors,
+            "us-east-1".to_owned(),
+        ));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/usage/daily?from=2026-04-21&to=2026-04-21")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(body["configuredRegion"], "us-east-1");
+        assert_eq!(body["modelsWithoutFactors"], serde_json::json!([]));
+
+        let cell = &body["rows"][0]["byModel"]["claude-sonnet-4-6"];
+        let impact = &cell["impact"];
+        let energy = impact["energy_wh"].as_f64().unwrap();
+        let facility = impact["facility_wh"].as_f64().unwrap();
+        let co2e = impact["co2eG"].as_f64().unwrap();
+        let water = impact["waterL"].as_f64().unwrap();
+        assert!((energy - 0.7).abs() < 1e-9, "energy_wh={energy}");
+        assert!((facility - 0.805).abs() < 1e-9, "facility_wh={facility}");
+        assert!((co2e - 0.2415).abs() < 1e-9, "co2e_g={co2e}");
+        assert!((water - 0.000_161).abs() < 1e-12, "water_l={water}");
+        assert_eq!(impact["maxUncertaintyPct"], 35);
+        assert_eq!(impact["eventsMissingEnvFactor"], 0);
+        assert_eq!(impact["eventsCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn daily_endpoint_lists_models_without_factors() {
+        // A model present in the data but absent from the factor file
+        // should appear in `modelsWithoutFactors`. The cell still gets an
+        // impact block — energy is 0 since wh_per_mtok_* are missing.
+        use chrono::{TimeZone, Utc};
+        use tokenscale_core::{Event, EnvironmentalFactorsFile};
+        use tokenscale_store::{insert_events, sync_environmental_factors};
+
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let factors = Arc::new(EnvironmentalFactorsFile::parse(PROD_FACTORS_TOML).unwrap());
+        sync_environmental_factors(&database, &factors).await.unwrap();
+        insert_events(
+            &database,
+            &[Event {
+                source: "claude_code".to_owned(),
+                occurred_at: Utc.with_ymd_and_hms(2026, 4, 21, 12, 0, 0).unwrap(),
+                model: "claude-haiku-99".to_owned(),
+                input_tokens: 1_000,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_5m_tokens: 0,
+                cache_write_1h_tokens: 0,
+                request_id: Some("r-no-factor".to_owned()),
+                content_hash: None,
+                session_id: None,
+                project_id: None,
+                workspace_id: None,
+                api_key_id: None,
+                raw: None,
+            }],
+        )
+        .await
+        .unwrap();
+
+        let app = build_router(AppState::new(
+            database,
+            test_pricing(),
+            factors,
+            "us-east-1".to_owned(),
+        ));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/usage/daily?from=2026-04-21&to=2026-04-21")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(
+            body["modelsWithoutFactors"],
+            serde_json::json!(["claude-haiku-99"])
+        );
+        let impact = &body["rows"][0]["byModel"]["claude-haiku-99"]["impact"];
+        assert!((impact["energy_wh"].as_f64().unwrap()).abs() < 1e-9);
+        assert_eq!(impact["eventsMissingEnvFactor"], 1);
+    }
+
+    #[tokio::test]
+    async fn health_endpoint_surfaces_phase2_environmental_metadata() {
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let factors = Arc::new(EnvironmentalFactorsFile::parse(PROD_FACTORS_TOML).unwrap());
+        let app = build_router(AppState::new(
+            database,
+            test_pricing(),
+            factors,
+            "us-east-1".to_owned(),
+        ));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let env = &body["environmental"];
+        assert_eq!(env["file_version"], "0.1");
+        assert_eq!(env["file_published"], "2026-04-28");
+        assert_eq!(env["methodology"], "google-comprehensive-aug-2025");
+        assert_eq!(env["configured_region"], "us-east-1");
+        assert_eq!(env["configured_region_egrid_subregion"], "SRVC");
+        assert_eq!(
+            env["configured_region_egrid_subregion_full_name"],
+            "SERC Virginia/Carolina"
         );
     }
 

@@ -191,8 +191,17 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
         .parse()
         .with_context(|| format!("parsing bind address {bind_string:?}"))?;
 
-    info!(address = %bind_address, "starting tokenscale server");
-    serve(AppState::new(database, pricing, factors), bind_address).await
+    let inference_region = config.effective_inference_region().to_owned();
+    info!(
+        region = %inference_region,
+        address = %bind_address,
+        "starting tokenscale server"
+    );
+    serve(
+        AppState::new(database, pricing, factors, inference_region),
+        bind_address,
+    )
+    .await
 }
 
 /// Render the starter config that `tokenscale init` writes to disk.
@@ -205,9 +214,11 @@ fn render_starter_config() -> String {
 # commented out resolves to its built-in default. The README and
 # docs/architecture.md carry the full reference.
 
+[inference]
 # Region whose grid factors apply to your usage. Anthropic does not disclose
-# which region served any given request — this is your declared assumption.
-# Common values: \"us-east-1\", \"us-east-2\", \"us-west-2\".
+# which region served any given request — this is your declared assumption,
+# surfaced prominently in the dashboard's environmental view. Common values:
+# \"us-east-1\" (default — eGRID SRVC), \"us-east-2\" (RFCW), \"us-west-2\" (NWPP).
 # default_inference_region = \"us-east-1\"
 
 [ingest]
