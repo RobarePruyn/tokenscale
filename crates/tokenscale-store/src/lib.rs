@@ -19,15 +19,19 @@
 mod database;
 mod error;
 mod events;
+mod factors_lookup;
 mod factors_sync;
 mod files;
+mod impact_query;
 mod queries;
 mod subscriptions;
 
 pub use database::Database;
 pub use error::{Result, StoreError};
 pub use events::{count_events, insert_events, list_source_kinds, InsertSummary};
+pub use factors_lookup::{lookup_environmental_factors, lookup_grid_factors};
 pub use factors_sync::{sync_environmental_factors, FactorsSyncSummary};
+pub use impact_query::{aggregate_impact_by_bucket, ImpactByBucketRow, ImpactQueryFactors};
 pub use files::{get_file_state, upsert_file_state, FileState};
 pub use queries::{
     daily_usage, daily_usage_breakdown, health_summary, list_models_in_window,

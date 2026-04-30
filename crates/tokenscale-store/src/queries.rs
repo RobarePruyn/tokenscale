@@ -58,7 +58,7 @@ impl Granularity {
     /// - Day: `date(occurred_at)` → `2026-04-29`
     /// - Week: Monday of the week containing `occurred_at` → `2026-04-27`
     /// - Month: first of the month → `2026-04-01`
-    fn bucket_expression(self) -> &'static str {
+    pub(crate) fn bucket_expression(self) -> &'static str {
         match self {
             // SQLite's `weekday 0` modifier yields the next Sunday on or after
             // the input. Subtracting 6 days produces the Monday at the start
