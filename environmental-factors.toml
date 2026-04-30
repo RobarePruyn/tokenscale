@@ -64,7 +64,7 @@ disclosure_status_accessed = "2026-04-28"
 [providers.anthropic.models."claude-opus-4-5"]
 display_name = "Claude Opus 4.5"
 released_at = "2025-11-01"
-valid_from = "2026-04-28"
+valid_from = "2025-11-01"
 source_doc = "docs/sources.md#G.1"
 confidence = "secondary"  # Couch's per-token rates derived from Google's anchor
 notes = "Couch-derived rates; included as anchor for the Opus 4.x family even though Opus 4.5 is below v1 active-tracking scope."
@@ -77,8 +77,8 @@ uncertainty_range_pct = 30          # Anchor itself rests on Google's Gemini anc
 
 [providers.anthropic.models."claude-opus-4-6"]
 display_name = "Claude Opus 4.6"
-released_at = "2026-01-XX"  # exact date pending; populated next research cycle
-valid_from = "2026-04-28"
+released_at = "2026-01-01"  # approximate; exact date pending — first of month picked for valid_from anchoring
+valid_from = "2026-01-01"
 source_doc = "docs/sources.md#G.1"
 confidence = "secondary"
 notes = "ESTIMATE: predecessor-equivalent on per-token energy. Anthropic published 'adaptive thinking efficiency' improvements vs 4.5 (Vellum analysis: 15-25% fewer thinking tokens for similar quality), but this is a per-task token-count reduction, NOT a per-token energy reduction. Pricing unchanged from 4.5 ($5/$25 per MTok), which is a strong proxy for unchanged per-token compute cost. Estimate range: -10% to 0% versus Opus 4.5."
@@ -92,7 +92,7 @@ uncertainty_range_pct = 35          # Larger band than 4.5 because we're extrapo
 [providers.anthropic.models."claude-opus-4-7"]
 display_name = "Claude Opus 4.7"
 released_at = "2026-04-16"
-valid_from = "2026-04-28"
+valid_from = "2026-04-16"
 source_doc = "docs/sources.md#G.1"
 confidence = "secondary"
 notes = "ESTIMATE: predecessor-equivalent on per-token energy. Per Vellum (https://www.vellum.ai/blog/claude-opus-4-7-benchmarks-explained), Opus 4.7 improves throughput (~81 TPS vs ~72 for 4.6) and reduces task-completion latency (p50 183s vs 242s). However, the new tokenizer reportedly uses 1.0x to 1.35x more tokens per unit of text (Caylent analysis), which means per-task energy could be similar or higher even though per-token energy may be marginally lower. Estimate range: -15% to +5% on per-token energy versus Opus 4.6."
@@ -109,7 +109,7 @@ tokenizer_token_count_inflation_factor = 1.175  # midpoint of 1.0-1.35x range; f
 [providers.anthropic.models."claude-sonnet-4-5"]
 display_name = "Claude Sonnet 4.5"
 released_at = "2025-09-29"
-valid_from = "2026-04-28"
+valid_from = "2025-09-29"
 source_doc = "docs/sources.md#G.1"
 confidence = "secondary"
 notes = "Couch-derived; included as anchor for Sonnet family. Couch's 'smaller-class blended' rates (~200/~990 Wh/MTok) are the closest measured proxy."
@@ -122,8 +122,8 @@ uncertainty_range_pct = 30
 
 [providers.anthropic.models."claude-sonnet-4-6"]
 display_name = "Claude Sonnet 4.6"
-released_at = "2025-12-XX"
-valid_from = "2026-04-28"
+released_at = "2025-12-01"  # approximate; exact date pending — first of month picked for valid_from anchoring
+valid_from = "2025-12-01"
 source_doc = "docs/sources.md#G.1"
 confidence = "secondary"
 notes = "ESTIMATE: predecessor-equivalent on per-token energy. Anthropic's launch announcement (https://www.anthropic.com/news/claude-sonnet-4-6) emphasizes 70% fewer tokens consumed for complex file/code operations vs Sonnet 4.5 with 38% accuracy increase — but this is a per-task token-count reduction, not a per-token energy reduction. Pricing unchanged ($3/$15 per MTok). Estimate range: -5% to 0% versus Sonnet 4.5."
@@ -139,7 +139,7 @@ uncertainty_range_pct = 35
 [providers.anthropic.models."claude-haiku-4-5"]
 display_name = "Claude Haiku 4.5"
 released_at = "2025-10-01"
-valid_from = "2026-04-28"
+valid_from = "2025-10-01"
 source_doc = "docs/sources.md#G.1"
 confidence = "secondary"
 notes = "Direct empirical anchor from Couch's analysis (claude-haiku-4-5-20251001). Haiku 4.5 is approximately 1/3 the cost of Sonnet 4.5 per token and ~3x faster, supporting the ~1/3 per-token energy estimate (independent corroboration via pricing-as-proxy)."
@@ -178,8 +178,8 @@ disclosure_status_accessed = "2026-04-28"
 
 [providers.google.models."gemini-apps-median-text"]
 display_name = "Gemini Apps median text prompt (composite)"
-released_at = "2025-05-XX"  # data window for Google's analysis
-valid_from = "2026-04-28"
+released_at = "2025-05-01"  # data window for Google's analysis (approximate)
+valid_from = "2025-05-01"
 source_doc = "docs/sources.md#B.1.1"
 confidence = "primary"
 notes = "ANCHOR: Google's August 2025 disclosure. 0.24 Wh per median text prompt (comprehensive methodology). Per-token derivation assumes 1,500-token median prompt. Google's analysis combines all Gemini Apps text serving — does not break out by Gemini Pro vs Flash vs Flash-Lite individually. Google does not provide per-token rates. Per-token Wh values below assume 1,500 total tokens, apportioned 60% input / 40% output (typical for chat-style Apps usage)."
@@ -212,7 +212,8 @@ disclosure_status_accessed = "2026-04-28"
 
 [providers.openai.models."gpt-4o"]
 display_name = "GPT-4o"
-valid_from = "2026-04-28"
+released_at = "2024-05-13"
+valid_from = "2024-05-13"
 source_doc = "docs/sources.md#B.4"
 confidence = "secondary"
 notes = "ANCHOR-DERIVED: 0.3-0.34 Wh per median query (Altman + Epoch AI). Per-token derivation assumes 1,500-token median prompt apportioned 60/40 input/output. Same caveats as Gemini (single-vendor anchor at per-prompt resolution)."
@@ -225,7 +226,8 @@ uncertainty_range_pct = 50
 
 [providers.openai.models."gpt-5"]
 display_name = "GPT-5"
-valid_from = "2026-04-28"
+released_at = "2025-08-07"
+valid_from = "2025-08-07"
 source_doc = "docs/sources.md#C.1.1"
 confidence = "secondary"
 notes = "ANCHOR-DERIVED: ~18 Wh per medium response per Jegham et al. v6. Medium response assumed at 1,500-2,000 tokens. Per-token derivation: 18 Wh / 1750 tokens × 1e6 = 10,286 Wh/MTok blended. Apportioned 30/70 input/output (medium responses skew toward output)."
@@ -238,7 +240,8 @@ uncertainty_range_pct = 50
 
 [providers.openai.models."o3"]
 display_name = "o3"
-valid_from = "2026-04-28"
+released_at = "2025-04-16"
+valid_from = "2025-04-16"
 source_doc = "docs/sources.md#C.1.1"
 confidence = "secondary"
 notes = "ANCHOR: 33+ Wh per long prompt (Jegham et al. v6). Long prompt = ~10,300 tokens (7000-word input + 1000-word output). Per-token: 33 Wh / 10,300 tokens × 1e6 = 3,204 Wh/MTok blended. Reasoning model — output tokens dominate due to internal reasoning."
@@ -251,7 +254,8 @@ uncertainty_range_pct = 35
 
 [providers.openai.models."gpt-4-1-nano"]
 display_name = "GPT-4.1 nano"
-valid_from = "2026-04-28"
+released_at = "2025-04-14"
+valid_from = "2025-04-14"
 source_doc = "docs/sources.md#C.1.1"
 confidence = "secondary"
 notes = "ANCHOR: most-efficient model in Jegham et al. v6 cohort. Specific Wh/long-prompt not extracted in v0.1; Jegham's framing uses GPT-4.1 nano as the '70× more' baseline. Estimate: o3 / 70 ≈ 0.47 Wh per long prompt."
@@ -283,7 +287,8 @@ disclosure_status_accessed = "2026-04-28"
 
 [providers.deepseek.models."deepseek-r1"]
 display_name = "DeepSeek R1"
-valid_from = "2026-04-28"
+released_at = "2025-01-20"
+valid_from = "2025-01-20"
 source_doc = "docs/sources.md#C.1.1"
 confidence = "secondary"
 notes = "ANCHOR: 29.075 Wh per long prompt (10,300 tokens) on DeepSeek's own infra (Jegham v6). Note: Azure-hosted variant has materially different water and carbon profile (85% reduction). Use 'deployment_variant' to distinguish if/when application supports it."
@@ -314,7 +319,8 @@ disclosure_status_accessed = "2026-04-28"
 
 [providers.meta.models."llama-3-1-8b"]
 display_name = "LLaMA 3.1 8B"
-valid_from = "2026-04-28"
+released_at = "2024-07-23"
+valid_from = "2024-07-23"
 source_doc = "docs/sources.md#C.1.1"
 confidence = "secondary"
 notes = "ANCHOR: 0.443 Wh per long prompt (Jegham v6). Most efficient model in the cohort. Per-token: 0.443 / 10,300 × 1e6 = 43 Wh/MTok blended."
@@ -327,7 +333,8 @@ uncertainty_range_pct = 30
 
 [providers.meta.models."llama-3-2-1b"]
 display_name = "LLaMA 3.2 1B"
-valid_from = "2026-04-28"
+released_at = "2024-09-25"
+valid_from = "2024-09-25"
 source_doc = "docs/sources.md#C.1.1"
 confidence = "secondary"
 notes = "ANCHOR: 0.552 Wh per long prompt (Jegham v6). Note: 1B is higher than 8B due to architecture/serving differences, not just parameter scaling."
@@ -340,7 +347,8 @@ uncertainty_range_pct = 30
 
 [providers.meta.models."llama-3-2-3b"]
 display_name = "LLaMA 3.2 3B"
-valid_from = "2026-04-28"
+released_at = "2024-09-25"
+valid_from = "2024-09-25"
 source_doc = "docs/sources.md#C.1.1"
 confidence = "secondary"
 notes = "ANCHOR: 0.707 Wh per long prompt (Jegham v6)."
@@ -353,7 +361,8 @@ uncertainty_range_pct = 30
 
 [providers.meta.models."llama-3-1-405b"]
 display_name = "LLaMA 3.1 405B"
-valid_from = "2026-04-28"
+released_at = "2024-07-23"
+valid_from = "2024-07-23"
 source_doc = "docs/sources.md#C.1.1"
 confidence = "secondary"
 notes = "ANCHOR: 25.202 Wh per long prompt (Jegham v6). Steep parameter-scale cost vs 8B."
@@ -382,7 +391,8 @@ disclosure_status_accessed = "2026-04-28"
 
 [providers.mistral.models."mistral-large-2-le-chat"]
 display_name = "Mistral Large 2 (Le Chat default)"
-valid_from = "2026-04-28"
+released_at = "2024-07-24"
+valid_from = "2024-07-24"
 source_doc = "docs/sources.md#B.7"
 confidence = "secondary"
 notes = "Mistral published 1.14 gCO2e and 45 mL water per 400-token Le Chat response, but NOT energy. Energy estimated by reverse-derivation: 1.14 gCO2e / Mistral's likely grid intensity (estimated 0.30 kg/kWh for European grid) ≈ 3.8 Wh per 400-token response → 9,500 Wh/MTok blended. Heavily flagged as estimate."
@@ -414,7 +424,7 @@ water_ml_per_400_token_response = 45    # ANCHOR (Mistral disclosure)
 
 [grid_factors."us-east-1"]
 display_name = "AWS US East (N. Virginia)"
-valid_from = "2026-04-28"
+valid_from = "2023-01-01"  # eGRID2023 covers calendar year 2023; this row is the v0.1 best-effort applied retroactively to all events for which we don't have a finer-grained measurement.
 egrid_subregion = "SRVC"
 egrid_subregion_full_name = "SERC Virginia/Carolina"
 egrid_subregion_co2e_lb_per_mwh = 596.3   # ANCHOR: eGRID2023 summary tables, page 2
@@ -430,7 +440,7 @@ notes = "us-east-1 hosts the largest share of Anthropic's US inference (per AWS 
 
 [grid_factors."us-east-2"]
 display_name = "AWS US East (Ohio)"
-valid_from = "2026-04-28"
+valid_from = "2023-01-01"
 egrid_subregion = "RFCW"
 egrid_subregion_full_name = "RFC West"
 egrid_subregion_co2e_lb_per_mwh = 916.1   # ANCHOR: eGRID2023 summary tables
@@ -446,7 +456,7 @@ notes = "RFCW grid is materially more carbon-intensive than SRVC (us-east-1) due
 
 [grid_factors."us-west-2"]
 display_name = "AWS US West (Oregon)"
-valid_from = "2026-04-28"
+valid_from = "2023-01-01"
 egrid_subregion = "NWPP"
 egrid_subregion_full_name = "WECC Northwest"
 egrid_subregion_co2e_lb_per_mwh = 635.3   # ANCHOR: eGRID2023 summary tables
@@ -464,7 +474,7 @@ notes = "Oregon grid (state-level) is significantly cleaner than NWPP subregion 
 
 [grid_factors."reference-camx"]
 display_name = "WECC California (CAMX) — reference only"
-valid_from = "2026-04-28"
+valid_from = "2023-01-01"
 egrid_subregion = "CAMX"
 egrid_subregion_co2e_lb_per_mwh = 430.0
 co2e_kg_per_kwh = 0.195
