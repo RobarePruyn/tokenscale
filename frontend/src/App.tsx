@@ -141,6 +141,11 @@ type HealthResponse = {
     configured_region_egrid_subregion: string | null
     configured_region_egrid_subregion_full_name: string | null
   }
+  ingest: {
+    /** ISO-8601 UTC timestamp of the most recent file scan, or null
+     *  if no scan has run yet. Drives the dashboard freshness chip. */
+    last_scanned_at: string | null
+  }
 }
 
 type SubscriptionDto = {
@@ -481,6 +486,24 @@ function formatWater(liters: number): string {
   return `${stripTrailingZero((liters * 1000).toFixed(2))} mL`
 }
 
+/** Relative time — "12s ago", "3m ago", "4h ago", "2d ago". `null` returns
+ *  "never". Used by the freshness chip in the environmental banner. */
+function formatRelativeTime(isoTimestamp: string | null): string {
+  if (isoTimestamp === null) return 'never'
+  const eventMs = Date.parse(isoTimestamp)
+  if (Number.isNaN(eventMs)) return 'unknown'
+  const elapsedMs = Date.now() - eventMs
+  if (elapsedMs < 0) return 'just now'
+  const seconds = Math.floor(elapsedMs / 1000)
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
 function tokenFieldsForView(
   modelTokens: ModelTokens,
   viewMode: ViewMode,
@@ -631,22 +654,28 @@ export default function App() {
     }
   }, [subscriptionsRevision])
 
-  // Health — once on mount.
+  // Health — once on mount, then every 30s so the freshness chip
+  // ticks and the daily-data fetch below picks up new events that
+  // the server's auto-scan task ingested in the background.
   useEffect(() => {
     let cancelled = false
-    fetch('/api/v1/health')
-      .then(async (response) => {
+    const fetchHealth = async () => {
+      try {
+        const response = await fetch('/api/v1/health')
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        return (await response.json()) as HealthResponse
-      })
-      .then((data) => {
+        const data = (await response.json()) as HealthResponse
         if (!cancelled) setHealthState({ status: 'ok', data })
-      })
-      .catch((error) => {
-        if (!cancelled) setHealthState({ status: 'error', message: (error as Error).message })
-      })
+      } catch (error) {
+        if (!cancelled) {
+          setHealthState({ status: 'error', message: (error as Error).message })
+        }
+      }
+    }
+    void fetchHealth()
+    const intervalId = window.setInterval(() => void fetchHealth(), 30_000)
     return () => {
       cancelled = true
+      window.clearInterval(intervalId)
     }
   }, [])
 
@@ -669,7 +698,14 @@ export default function App() {
     return () => abort.abort()
   }, [providerFilter, fromDate, toDate])
 
-  // Daily — refetched when SQL filters change.
+  // `last_scanned_at` from the most recent /health poll. Adding it to
+  // the daily-fetch dependency list re-fires the chart query whenever
+  // the server ingests new data — without it the user would have to
+  // manually reload to see fresh events.
+  const lastScannedAt =
+    healthState.status === 'ok' ? healthState.data.ingest.last_scanned_at : null
+
+  // Daily — refetched when SQL filters change OR when fresh data arrives.
   useEffect(() => {
     const abort = new AbortController()
     setDailyState({ status: 'loading' })
@@ -692,7 +728,14 @@ export default function App() {
         setDailyState({ status: 'error', message: (error as Error).message })
       })
     return () => abort.abort()
-  }, [providerFilter, selectedProjects, fromDate, toDate, effectiveGranularity])
+  }, [
+    providerFilter,
+    selectedProjects,
+    fromDate,
+    toDate,
+    effectiveGranularity,
+    lastScannedAt,
+  ])
 
   // ----- Derived chart config ---------------------------------------------
   const chartConfig = useMemo(() => {
@@ -965,6 +1008,10 @@ export default function App() {
               </a>
             </>
           )}
+          {' · '}
+          <span title="Most recent file scan. The server runs an incremental scan in the background — set [ingest].scan_interval_seconds in your config.">
+            Last scanned: {formatRelativeTime(lastScannedAt)}
+          </span>
         </div>
       )}
 

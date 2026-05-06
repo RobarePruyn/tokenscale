@@ -95,8 +95,8 @@ async fn scan_one_file(
     let path_string = jsonl_file.path.display().to_string();
 
     if let Some(stored_state) = get_file_state(database, SOURCE_KIND, &path_string).await? {
-        if stored_state.mtime_ns == jsonl_file.mtime_ns {
-            debug!(path = %path_string, "skipping (mtime unchanged)");
+        if stored_state.mtime_ns == jsonl_file.mtime_ns && stored_state.len == jsonl_file.len {
+            debug!(path = %path_string, "skipping (mtime + len unchanged)");
             return Ok(FileOutcome::Skipped);
         }
     }
@@ -132,7 +132,14 @@ async fn scan_one_file(
     file_summary.events_inserted = insert_summary.inserted;
     file_summary.events_duplicates = insert_summary.skipped_duplicate;
 
-    upsert_file_state(database, SOURCE_KIND, &path_string, jsonl_file.mtime_ns).await?;
+    upsert_file_state(
+        database,
+        SOURCE_KIND,
+        &path_string,
+        jsonl_file.mtime_ns,
+        jsonl_file.len,
+    )
+    .await?;
 
     debug!(
         path = %path_string,
@@ -192,6 +199,40 @@ mod tests {
         assert_eq!(second.files_unchanged, 1);
         assert_eq!(second.files_parsed, 0);
         assert_eq!(second.events_inserted, 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rerun_with_len_changed_but_mtime_preserved_re_parses() -> Result<()> {
+        // Cloud-FS drift scenario: bytes were updated but mtime was
+        // preserved by the sync layer. mtime alone would skip; the
+        // (mtime, len) tuple catches it.
+        let database = Database::open_in_memory_for_tests().await?;
+        let temp_root = TempDir::new()?;
+        let project_directory = temp_root.path().join("project-x");
+        fs::create_dir(&project_directory)?;
+        let session_path = project_directory.join("session.jsonl");
+        fs::write(&session_path, TWO_LINE_SESSION)?;
+
+        let first = run_scan(&database, temp_root.path(), false).await?;
+        assert_eq!(first.events_inserted, 1);
+        let pinned_mtime = std::fs::File::open(&session_path)?
+            .metadata()?
+            .modified()?;
+
+        // Append a noop comment line to grow the file, then restore
+        // the original mtime — simulating sync engines that preserve
+        // mtime across content updates.
+        fs::write(&session_path, format!("{TWO_LINE_SESSION}// trailing\n"))?;
+        std::fs::File::open(&session_path)?.set_modified(pinned_mtime)?;
+
+        let second = run_scan(&database, temp_root.path(), false).await?;
+        assert_eq!(second.files_unchanged, 0);
+        assert_eq!(second.files_parsed, 1);
+        // The trailing line is malformed JSON → counts as malformed; the
+        // existing event de-dupes via request_id.
+        assert_eq!(second.events_inserted, 0);
+        assert_eq!(second.events_duplicates, 1);
         Ok(())
     }
 

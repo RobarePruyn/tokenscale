@@ -4,11 +4,14 @@
 
 use axum::extract::State;
 use axum::Json;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
-use tokenscale_store::health_summary;
+use tokenscale_store::{health_summary, most_recent_scan_at};
 
 use crate::error::ApiError;
 use crate::state::AppState;
+
+const CLAUDE_CODE_SOURCE: &str = "claude_code";
 
 #[derive(Serialize)]
 pub struct HealthResponse {
@@ -18,6 +21,15 @@ pub struct HealthResponse {
     pub providers: Vec<String>,
     pub pricing: PricingStatus,
     pub environmental: EnvironmentalStatus,
+    pub ingest: IngestStatus,
+}
+
+#[derive(Serialize)]
+pub struct IngestStatus {
+    /// MAX(_ingest_file_state.last_scanned_at) for the Claude Code
+    /// source, ISO-8601 UTC. None until the first scan completes.
+    /// Drives the dashboard banner's "Last ingested: N seconds ago".
+    pub last_scanned_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize)]
@@ -78,6 +90,7 @@ pub struct EnvironmentalStatus {
 
 pub async fn handler(State(state): State<AppState>) -> Result<Json<HealthResponse>, ApiError> {
     let summary = health_summary(&state.database).await?;
+    let last_scanned_at = most_recent_scan_at(&state.database, CLAUDE_CODE_SOURCE).await?;
     let pricing = &state.pricing;
     let factors = &state.factors;
     let pricing_model_count = pricing
@@ -119,5 +132,6 @@ pub async fn handler(State(state): State<AppState>) -> Result<Json<HealthRespons
                 .get(&state.inference_region)
                 .and_then(|grid| grid.egrid_subregion_full_name.clone()),
         },
+        ingest: IngestStatus { last_scanned_at },
     }))
 }

@@ -74,6 +74,13 @@ pub struct IngestConfig {
     /// Override for `~/.claude/projects`. If unset, the default path under
     /// the user's home directory is used.
     pub claude_code_root: Option<PathBuf>,
+
+    /// How often `tokenscale serve` should run an incremental scan in the
+    /// background, in seconds. The first scan runs at startup; the
+    /// interval only governs subsequent runs. Set to `0` to disable
+    /// auto-scan entirely (the user is responsible for running
+    /// `tokenscale scan` themselves).
+    pub scan_interval_seconds: u64,
 }
 
 impl Default for IngestConfig {
@@ -81,6 +88,7 @@ impl Default for IngestConfig {
         Self {
             store_raw: true,
             claude_code_root: None,
+            scan_interval_seconds: 60,
         }
     }
 }

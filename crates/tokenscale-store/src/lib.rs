@@ -32,7 +32,10 @@ pub use events::{count_events, insert_events, list_source_kinds, InsertSummary};
 pub use factors_lookup::{lookup_environmental_factors, lookup_grid_factors};
 pub use factors_sync::{sync_environmental_factors, FactorsSyncSummary};
 pub use impact_query::{aggregate_impact_by_bucket, ImpactByBucketRow, ImpactQueryFactors};
-pub use files::{get_file_state, upsert_file_state, FileState};
+pub use files::{
+    clear_file_state_for_source, delete_events_for_source, get_file_state, most_recent_scan_at,
+    upsert_file_state, FileState,
+};
 pub use queries::{
     daily_usage, daily_usage_breakdown, health_summary, list_models_in_window,
     list_projects_with_totals, recent_sessions, usage_by_model, DailyUsageBreakdownRow,
@@ -131,18 +134,56 @@ mod tests {
             .await?
             .is_none());
 
-        upsert_file_state(&database, "claude_code", path, 12_345).await?;
+        upsert_file_state(&database, "claude_code", path, 12_345, 1_024).await?;
         let state = get_file_state(&database, "claude_code", path)
             .await?
             .unwrap();
         assert_eq!(state.mtime_ns, 12_345);
+        assert_eq!(state.len, 1_024);
         assert_eq!(state.source, "claude_code");
 
-        upsert_file_state(&database, "claude_code", path, 99_999).await?;
+        upsert_file_state(&database, "claude_code", path, 99_999, 2_048).await?;
         let state = get_file_state(&database, "claude_code", path)
             .await?
             .unwrap();
         assert_eq!(state.mtime_ns, 99_999);
+        assert_eq!(state.len, 2_048);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn clear_file_state_resets_only_target_source() -> Result<()> {
+        let database = Database::open_in_memory_for_tests().await?;
+        upsert_file_state(&database, "claude_code", "/a", 1, 10).await?;
+        upsert_file_state(&database, "admin_api", "/b", 2, 20).await?;
+
+        let removed = clear_file_state_for_source(&database, "claude_code").await?;
+        assert_eq!(removed, 1);
+        assert!(get_file_state(&database, "claude_code", "/a")
+            .await?
+            .is_none());
+        assert!(get_file_state(&database, "admin_api", "/b")
+            .await?
+            .is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn delete_events_for_source_only_touches_target_source() -> Result<()> {
+        let database = Database::open_in_memory_for_tests().await?;
+        let event = sample_event();
+        insert_events(&database, std::slice::from_ref(&event)).await?;
+        assert_eq!(count_events(&database).await?, 1);
+
+        let deleted = delete_events_for_source(&database, "claude_code").await?;
+        assert_eq!(deleted, 1);
+        assert_eq!(count_events(&database).await?, 0);
+
+        // Different source — no-op.
+        insert_events(&database, std::slice::from_ref(&event)).await?;
+        let deleted = delete_events_for_source(&database, "admin_api").await?;
+        assert_eq!(deleted, 0);
+        assert_eq!(count_events(&database).await?, 1);
         Ok(())
     }
 }

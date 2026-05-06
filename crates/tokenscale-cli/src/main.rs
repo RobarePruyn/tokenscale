@@ -23,7 +23,31 @@ use std::sync::Arc;
 use tokenscale_core::{EnvironmentalFactorsFile, PricingFile};
 use tokenscale_ingest_cc::run_scan;
 use tokenscale_server::{serve, AppState};
-use tokenscale_store::{sync_environmental_factors, Database};
+use tokenscale_store::{
+    clear_file_state_for_source, delete_events_for_source, sync_environmental_factors, Database,
+};
+
+/// Source-kind constant the scan paths key off — mirrors the constant
+/// inside `tokenscale-ingest-cc::scan`. Kept here too so `--rescan` /
+/// `--rebuild` know which rows to clear without dragging the ingest
+/// crate's internals into the CLI.
+const CLAUDE_CODE_SOURCE: &str = "claude_code";
+
+/// How the user asked us to scan — surfaces three modes the same way
+/// `git checkout` exposes `--detach` etc. Keeping this in CLI-land (not
+/// the ingest crate) so the ingest API stays idempotent and the
+/// destructive operations are gated at the user-facing layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanMode {
+    /// Default — Layer-1 (mtime+len) skip, Layer-2 dedup as usual.
+    Incremental,
+    /// Forget file_state, re-parse every file. Events stay; dedup
+    /// handles re-inserts.
+    Rescan,
+    /// Wipe events + file_state for the source, then re-parse. Used
+    /// when prior parser output is known-bad. Requires `--yes`.
+    Rebuild,
+}
 use tracing::{info, warn};
 
 use crate::config::{resolve_config_path, Config};
@@ -49,7 +73,25 @@ enum TopLevelCommand {
 
     /// Incrementally ingest Claude Code JSONL session logs from ~/.claude/projects/.
     /// Idempotent: re-runs against unchanged files cost only a stat() per file.
-    Scan,
+    Scan {
+        /// Forget Layer-1 file_state (mtime + len) for this source so every
+        /// file gets re-parsed. Layer-2 dedup at the events table
+        /// (UNIQUE source, request_id) prevents double-inserts. Useful
+        /// when you suspect mtime is lying — e.g., cloud-FS sync drift.
+        #[arg(long, conflicts_with = "rebuild")]
+        rescan: bool,
+
+        /// Wipe both file_state AND every event for this source, then
+        /// re-parse from scratch. Destructive: only appropriate when a
+        /// prior parser version emitted bad data. Requires --yes.
+        #[arg(long, requires = "yes", conflicts_with = "rescan")]
+        rebuild: bool,
+
+        /// Confirms the destructive flag (`--rebuild`). No effect without
+        /// it.
+        #[arg(long)]
+        yes: bool,
+    },
 
     /// Start the local HTTP server and dashboard.
     Serve {
@@ -85,7 +127,20 @@ async fn main() -> Result<()> {
 
     match arguments.command {
         TopLevelCommand::Init => command_init(&config_path).await,
-        TopLevelCommand::Scan => command_scan(&config_path).await,
+        TopLevelCommand::Scan {
+            rescan,
+            rebuild,
+            yes: _yes,
+        } => {
+            let mode = if rebuild {
+                ScanMode::Rebuild
+            } else if rescan {
+                ScanMode::Rescan
+            } else {
+                ScanMode::Incremental
+            };
+            command_scan(&config_path, mode).await
+        }
         TopLevelCommand::Serve { bind } => command_serve(&config_path, bind).await,
         TopLevelCommand::Factors { action } => match action {
             FactorsAction::Update | FactorsAction::Publish => {
@@ -192,16 +247,81 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
         .with_context(|| format!("parsing bind address {bind_string:?}"))?;
 
     let inference_region = config.effective_inference_region().to_owned();
+
+    // Spawn the background scan loop before starting the HTTP server so
+    // (a) the server can bind and accept requests immediately even if
+    // the first scan is slow, and (b) the loop is a tokio task that
+    // outlives any single request.
+    let scan_handle = spawn_auto_scan_loop(
+        database.clone(),
+        config.effective_claude_code_root()?,
+        config.ingest.store_raw,
+        config.ingest.scan_interval_seconds,
+    );
+
     info!(
         region = %inference_region,
         address = %bind_address,
+        scan_interval_seconds = config.ingest.scan_interval_seconds,
         "starting tokenscale server"
     );
-    serve(
+    let serve_result = serve(
         AppState::new(database, pricing, factors, inference_region),
         bind_address,
     )
-    .await
+    .await;
+
+    // Best-effort task teardown — abort then ignore. The OS would clean
+    // up regardless when the process exits, but explicit abort means
+    // tests and graceful-shutdown flows don't leak the task.
+    if let Some(handle) = scan_handle {
+        handle.abort();
+    }
+    serve_result
+}
+
+/// Spawn the auto-scan loop. Returns `None` (no task) when
+/// `scan_interval_seconds == 0` — the user-opt-out, equivalent to
+/// running `tokenscale scan` manually whenever they want fresh data.
+///
+/// The loop logs scan failures but never propagates them — a transient
+/// IO error shouldn't take the dashboard offline. The first scan runs
+/// immediately at startup (catching the user up since their last
+/// interactive session); subsequent scans run on the configured
+/// interval with `MissedTickBehavior::Delay` so back-to-back ticks
+/// don't pile up if a scan ever takes longer than the interval.
+fn spawn_auto_scan_loop(
+    database: Database,
+    claude_code_root: std::path::PathBuf,
+    capture_raw_payloads: bool,
+    interval_seconds: u64,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if interval_seconds == 0 {
+        info!("auto-scan disabled (scan_interval_seconds = 0)");
+        return None;
+    }
+
+    let handle = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            match run_scan(&database, &claude_code_root, capture_raw_payloads).await {
+                Ok(summary) if summary.events_inserted > 0 || summary.files_parsed > 0 => {
+                    info!(?summary, "auto-scan ingested fresh data");
+                }
+                Ok(_) => {
+                    // Steady state — every file unchanged. Drop to
+                    // debug so the per-minute tick doesn't spam logs.
+                    tracing::debug!("auto-scan: no new data");
+                }
+                Err(error) => {
+                    warn!(?error, "auto-scan failed; will retry on next interval");
+                }
+            }
+        }
+    });
+    Some(handle)
 }
 
 /// Render the starter config that `tokenscale init` writes to disk.
@@ -227,6 +347,10 @@ fn render_starter_config() -> String {
 store_raw = true
 # Override for the Claude Code session root (default: ~/.claude/projects).
 # claude_code_root = \"/path/to/claude/projects\"
+# How often `tokenscale serve` re-runs an incremental scan in the background,
+# in seconds. The first scan runs at startup; the interval governs subsequent
+# runs. Set to 0 to disable auto-scan and run `tokenscale scan` manually.
+scan_interval_seconds = 60
 
 [storage]
 # Override for the SQLite database path. Default: platform-specific —
@@ -287,13 +411,37 @@ fn load_factors(config: &Config) -> Result<EnvironmentalFactorsFile> {
         .context("parsing embedded environmental-factors.toml")
 }
 
-/// Implementation of `tokenscale scan`.
-async fn command_scan(config_path: &std::path::Path) -> Result<()> {
+/// Implementation of `tokenscale scan` — incremental by default, with
+/// `--rescan` (forget file_state) and `--rebuild` (forget file_state +
+/// drop events) escape hatches.
+async fn command_scan(config_path: &std::path::Path, mode: ScanMode) -> Result<()> {
     let config = Config::load_or_default(config_path)?;
     let database_path = config.effective_database_path()?;
     let database = Database::open(&database_path)
         .await
         .with_context(|| format!("opening database at {}", database_path.display()))?;
+
+    if matches!(mode, ScanMode::Rebuild) {
+        let deleted = delete_events_for_source(&database, CLAUDE_CODE_SOURCE)
+            .await
+            .context("deleting events for rebuild")?;
+        let cleared = clear_file_state_for_source(&database, CLAUDE_CODE_SOURCE)
+            .await
+            .context("clearing file_state for rebuild")?;
+        warn!(
+            deleted_events = deleted,
+            cleared_file_state_rows = cleared,
+            "--rebuild: events and file_state for source={CLAUDE_CODE_SOURCE} wiped; re-parsing from scratch"
+        );
+    } else if matches!(mode, ScanMode::Rescan) {
+        let cleared = clear_file_state_for_source(&database, CLAUDE_CODE_SOURCE)
+            .await
+            .context("clearing file_state for rescan")?;
+        info!(
+            cleared_file_state_rows = cleared,
+            "--rescan: file_state for source={CLAUDE_CODE_SOURCE} cleared; every file will be re-parsed"
+        );
+    }
 
     let claude_code_root = config.effective_claude_code_root()?;
     let summary = run_scan(&database, &claude_code_root, config.ingest.store_raw)

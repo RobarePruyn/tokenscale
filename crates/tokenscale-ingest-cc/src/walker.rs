@@ -25,9 +25,13 @@ use crate::error::{IngestError, Result};
 #[derive(Debug, Clone)]
 pub struct JsonlFile {
     pub path: PathBuf,
-    /// Modification time as nanoseconds since the unix epoch. Used to skip
-    /// re-parsing unchanged files.
+    /// Modification time as nanoseconds since the unix epoch. Compared
+    /// alongside `len` to skip re-parsing unchanged files.
     pub mtime_ns: i64,
+    /// File size in bytes. Tracked alongside `mtime_ns` so cloud-FS
+    /// drift (synced bytes with preserved mtime, or vice versa) still
+    /// triggers a re-parse.
+    pub len: i64,
 }
 
 /// Walk one level deep under `claude_code_root` and return every `*.jsonl`
@@ -71,9 +75,11 @@ pub async fn walk_claude_code_root(claude_code_root: &Path) -> Result<Vec<JsonlF
                 }
             };
             let mtime_ns = system_time_to_unix_nanos(metadata.modified()?);
+            let len = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
             found_files.push(JsonlFile {
                 path: session_path,
                 mtime_ns,
+                len,
             });
         }
     }
