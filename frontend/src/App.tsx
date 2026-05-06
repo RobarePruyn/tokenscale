@@ -161,6 +161,67 @@ type SubscriptionsResponse = {
 }
 
 // ---------------------------------------------------------------------------
+// Billing types — Stripe CSV import preview/commit + historical list.
+// ---------------------------------------------------------------------------
+
+type BillingCategory = 'subscription' | 'overage' | 'one_time' | 'refund' | 'unknown'
+
+const BILLING_CATEGORY_OPTIONS: ReadonlyArray<{ value: BillingCategory; label: string }> = [
+  { value: 'subscription', label: 'Subscription' },
+  { value: 'overage', label: 'Overage' },
+  { value: 'one_time', label: 'One-time' },
+  { value: 'refund', label: 'Refund' },
+  { value: 'unknown', label: 'Unknown' },
+]
+
+type PreviewedCharge = {
+  source: string
+  occurred_at: string
+  amount_usd: number
+  description: string
+  category: BillingCategory
+  external_id: string | null
+  raw: string | null
+}
+
+type ConflictingSubscription = {
+  id: number
+  plan_name: string
+  monthly_usd: number
+  started_at: string
+  ended_at: string | null
+  overlapping_charge_external_ids: string[]
+}
+
+type BillingPreviewResponse = {
+  charges: PreviewedCharge[]
+  conflicting_subscriptions: ConflictingSubscription[]
+  skipped_non_usd_count: number
+  total_amount_usd: number
+}
+
+type BillingCommitResponse = {
+  inserted: number
+  skipped_duplicate: number
+  dismissed_subscriptions: number
+}
+
+type BillingChargeRow = {
+  id: number
+  source: string
+  occurred_at: string
+  amount_usd: number
+  description: string | null
+  category: string
+  external_id: string | null
+  created_at: string
+}
+
+type BillingChargesResponse = {
+  charges: BillingChargeRow[]
+}
+
+// ---------------------------------------------------------------------------
 // View-state types
 // ---------------------------------------------------------------------------
 
@@ -627,10 +688,15 @@ export default function App() {
   const [subscriptionsState, setSubscriptionsState] = useState<FetchState<SubscriptionsResponse>>({
     status: 'idle',
   })
+  const [billingChargesState, setBillingChargesState] = useState<FetchState<BillingChargesResponse>>({
+    status: 'idle',
+  })
 
-  // Bumped after a subscription mutation so the GET re-runs.
+  // Bumped after a subscription / billing-import mutation so the GET re-runs.
   const [subscriptionsRevision, setSubscriptionsRevision] = useState(0)
   const refreshSubscriptions = () => setSubscriptionsRevision((current) => current + 1)
+  const [billingChargesRevision, setBillingChargesRevision] = useState(0)
+  const refreshBillingCharges = () => setBillingChargesRevision((current) => current + 1)
 
   // Subscriptions — re-fetched on mount and after any CRUD mutation.
   useEffect(() => {
@@ -653,6 +719,31 @@ export default function App() {
       cancelled = true
     }
   }, [subscriptionsRevision])
+
+  // Billing charges — re-fetched on mount, after any import commit,
+  // and whenever the date window changes (charges-in-window total
+  // drives a stat card).
+  useEffect(() => {
+    let cancelled = false
+    setBillingChargesState({ status: 'loading' })
+    const params = new URLSearchParams({ from: fromDate, to: toDate })
+    fetch(`/api/v1/billing/charges?${params.toString()}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return (await response.json()) as BillingChargesResponse
+      })
+      .then((data) => {
+        if (!cancelled) setBillingChargesState({ status: 'ok', data })
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setBillingChargesState({ status: 'error', message: (error as Error).message })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [billingChargesRevision, fromDate, toDate])
 
   // Health — once on mount, then every 30s so the freshness chip
   // ticks and the daily-data fetch below picks up new events that
@@ -864,9 +955,31 @@ export default function App() {
     )
   }, [subscriptionsState, fromDate, toDate])
 
+  // Imported billing charges (Stripe CSV today, Anthropic Admin
+  // cost_report next) summed inside the active window. Refunds are
+  // negative-amount rows so they reduce the total — that's the right
+  // accounting.
+  const importedChargesUsd = useMemo(() => {
+    if (billingChargesState.status !== 'ok') return null
+    return billingChargesState.data.charges.reduce(
+      (sum, charge) => sum + charge.amount_usd,
+      0,
+    )
+  }, [billingChargesState])
+
+  // Total Anthropic billed = manual subscriptions (pro-rated) +
+  // imported charges. The import preview's conflict-resolution UI
+  // ensures these don't double-count: dismissing a manual entry on
+  // import means it's no longer in `subscriptions`, so summing is
+  // safe.
+  const totalBilledUsd =
+    subscriptionCostUsd === null && importedChargesUsd === null
+      ? null
+      : (subscriptionCostUsd ?? 0) + (importedChargesUsd ?? 0)
+
   const netValueUsd =
-    counterfactualCostUsd !== null && subscriptionCostUsd !== null
-      ? counterfactualCostUsd - subscriptionCostUsd
+    counterfactualCostUsd !== null && totalBilledUsd !== null
+      ? counterfactualCostUsd - totalBilledUsd
       : null
 
   // Window-total environmental impact, summed across the chart's currently
@@ -1265,10 +1378,16 @@ export default function App() {
           <StatRow
             counterfactualCostUsd={counterfactualCostUsd}
             subscriptionCostUsd={subscriptionCostUsd}
+            importedChargesUsd={importedChargesUsd}
+            totalBilledUsd={totalBilledUsd}
             netValueUsd={netValueUsd}
             hasSubscriptions={
               subscriptionsState.status === 'ok' &&
               subscriptionsState.data.subscriptions.length > 0
+            }
+            hasImportedCharges={
+              billingChargesState.status === 'ok' &&
+              billingChargesState.data.charges.length > 0
             }
             pricingNeedsReview={pricingNeedsReview}
           />
@@ -1342,30 +1461,47 @@ export default function App() {
           subscriptionsState={subscriptionsState}
           onMutated={refreshSubscriptions}
         />
+
+        <BillingImportPanel
+          billingChargesState={billingChargesState}
+          onCommitted={() => {
+            // Subscriptions may have changed (dismissed manual entries),
+            // and we need a fresh charges list to update the stat row.
+            refreshSubscriptions()
+            refreshBillingCharges()
+          }}
+        />
       </main>
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// StatRow — three KPIs above the chart: counterfactual cost, subscription
-// cost, net value. Renders only when we have a counterfactual figure
-// (i.e., the daily endpoint succeeded).
+// StatRow — counterfactual API cost, subscriptions, imported charges,
+// net value. The Stripe-CSV import path adds the "Imported charges"
+// card; before any import lands, the card is muted with a hint pointing
+// at the import panel below.
 // ---------------------------------------------------------------------------
 
 type StatRowProps = {
   counterfactualCostUsd: number | null
   subscriptionCostUsd: number | null
+  importedChargesUsd: number | null
+  totalBilledUsd: number | null
   netValueUsd: number | null
   hasSubscriptions: boolean
+  hasImportedCharges: boolean
   pricingNeedsReview: boolean
 }
 
 function StatRow({
   counterfactualCostUsd,
   subscriptionCostUsd,
+  importedChargesUsd,
+  totalBilledUsd,
   netValueUsd,
   hasSubscriptions,
+  hasImportedCharges,
   pricingNeedsReview,
 }: StatRowProps) {
   if (counterfactualCostUsd === null) return null
@@ -1374,8 +1510,21 @@ function StatRow({
     ? 'Counterfactual API cost (approx)'
     : 'Counterfactual API cost'
 
+  // When the user has imported charges, the "Subscriptions paid"
+  // figure is supplementary information (most subs become charges).
+  // We collapse to a single "Anthropic billed" card by default when
+  // imports exist, and surface the manual-subs breakdown only when
+  // there are no imports yet.
+  const showImportedChargesCard = hasImportedCharges
+
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+    <div
+      className={
+        showImportedChargesCard
+          ? 'grid grid-cols-1 sm:grid-cols-4 gap-3'
+          : 'grid grid-cols-1 sm:grid-cols-3 gap-3'
+      }
+    >
       <StatCard
         label={counterfactualLabel}
         value={formatExactDollars(counterfactualCostUsd)}
@@ -1390,11 +1539,23 @@ function StatRow({
         }
         helpText={
           hasSubscriptions
-            ? 'Sum of declared subscriptions, pro-rated by the days each one overlaps the chart window.'
-            : 'No subscriptions declared yet. Add one below to see the net value of your plan.'
+            ? 'Sum of manually-declared subscriptions, pro-rated by the days each one overlaps the chart window. Imports from Stripe CSV are counted separately in the Imported charges card.'
+            : 'No subscriptions declared yet. Add one below or import a Stripe CSV to populate this automatically.'
         }
         muted={!hasSubscriptions}
       />
+      {showImportedChargesCard && (
+        <StatCard
+          label="Imported charges in window"
+          value={
+            importedChargesUsd === null
+              ? '—'
+              : formatExactDollars(importedChargesUsd)
+          }
+          helpText="Sum of billing-line-item imports (Stripe CSV today, Anthropic Admin cost_report later) whose date falls in the chart window. Refunds are negative-amount rows that reduce the total."
+          muted={!hasImportedCharges}
+        />
+      )}
       <StatCard
         label="Net value"
         value={
@@ -1402,7 +1563,11 @@ function StatRow({
             ? '—'
             : formatExactDollars(netValueUsd)
         }
-        helpText="Counterfactual API cost minus subscriptions paid. Positive means your subscription is cheaper than running the same usage on the API."
+        helpText={
+          showImportedChargesCard
+            ? `Counterfactual API cost minus everything you've actually paid (subscriptions + imported charges${totalBilledUsd === null ? '' : ` = ${formatExactDollars(totalBilledUsd)}`}). Positive means your plan is cheaper than running the same usage on the API.`
+            : 'Counterfactual API cost minus subscriptions paid. Positive means your subscription is cheaper than running the same usage on the API.'
+        }
         emphasize={netValueUsd !== null && netValueUsd > 0}
       />
     </div>
@@ -1511,6 +1676,389 @@ function StatCard({ label, value, helpText, muted, emphasize }: StatCardProps) {
         }
       >
         {value}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// BillingImportPanel — drop a Stripe CSV in, preview the rows, dismiss
+// any manual subscriptions that the CSV would double-count, commit.
+// Two-step flow (preview/commit) so destructive writes are gated
+// behind a "user reviewed" checkpoint without re-parsing on commit.
+// ---------------------------------------------------------------------------
+
+type ImportPanelState =
+  | { kind: 'idle' }
+  | { kind: 'previewing' }
+  | { kind: 'previewed'; preview: BillingPreviewResponse; csvText: string }
+  | { kind: 'committing'; preview: BillingPreviewResponse; csvText: string }
+  | { kind: 'success'; summary: BillingCommitResponse }
+  | { kind: 'error'; message: string }
+
+type BillingImportPanelProps = {
+  billingChargesState: FetchState<BillingChargesResponse>
+  onCommitted: () => void
+}
+
+function BillingImportPanel({ billingChargesState, onCommitted }: BillingImportPanelProps) {
+  const [csvText, setCsvText] = useState('')
+  const [importState, setImportState] = useState<ImportPanelState>({ kind: 'idle' })
+  // Per-row category overrides keyed by external_id (or row index for
+  // rows without one). Set on dropdown change; merged into the
+  // PreviewedCharge payload at commit time.
+  const [categoryOverrides, setCategoryOverrides] = useState<Map<string, BillingCategory>>(
+    new Map(),
+  )
+  // Manual subscriptions the user marked for dismissal. Stored as a
+  // Set of subscription IDs; merged into the commit payload.
+  const [dismissedSubscriptions, setDismissedSubscriptions] = useState<Set<number>>(new Set())
+  const [collapsed, setCollapsed] = useState(true)
+
+  function rowKey(charge: PreviewedCharge, index: number): string {
+    return charge.external_id ?? `row:${index}`
+  }
+
+  async function runPreview() {
+    if (csvText.trim().length === 0) {
+      setImportState({ kind: 'error', message: 'Paste or upload CSV content first.' })
+      return
+    }
+    setImportState({ kind: 'previewing' })
+    setCategoryOverrides(new Map())
+    setDismissedSubscriptions(new Set())
+    try {
+      const response = await fetch('/api/v1/billing/charges/preview', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ csv: csvText }),
+      })
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(text || `HTTP ${response.status}`)
+      }
+      const preview = (await response.json()) as BillingPreviewResponse
+      setImportState({ kind: 'previewed', preview, csvText })
+    } catch (error) {
+      setImportState({ kind: 'error', message: (error as Error).message })
+    }
+  }
+
+  async function runCommit() {
+    if (importState.kind !== 'previewed') return
+    const previewState = importState
+    setImportState({
+      kind: 'committing',
+      preview: previewState.preview,
+      csvText: previewState.csvText,
+    })
+    const finalCharges: PreviewedCharge[] = previewState.preview.charges.map((charge, index) => ({
+      ...charge,
+      category: categoryOverrides.get(rowKey(charge, index)) ?? charge.category,
+    }))
+    try {
+      const response = await fetch('/api/v1/billing/charges/commit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          charges: finalCharges,
+          dismiss_subscription_ids: Array.from(dismissedSubscriptions),
+        }),
+      })
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(text || `HTTP ${response.status}`)
+      }
+      const summary = (await response.json()) as BillingCommitResponse
+      setImportState({ kind: 'success', summary })
+      setCsvText('')
+      setCategoryOverrides(new Map())
+      setDismissedSubscriptions(new Set())
+      onCommitted()
+    } catch (error) {
+      setImportState({ kind: 'error', message: (error as Error).message })
+    }
+  }
+
+  function reset() {
+    setImportState({ kind: 'idle' })
+    setCsvText('')
+    setCategoryOverrides(new Map())
+    setDismissedSubscriptions(new Set())
+  }
+
+  async function handleFileInput(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    const text = await file.text()
+    setCsvText(text)
+  }
+
+  const importedCount =
+    billingChargesState.status === 'ok' ? billingChargesState.data.charges.length : 0
+
+  return (
+    <section className="bg-white rounded-lg border border-slate-200 p-5 space-y-4">
+      <div className="flex items-baseline justify-between gap-4">
+        <div>
+          <h2 className="text-base font-medium">Import billing CSV</h2>
+          <p className="text-xs text-slate-500 mt-1">
+            Drop a Stripe Customer Portal export to track subscriptions and overages
+            automatically. Re-imports are idempotent — already-known charges are skipped.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          className="text-sm text-blue-600 hover:underline shrink-0"
+        >
+          {collapsed
+            ? `Open${importedCount > 0 ? ` (${importedCount} imported)` : ''}`
+            : 'Close'}
+        </button>
+      </div>
+
+      {!collapsed && (
+        <div className="space-y-4">
+          {(importState.kind === 'idle' || importState.kind === 'previewing'
+            || importState.kind === 'error') && (
+            <>
+              <div className="flex items-center gap-3 text-xs">
+                <label className="cursor-pointer rounded-md border border-slate-300 px-3 py-1.5 hover:bg-slate-50">
+                  Choose file
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    onChange={handleFileInput}
+                  />
+                </label>
+                <span className="text-slate-400">or paste below</span>
+              </div>
+              <textarea
+                rows={8}
+                value={csvText}
+                onChange={(event) => setCsvText(event.target.value)}
+                placeholder="id,Date,Description,Amount,Currency&#10;in_xxx,2026-04-15,Claude Max Subscription,200.00,USD&#10;..."
+                className="w-full font-mono text-xs border border-slate-300 rounded-md px-3 py-2 bg-white"
+              />
+              {importState.kind === 'error' && (
+                <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+                  {importState.message}
+                </div>
+              )}
+              <button
+                type="button"
+                disabled={importState.kind === 'previewing'}
+                onClick={runPreview}
+                className="rounded-md bg-blue-600 text-white text-sm px-4 py-1.5 hover:bg-blue-700 disabled:opacity-50"
+              >
+                {importState.kind === 'previewing' ? 'Parsing…' : 'Preview'}
+              </button>
+            </>
+          )}
+
+          {(importState.kind === 'previewed' || importState.kind === 'committing') && (
+            <BillingImportPreview
+              preview={importState.preview}
+              categoryOverrides={categoryOverrides}
+              setCategoryOverrides={setCategoryOverrides}
+              dismissedSubscriptions={dismissedSubscriptions}
+              setDismissedSubscriptions={setDismissedSubscriptions}
+              committing={importState.kind === 'committing'}
+              onCommit={runCommit}
+              onCancel={reset}
+              rowKey={rowKey}
+            />
+          )}
+
+          {importState.kind === 'success' && (
+            <div className="space-y-3">
+              <div className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
+                Imported {importState.summary.inserted} new charge
+                {importState.summary.inserted === 1 ? '' : 's'} ·{' '}
+                skipped {importState.summary.skipped_duplicate} duplicate
+                {importState.summary.skipped_duplicate === 1 ? '' : 's'} ·{' '}
+                dismissed {importState.summary.dismissed_subscriptions} manual subscription
+                {importState.summary.dismissed_subscriptions === 1 ? '' : 's'}.
+              </div>
+              <button
+                type="button"
+                onClick={reset}
+                className="text-sm text-blue-600 hover:underline"
+              >
+                Import another
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+type BillingImportPreviewProps = {
+  preview: BillingPreviewResponse
+  categoryOverrides: Map<string, BillingCategory>
+  setCategoryOverrides: React.Dispatch<React.SetStateAction<Map<string, BillingCategory>>>
+  dismissedSubscriptions: Set<number>
+  setDismissedSubscriptions: React.Dispatch<React.SetStateAction<Set<number>>>
+  committing: boolean
+  onCommit: () => void
+  onCancel: () => void
+  rowKey: (charge: PreviewedCharge, index: number) => string
+}
+
+function BillingImportPreview({
+  preview,
+  categoryOverrides,
+  setCategoryOverrides,
+  dismissedSubscriptions,
+  setDismissedSubscriptions,
+  committing,
+  onCommit,
+  onCancel,
+  rowKey,
+}: BillingImportPreviewProps) {
+  function setOverride(key: string, category: BillingCategory) {
+    setCategoryOverrides((current) => {
+      const next = new Map(current)
+      next.set(key, category)
+      return next
+    })
+  }
+
+  function toggleDismiss(id: number) {
+    setDismissedSubscriptions((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="text-xs text-slate-600">
+        Parsed <span className="font-medium">{preview.charges.length}</span> charge
+        {preview.charges.length === 1 ? '' : 's'} totaling{' '}
+        <span className="font-medium">{formatExactDollars(preview.total_amount_usd)}</span>
+        {preview.skipped_non_usd_count > 0 && (
+          <>
+            {' '}
+            · <span className="text-amber-700">
+              skipped {preview.skipped_non_usd_count} non-USD line
+              {preview.skipped_non_usd_count === 1 ? '' : 's'}
+            </span>
+          </>
+        )}
+        .
+      </div>
+
+      {preview.conflicting_subscriptions.length > 0 && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-3 space-y-2">
+          <div className="text-xs font-medium text-amber-900">
+            Conflicts with manually-declared subscriptions
+          </div>
+          <p className="text-xs text-amber-800">
+            These manual subscriptions overlap with subscription charges in the CSV. Dismiss
+            them to avoid double-counting; they'll be deleted when you click Import below.
+          </p>
+          <ul className="space-y-1.5">
+            {preview.conflicting_subscriptions.map((conflict) => {
+              const dismissed = dismissedSubscriptions.has(conflict.id)
+              return (
+                <li key={conflict.id} className="flex items-start gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={dismissed}
+                    onChange={() => toggleDismiss(conflict.id)}
+                    className="mt-0.5"
+                  />
+                  <div>
+                    <div className={dismissed ? 'line-through text-amber-700' : 'text-amber-900'}>
+                      <span className="font-medium">{conflict.plan_name}</span> ·{' '}
+                      {formatExactDollars(conflict.monthly_usd)}/mo · {conflict.started_at} →{' '}
+                      {conflict.ended_at ?? 'open'}
+                    </div>
+                    <div className="text-amber-700 text-[11px]">
+                      Overlaps {conflict.overlapping_charge_external_ids.length} CSV row
+                      {conflict.overlapping_charge_external_ids.length === 1 ? '' : 's'}
+                    </div>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-xs border border-slate-200 rounded-md">
+          <thead className="bg-slate-50 text-slate-600">
+            <tr>
+              <th className="text-left font-medium px-3 py-2">Date</th>
+              <th className="text-left font-medium px-3 py-2">Description</th>
+              <th className="text-right font-medium px-3 py-2">Amount</th>
+              <th className="text-left font-medium px-3 py-2">Category</th>
+              <th className="text-left font-medium px-3 py-2">ID</th>
+            </tr>
+          </thead>
+          <tbody>
+            {preview.charges.map((charge, index) => {
+              const key = rowKey(charge, index)
+              const effectiveCategory = categoryOverrides.get(key) ?? charge.category
+              return (
+                <tr key={key} className="border-t border-slate-200">
+                  <td className="px-3 py-2 font-mono">{charge.occurred_at}</td>
+                  <td className="px-3 py-2">{charge.description || '—'}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {formatExactDollars(charge.amount_usd)}
+                  </td>
+                  <td className="px-3 py-2">
+                    <select
+                      value={effectiveCategory}
+                      onChange={(event) =>
+                        setOverride(key, event.target.value as BillingCategory)
+                      }
+                      className="border border-slate-300 rounded px-2 py-1 bg-white"
+                    >
+                      {BILLING_CATEGORY_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="px-3 py-2 font-mono text-slate-500">
+                    {charge.external_id ?? '—'}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          disabled={committing}
+          onClick={onCommit}
+          className="rounded-md bg-blue-600 text-white text-sm px-4 py-1.5 hover:bg-blue-700 disabled:opacity-50"
+        >
+          {committing
+            ? 'Importing…'
+            : `Import ${preview.charges.length} charge${preview.charges.length === 1 ? '' : 's'}`}
+        </button>
+        <button
+          type="button"
+          disabled={committing}
+          onClick={onCancel}
+          className="text-sm text-slate-600 hover:underline disabled:opacity-50"
+        >
+          Cancel
+        </button>
       </div>
     </div>
   )

@@ -19,3 +19,7 @@ thiserror.workspace       = true
 serde.workspace           = true
 tracing.workspace         = true
 tokio.workspace           = true
+# Used by billing::synthesize_external_id to dedup CSV rows that have
+# no Stripe-side stable identifier.
+sha2.workspace            = true
+hex.workspace             = true

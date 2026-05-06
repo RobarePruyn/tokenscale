@@ -79,6 +79,9 @@ figment = { version = "0.10", features = ["toml", "env"] }
 sha2 = "0.10"
 hex  = "0.4"
 
+# --- CSV parsing (Stripe Customer Portal billing imports) ---
+csv = "1"
+
 # --- Path helpers (~/.config/tokenscale, ~/.claude, ProjectDirs) ---
 directories = "6"
 

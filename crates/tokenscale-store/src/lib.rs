@@ -16,6 +16,7 @@
 //! documented in `docs/decisions.md`. The graduation to query! macros is a
 //! follow-up commit once the schema stabilizes.
 
+mod billing;
 mod database;
 mod error;
 mod events;
@@ -26,6 +27,10 @@ mod impact_query;
 mod queries;
 mod subscriptions;
 
+pub use billing::{
+    delete_billing_charges_by_source, insert_billing_charges, list_billing_charges_in_window,
+    sum_billing_charges_in_window, BillingChargeInsertSummary, BillingChargeRow,
+};
 pub use database::Database;
 pub use error::{Result, StoreError};
 pub use events::{count_events, insert_events, list_source_kinds, InsertSummary};

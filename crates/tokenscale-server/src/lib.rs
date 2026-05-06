@@ -55,6 +55,18 @@ pub fn build_router(state: AppState) -> axum::Router {
             axum::routing::delete(routes::subscriptions::delete_handler)
                 .put(routes::subscriptions::update_handler),
         )
+        .route(
+            "/api/v1/billing/charges",
+            get(routes::billing::list_charges_handler),
+        )
+        .route(
+            "/api/v1/billing/charges/preview",
+            axum::routing::post(routes::billing::preview_handler),
+        )
+        .route(
+            "/api/v1/billing/charges/commit",
+            axum::routing::post(routes::billing::commit_handler),
+        )
         .fallback(embed::static_handler)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -924,6 +936,146 @@ fallback_wue_l_per_kwh = 0.15
             env["configured_region_egrid_subregion_full_name"],
             "SERC Virginia/Carolina"
         );
+    }
+
+    #[tokio::test]
+    async fn billing_csv_preview_then_commit_inserts_charges_and_dismisses_conflicts() {
+        // Seed a manual subscription that overlaps with one of the
+        // CSV's subscription line items, then walk the user flow:
+        // POST /preview → review → POST /commit with the manual sub
+        // marked for dismissal. After commit the manual sub should
+        // be gone and the charges should be in billing_charges.
+        use tokenscale_store::insert_subscription;
+
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        insert_subscription(
+            &database,
+            "Claude Max (manual entry)",
+            200.0,
+            "2026-04-01",
+            None,
+        )
+        .await
+        .unwrap();
+        let app = build_router(AppState::new(
+            database.clone(),
+            test_pricing(),
+            test_factors(),
+            "us-east-1".to_owned(),
+        ));
+
+        let csv = "\
+id,Date,Description,Amount,Currency
+in_apr,2026-04-15,Claude Max Subscription,200.00,USD
+in_apr_overage,2026-04-22,API usage overage,12.34,USD
+";
+        let preview_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/billing/charges/preview")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::json!({ "csv": csv }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(preview_response.status(), StatusCode::OK);
+        let bytes = to_bytes(preview_response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let preview: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(preview["charges"].as_array().unwrap().len(), 2);
+        // One conflict: the manual Claude Max subscription overlaps
+        // the CSV's subscription line.
+        assert_eq!(preview["conflicting_subscriptions"].as_array().unwrap().len(), 1);
+        let conflict_id = preview["conflicting_subscriptions"][0]["id"]
+            .as_i64()
+            .unwrap();
+        assert!((preview["total_amount_usd"].as_f64().unwrap() - 212.34).abs() < 1e-9);
+
+        // Commit — pass the previewed charges back unchanged + dismiss
+        // the conflicting manual subscription.
+        let commit_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/billing/charges/commit")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "charges": preview["charges"],
+                            "dismiss_subscription_ids": [conflict_id],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(commit_response.status(), StatusCode::OK);
+        let bytes = to_bytes(commit_response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let commit: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(commit["inserted"], 2);
+        assert_eq!(commit["skipped_duplicate"], 0);
+        assert_eq!(commit["dismissed_subscriptions"], 1);
+
+        // Verify the charges are queryable.
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/billing/charges?from=2026-01-01&to=2026-12-31")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(list_response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let listing: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(listing["charges"].as_array().unwrap().len(), 2);
+
+        // And the manual subscription is gone.
+        let subs_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/subscriptions")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = to_bytes(subs_response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let subs: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(subs["subscriptions"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn billing_csv_preview_rejects_malformed_input() {
+        let app = build_test_app().await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/billing/charges/preview")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "csv": "id,description\nch_a,no date or amount" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

@@ -22,6 +22,7 @@
 //! loader and computations land in Phase 2.
 
 pub mod billable;
+pub mod billing;
 mod error;
 mod event;
 pub mod factors;
@@ -29,6 +30,9 @@ pub mod impact;
 pub mod pricing;
 
 pub use billable::BillableMultipliers;
+pub use billing::{
+    parse_stripe_csv, BillingCategory, BillingCharge, BillingParseError,
+};
 pub use error::{CoreError, Result};
 pub use event::{Event, SourceKind};
 pub use factors::{
