@@ -6,6 +6,209 @@ The goal here is simple: anyone (the maintainer, a future contributor, a future 
 
 ---
 
+## 2026-05-06 — Correlated-subquery time-anchoring instead of a SQL view
+
+**Decision.** Time-anchored factor resolution in the dashboard query
+joins each event to the authoritative `env_factors` / `grid_factors`
+row using an inline correlated subquery:
+
+```sql
+LEFT JOIN env_factors ef
+       ON ef.provider = sources.provider
+      AND ef.model = events.model
+      AND ef.valid_from = (
+          SELECT MAX(valid_from) FROM env_factors
+           WHERE provider = sources.provider
+             AND model = events.model
+             AND valid_from <= date(events.occurred_at)
+      )
+```
+
+(and the symmetric form for `grid_factors`). The same pattern lives
+inside the per-row helpers `lookup_environmental_factors` /
+`lookup_grid_factors`.
+
+**Why.** The kickoff prompt's first instinct was a SQL view —
+something like `CREATE VIEW events_with_factors AS ...`. We rejected
+that because:
+
+- **Region is a runtime input, not schema state.** The grid-factor
+  lookup needs the user's configured `[inference].default_inference_region`
+  — a value that only exists at query time, not at schema-creation
+  time. SQL views can't take parameters.
+- **`MAX(valid_from)` with a `<=` constraint is the cleanest
+  expression of "latest row authoritative at the event's date".** It
+  composes naturally with the LEFT JOIN: when no row matches (event
+  predates the file's earliest `valid_from`), the JOIN produces a
+  null row, COALESCE turns missing factors into 0/None contributions,
+  and the event's impact silently zeroes out — which is the correct
+  honest behavior (a fact we learned the hard way when the v0.1 file
+  shipped with `valid_from = "2026-04-28"` on every row and made
+  most of the user's data invisible until we fixed it).
+- **Per-event resolution stays a query-time concern.** No materialized
+  view, no triggers, no denormalized factor columns on the events
+  table. The events table stores the raw token counts; factor
+  application is recomputed every read. This means a new factor file
+  (v0.2 with refined values, a new model row) reshapes the dashboard
+  instantly on next request — no rebuild step.
+
+**How to apply.**
+
+- New time-anchored lookups across the codebase should follow the
+  same correlated-subquery pattern. It's terse, it composes with
+  filters, and it generalizes (cost_factors, pricing_factors,
+  whatever Phase 2+ adds).
+- Resist materialized views or denormalized factor columns on events
+  without a measured perf justification. SQLite on a single-user
+  dataset handles correlated subqueries trivially for the data scales
+  we're targeting (millions of events, not billions).
+- The fallback-when-no-row-matches behavior is load-bearing. If a
+  future revision adds error-on-no-match semantics, it MUST also
+  add a corresponding fallback path so users don't silently lose
+  data when factor files lag behind their event history.
+
+---
+
+## 2026-05-06 — Per-event factor resolution, not per-bucket
+
+**Decision.** Environmental impact is computed by resolving each
+event to its own time-anchored factor row, then aggregating to the
+bucket. Not: resolve the factor row at the bucket level (e.g. "the
+factor row in effect at the bucket's midpoint"), apply it to the
+summed tokens, and call it done.
+
+**Why.** At kickoff, the simpler per-bucket approach was on the
+table. Three reasons we went per-event:
+
+- **Correctness at boundary buckets.** When a `valid_from` boundary
+  falls inside a bucket (the file shipped v0.2 in the middle of a
+  week the user is viewing), per-bucket resolution forces an
+  arbitrary choice — use the old factor or the new one for the
+  whole bucket? Both are wrong. Per-event resolution honestly
+  attributes events before the boundary to the old factor and
+  events after to the new one. The bucket totals are then the
+  honest sum, not an averaged-out approximation.
+- **The kickoff's "build it right the first time" preference.**
+  Per-event resolution is the right shape for the long run.
+  Per-bucket would have been a v1 shortcut that earned compute
+  debt every time a factor file evolved — and the user explicitly
+  rejected that trade.
+- **The SQL cost is bounded.** SQLite's query planner handles the
+  correlated subquery + `LEFT JOIN` shape against indexed
+  `(provider, model, valid_from)` and `(region, valid_from)`
+  efficiently at the scales tokenscale targets. The "save compute
+  by collapsing first" path doesn't materially help.
+
+**How to apply.**
+
+- New impact metrics (water, scope-2 carbon, indirect-water as v0.2
+  research lands) should resolve at the event level, not at the
+  bucket level, even if the prototype could "just for now" sum-then-
+  multiply. The boundary-bucket correctness argument applies to any
+  time-anchored factor.
+- If a future feature finds per-event resolution genuinely
+  expensive — say, a years-of-data tier-1 customer with billions of
+  events — the right escape is materialized rollups (precomputed
+  daily impact totals) keyed by `(bucket_date, model, factor_valid_from)`,
+  not a switch to per-bucket resolution. The materialized form
+  preserves per-event correctness while giving up the
+  recompute-on-every-read flexibility.
+
+---
+
+## 2026-05-06 — `[inference]` config block (vs top-level `default_inference_region`)
+
+**Decision.** Phase-2 inference settings live under an `[inference]`
+config table:
+
+```toml
+[inference]
+default_inference_region = "us-east-1"
+```
+
+Not at the top level. The legacy top-level form
+(`default_inference_region = "..."` at the root) still parses for
+back-compat, but emits a one-time deprecation warning on load.
+
+**Why.**
+
+- **Phase 2 added more inference-related knobs than fit at the top
+  level.** Region was the first; water methodology selection,
+  uncertainty band rendering, and per-region overrides are
+  plausibly next. A `[inference]` table groups them.
+- **TOML tables make the file more readable.** Three flat
+  top-level keys is fine; ten is a wall. Grouping by feature area
+  is the conventional shape — `[ingest]`, `[storage]`, `[server]`,
+  `[auth]`, `[pricing]`, `[factors]` were already in place, all
+  feature-area tables. `[inference]` follows that pattern.
+- **The back-compat path is cheap and proven.** We already had to
+  do the same migration for `claude_code_root` → `claude_code_roots`.
+  Same pattern: prefer plural/grouped form, fall back to
+  singular/top-level, warn once on the fallback. Users keep working
+  configs; the warning nudges toward the canonical form at their
+  convenience.
+
+**How to apply.**
+
+- New config fields whose semantics overlap a feature area should
+  go under that feature's table, not at the top level. Top-level is
+  for genuinely cross-cutting concerns (which we don't currently
+  have any of).
+- Back-compat reads of deprecated fields should always go through
+  an `effective_*` accessor that resolves precedence in one place,
+  not direct `config.x.is_some()` checks scattered through the
+  codebase. The accessor is also where the deprecation warning fires.
+- When the deprecated form is eventually removed (we haven't
+  removed any yet), bump the config schema version and document the
+  break in `CHANGELOG.md`. Don't silently break configs.
+
+---
+
+## 2026-05-06 — Daily endpoint always returns the full impact block (no `view=` parameter)
+
+**Decision.** `/api/v1/usage/daily` returns the full payload —
+tokens, billable equivalents, USD cost, environmental impact — in
+every response. There is no `?view=energy` or `?view=cost` switch.
+
+**Why.**
+
+- **The frontend already chose the view client-side**, in the
+  ViewMode toggle (`Raw`, `Cost-weighted`, `Cost (USD)`, future
+  `Energy`/`CO2`/`Water`). The server has no idea which the user
+  picked at any given moment. Round-tripping that state would just
+  shift the decision from "where in the JSON do we look" to "what
+  do we put in the URL." No net simplification.
+- **Payload size cost is trivial.** The impact block adds ~80 bytes
+  per (bucket, model) cell. A 1y window × 5 models × daily buckets =
+  365 × 5 × 80 ≈ 145 KB. Gzipped it's a fraction of that. Network
+  isn't the bottleneck; it's not even on the same order as the
+  600KB frontend bundle.
+- **Single payload, single source of truth.** The dashboard's
+  cross-view interactions (e.g. "switch from Cost view to Energy
+  view") happen client-side without a refetch. No race conditions,
+  no "I switched too fast and got the wrong data" UX.
+- **API consumers external to the dashboard get everything by
+  default.** When/if there's a CLI or third-party integration
+  reading these endpoints, they don't have to know which `view=`
+  to ask for — they get the union and pick what they need.
+
+**How to apply.**
+
+- New per-event metrics (water breakdown, scope-2 carbon, etc.)
+  should land as additional fields on the existing `impact` block,
+  not as new endpoint variants. The pattern: every read query
+  computes everything it can; the frontend renders what the user
+  asks for.
+- If a future metric genuinely *is* expensive to compute (think:
+  full per-event SHA-256s for content auditing), THAT one earns an
+  opt-in flag. Default is "include." Opt-out, not opt-in.
+- This decision composes with the per-event-resolution one above:
+  both push as much as possible into a single read pass. Combined
+  they keep the dashboard responsive without per-request
+  configuration ceremony.
+
+---
+
 ## 2026-05-06 — Multi-machine ingest leans on external sync (Syncthing recommended); native `tokenscale agent` mode deferred to Phase 3
 
 **Decision.** v1 supports multi-machine Claude Code usage by reading from multiple locally-accessible JSONL roots (`[ingest].claude_code_roots = [...]`). Getting JSONL from other machines onto the host running `tokenscale serve` is the user's job, accomplished with any file-sync tool — Syncthing is the recommended default in the README. A future Phase 3 `tokenscale agent` mode (a lightweight daemon on each machine that HTTP-posts events to a central `tokenscale serve`) is deferred; tracked as a future enhancement, not part of v1.
