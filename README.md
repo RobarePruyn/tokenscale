@@ -68,7 +68,35 @@ The frontend is bundled into the binary at compile time via `rust-embed`, so end
 
 ### Pre-built binaries
 
-Not yet published — Phase 3.
+Each tagged release ships pre-built binaries via [GitHub Releases](https://github.com/RobarePruyn/tokenscale/releases). One-line installers exist for every supported platform:
+
+```bash
+# macOS / Linux — shell installer (works on any POSIX shell)
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/RobarePruyn/tokenscale/releases/latest/download/tokenscale-cli-installer.sh | sh
+
+# macOS — via Homebrew (preferred for Mac users)
+brew tap RobarePruyn/tokenscale
+brew install tokenscale
+
+# Windows — PowerShell installer
+powershell -c "irm https://github.com/RobarePruyn/tokenscale/releases/latest/download/tokenscale-cli-installer.ps1 | iex"
+```
+
+Or download the platform-specific archive directly from [the latest release](https://github.com/RobarePruyn/tokenscale/releases/latest) and extract `tokenscale` (or `tokenscale.exe` on Windows) onto your `$PATH`.
+
+Supported targets:
+
+| Platform | Architecture | Archive |
+|---|---|---|
+| macOS | Apple Silicon (M-series) | `tokenscale-cli-aarch64-apple-darwin.tar.xz` |
+| macOS | Intel | `tokenscale-cli-x86_64-apple-darwin.tar.xz` |
+| Linux | x86_64 | `tokenscale-cli-x86_64-unknown-linux-gnu.tar.xz` |
+| Linux | aarch64 (ARM64) | `tokenscale-cli-aarch64-unknown-linux-gnu.tar.xz` |
+| Windows | x86_64 | `tokenscale-cli-x86_64-pc-windows-msvc.zip` |
+
+After install, `tokenscale init && tokenscale serve` gets you running. See the [Quick start](#quick-start) above for the full first-run flow.
+
+Releasing is documented separately in [RELEASING.md](RELEASING.md).
 
 ## Dashboard tour
 

@@ -1,0 +1,59 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist' — the release-artifact + installer pipeline. See
+# https://opensource.axo.dev/cargo-dist/ for the schema reference and
+# docs/decisions.md for our rationale on installer choices.
+[dist]
+# Pinned so CI runs the same version we initialized with locally.
+# Bump deliberately; rerunning `dist init` after bumping migrates
+# generated configs.
+cargo-dist-version = "0.31.0"
+
+# GitHub Actions orchestrates the release; GitHub Releases hosts the
+# artifacts. No third-party CI dependency.
+ci = "github"
+hosting = "github"
+
+# Cross-platform target matrix. `dist build` produces archive +
+# checksum + .tar.gz for each. macOS gets both Apple Silicon and
+# Intel binaries; Linux gets both common server architectures;
+# Windows gets the MSVC toolchain build (mingw is an option but
+# msvc is the more universally-compatible choice).
+targets = [
+  "aarch64-apple-darwin",        # macOS Apple Silicon (M1+)
+  "x86_64-apple-darwin",         # macOS Intel
+  "aarch64-unknown-linux-gnu",   # Linux ARM64 (cloud / Raspberry Pi)
+  "x86_64-unknown-linux-gnu",    # Linux x86_64 (most servers + desktops)
+  "x86_64-pc-windows-msvc",      # Windows 64-bit
+]
+
+# Installers we ship alongside the binaries:
+#   * `shell`      — curl | sh installer for macOS + Linux users
+#   * `powershell` — iwr | iex installer for Windows users
+#   * `homebrew`   — Formula auto-published to the tap repo below,
+#                    enabling `brew install`. Requires the tap repo
+#                    to exist before the first release tag is pushed.
+installers = ["shell", "powershell", "homebrew"]
+
+# The Homebrew tap repo dist publishes the Formula into. The repo
+# must exist on GitHub at this path before the first release tag
+# triggers CI; see RELEASING.md for the one-time setup.
+tap = "RobarePruyn/homebrew-tokenscale"
+
+# Jobs that run after the binaries are built and the GitHub Release
+# exists. `homebrew` here is what tells dist to actually push the
+# generated Formula to the `tap` repo (without this, dist generates
+# the Formula but doesn't publish it).
+publish-jobs = ["homebrew"]
+
+# Build-time setup steps injected into each release-job's GitHub
+# Actions workflow BEFORE `dist build` invokes cargo. We need this
+# because tokenscale embeds the frontend SPA at compile time via
+# `rust-embed`, which requires `frontend/dist/` to exist before the
+# Rust build runs. Without this hook, CI builds would fail with
+# "rust-embed: directory `frontend/dist/` not found".
+#
+# Path is relative to the workspace root; dist inlines the file's
+# YAML fragment into the build job's `steps:` list.
+github-build-setup = "build-setup.yml"

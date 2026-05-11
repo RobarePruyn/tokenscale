@@ -1,0 +1,30 @@
+# Build-setup steps injected by `dist` into every release-build
+# matrix job BEFORE the `dist build` (which is what invokes `cargo
+# build` for each target). Path is referenced from
+# `dist-workspace.toml`'s `github-build-setup` key.
+#
+# Why these steps exist:
+#   * tokenscale embeds the React/Tailwind SPA into the binary via
+#     `rust-embed`, which reads `frontend/dist/` at compile time.
+#   * Release CI builds the Rust binary on a clean runner with no
+#     prior `npm run build`, so without these steps `cargo build`
+#     fails complaining that `frontend/dist/` doesn't exist.
+#   * The frontend output is platform-independent (it's just JS),
+#     so we build it once per build-job (each release target gets a
+#     fresh runner). For ~5 targets × ~30s npm build = ~2.5 min of
+#     repeated work; acceptable for the simplicity. A future
+#     optimization could build once in the `plan` job and share the
+#     artifact, but it's not blocking anything today.
+
+- name: Set up Node.js (for tokenscale frontend build)
+  uses: actions/setup-node@v4
+  with:
+    node-version: "20"
+
+- name: Install frontend dependencies
+  run: npm ci
+  working-directory: frontend
+
+- name: Build frontend (rust-embed needs this before cargo build)
+  run: npm run build
+  working-directory: frontend

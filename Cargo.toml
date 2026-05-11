@@ -23,7 +23,9 @@ edition      = "2021"
 rust-version = "1.82"
 license      = "Apache-2.0"
 repository   = "https://github.com/RobarePruyn/tokenscale"
+homepage     = "https://github.com/RobarePruyn/tokenscale"
 authors      = ["Robare Sarif"]
+description  = "Self-hostable Anthropic usage and environmental-impact dashboard."
 
 # ----------------------------------------------------------------------------
 # Workspace-wide dependency registry. Member crates pull from this via
@@ -124,3 +126,8 @@ cast_sign_loss           = "allow"
 lto              = "thin"
 codegen-units    = 1
 strip            = "symbols"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
