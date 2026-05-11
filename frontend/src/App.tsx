@@ -1463,34 +1463,23 @@ export default function App() {
         />
 
         {/*
-         * BillingImportPanel deliberately not rendered.
-         *
-         * The CSV importer assumed Anthropic exposed a bulk billing
-         * export (Stripe Customer Portal CSV); confirmed in the field
-         * that they don't — both claude.ai and Console invoice
-         * history only offer per-row PDF downloads. Without a usable
-         * export path, the panel adds UI surface for a flow no one
-         * can complete, so it's hidden until either:
-         *   (a) Anthropic ships a CSV export, OR
-         *   (b) we wire up an alternate ingest source that lands
-         *       into the same billing_charges table.
-         *
-         * The backend (schema, parser, endpoints) is intact and is
-         * the foundation Phase 2's Admin API cost_report ingester
-         * builds on — `source = "anthropic_admin"` reuses
-         * insert_billing_charges and the existing dedup contract.
-         * Re-enable by un-commenting; component definition + state
-         * wiring upstream all still compile.
+         * Manually-composed CSV import is the user's chosen path for
+         * tracking Anthropic billing — neither claude.ai nor the
+         * Console exposes a bulk export, and the Admin API requires
+         * an organization account (not available on individual tier).
+         * The panel is therefore the practical entry point until one
+         * of those changes; auto-ingest from the Admin API will reuse
+         * the same backend (`billing_charges` table,
+         * `insert_billing_charges` path) under
+         * `source = "anthropic_admin"` when that path opens up.
          */}
-        {false && (
-          <BillingImportPanel
-            billingChargesState={billingChargesState}
-            onCommitted={() => {
-              refreshSubscriptions()
-              refreshBillingCharges()
-            }}
-          />
-        )}
+        <BillingImportPanel
+          billingChargesState={billingChargesState}
+          onCommitted={() => {
+            refreshSubscriptions()
+            refreshBillingCharges()
+          }}
+        />
       </main>
     </div>
   )
