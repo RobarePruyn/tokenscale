@@ -236,15 +236,18 @@ impl Config {
     /// nothing" — that's the less-surprising behavior, since an empty
     /// list is almost certainly a typo.
     pub fn effective_claude_code_roots(&self) -> Result<Vec<PathBuf>> {
-        if let Some(plural) = self.ingest.claude_code_roots.as_ref() {
-            if !plural.is_empty() {
-                return Ok(plural.clone());
+        let raw = if let Some(plural) = self.ingest.claude_code_roots.as_ref() {
+            if plural.is_empty() {
+                vec![default_claude_code_root()?]
+            } else {
+                plural.clone()
             }
-        }
-        if let Some(singular) = self.ingest.claude_code_root.clone() {
-            return Ok(vec![singular]);
-        }
-        Ok(vec![default_claude_code_root()?])
+        } else if let Some(singular) = self.ingest.claude_code_root.clone() {
+            vec![singular]
+        } else {
+            vec![default_claude_code_root()?]
+        };
+        raw.into_iter().map(expand_tilde).collect()
     }
 
     /// Resolved database path: the configured override, or the platform
@@ -281,6 +284,28 @@ fn home_directory() -> Result<PathBuf> {
 fn default_claude_code_root() -> Result<PathBuf> {
     let home = home_directory()?;
     Ok(home.join(".claude").join("projects"))
+}
+
+/// Expand a leading `~/` (or bare `~`) to the user's home directory.
+/// TOML stores paths as plain strings — `~` is not a shell, no
+/// expansion happens for free. Without this helper, a config like
+/// `claude_code_roots = ["~/.claude/projects"]` would try to open
+/// a directory literally named `~` and fail with `RootNotFound`.
+///
+/// Paths without a leading `~` are returned unchanged. Non-UTF-8
+/// paths (rare; macOS / Windows can have them) are passed through —
+/// we can't tilde-expand without converting to a string.
+fn expand_tilde(path: PathBuf) -> Result<PathBuf> {
+    let Some(as_str) = path.to_str() else {
+        return Ok(path);
+    };
+    if let Some(rest) = as_str.strip_prefix("~/") {
+        return Ok(home_directory()?.join(rest));
+    }
+    if as_str == "~" {
+        return home_directory();
+    }
+    Ok(path)
 }
 
 fn default_data_directory() -> Result<PathBuf> {
@@ -350,6 +375,32 @@ default_inference_region = "us-east-2"
         std::fs::write(&path, toml_inference).unwrap();
         let config = Config::load_or_default(&path).unwrap();
         assert_eq!(config.effective_inference_region(), "us-east-2");
+    }
+
+    #[test]
+    fn tilde_paths_expand_to_absolute_paths() {
+        // TOML stores paths verbatim — `~/...` won't expand unless we
+        // do it ourselves. Without expansion the scan silently fails.
+        let toml_with_tildes = r#"
+[ingest]
+claude_code_roots = ["~/.claude/projects", "~/.claude-synced/laptop/projects"]
+"#;
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, toml_with_tildes).unwrap();
+        let config = Config::load_or_default(&path).unwrap();
+        let roots = config.effective_claude_code_roots().unwrap();
+        assert_eq!(roots.len(), 2);
+        for root in &roots {
+            assert!(
+                root.is_absolute(),
+                "tilde-prefixed config should expand to absolute path, got {root:?}",
+            );
+            assert!(
+                !root.to_string_lossy().starts_with('~'),
+                "leading ~ should be replaced, got {root:?}",
+            );
+        }
     }
 
     #[test]
