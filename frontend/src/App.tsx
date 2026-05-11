@@ -720,14 +720,15 @@ export default function App() {
     }
   }, [subscriptionsRevision])
 
-  // Billing charges — re-fetched on mount, after any import commit,
-  // and whenever the date window changes (charges-in-window total
-  // drives a stat card).
+  // Billing charges — fetched once on mount and after any import
+  // commit. Intentionally NOT scoped by the chart's date window:
+  // the Subscriptions panel below is supposed to show "what
+  // subscriptions exist", which is window-agnostic. Stat-row totals
+  // filter this same data client-side for window-scoped sums.
   useEffect(() => {
     let cancelled = false
     setBillingChargesState({ status: 'loading' })
-    const params = new URLSearchParams({ from: fromDate, to: toDate })
-    fetch(`/api/v1/billing/charges?${params.toString()}`)
+    fetch('/api/v1/billing/charges')
       .then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         return (await response.json()) as BillingChargesResponse
@@ -743,7 +744,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [billingChargesRevision, fromDate, toDate])
+  }, [billingChargesRevision])
 
   // Health — once on mount, then every 30s so the freshness chip
   // ticks and the daily-data fetch below picks up new events that
@@ -955,24 +956,36 @@ export default function App() {
     )
   }, [subscriptionsState, fromDate, toDate])
 
-  // Imported billing charges split by category. Subscription-category
-  // rows belong to the "Subscriptions paid" stat (they ARE
-  // subscriptions, just sourced from an import instead of a manual
-  // entry). Everything else — overages, one-time, refunds, unknown —
+  // Imported billing charges split by category AND filtered to the
+  // current chart window. (The underlying fetch is window-agnostic so
+  // the Subscriptions panel below can list all history; the stat row
+  // here re-filters by date for "what was paid in this window".)
+  // Subscription-category rows belong to the "Subscriptions paid"
+  // stat; everything else (overage / one-time / refund / unknown)
   // belongs in "Other charges". Refunds are negative-amount rows so
-  // they reduce their respective bucket; that's the right accounting.
+  // they reduce their respective bucket — that's the right accounting.
   const importedSubscriptionsUsd = useMemo(() => {
     if (billingChargesState.status !== 'ok') return null
     return billingChargesState.data.charges
-      .filter((charge) => charge.category === 'subscription')
+      .filter(
+        (charge) =>
+          charge.category === 'subscription' &&
+          charge.occurred_at >= fromDate &&
+          charge.occurred_at <= toDate,
+      )
       .reduce((sum, charge) => sum + charge.amount_usd, 0)
-  }, [billingChargesState])
+  }, [billingChargesState, fromDate, toDate])
   const importedOtherUsd = useMemo(() => {
     if (billingChargesState.status !== 'ok') return null
     return billingChargesState.data.charges
-      .filter((charge) => charge.category !== 'subscription')
+      .filter(
+        (charge) =>
+          charge.category !== 'subscription' &&
+          charge.occurred_at >= fromDate &&
+          charge.occurred_at <= toDate,
+      )
       .reduce((sum, charge) => sum + charge.amount_usd, 0)
-  }, [billingChargesState])
+  }, [billingChargesState, fromDate, toDate])
 
   // "Subscriptions paid in window" combines manually-declared
   // subscriptions (pro-rated over their date overlap) with imported
@@ -2259,10 +2272,19 @@ function SubscriptionsPanel({
       )}
       {subscriptionsState.status === 'ok' &&
         subscriptions.length === 0 &&
-        formMode.kind === 'closed' && (
+        formMode.kind === 'closed' &&
+        // Suppress the empty hint when imported subscription charges
+        // exist — the imported section below already shows the user
+        // their subscriptions, just sourced from a different ingest
+        // path. "No subscriptions yet" would be a lie in that case.
+        (billingChargesState.status !== 'ok' ||
+          !billingChargesState.data.charges.some(
+            (charge) => charge.category === 'subscription',
+          )) && (
           <div className="text-sm text-slate-500">
             No subscriptions yet. Add Claude Max, a Team seat, or any other flat-fee plan to see
-            net value over your selected date range.
+            net value over your selected date range. (Or import a billing CSV below — recurring
+            charges tagged as subscriptions show up automatically.)
           </div>
         )}
       {subscriptions.length > 0 && (
