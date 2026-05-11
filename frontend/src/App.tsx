@@ -1488,6 +1488,16 @@ export default function App() {
                   </ResponsiveContainer>
                 )}
             </div>
+            <p
+              className="text-xs text-slate-500 mt-3"
+              title="Anthropic does not currently expose a per-user usage feed for consumer products. This is true of ChatGPT, Gemini, and Mistral as well. See docs/data-sources.md."
+            >
+              Chart shows Claude Code session data only. Usage from the Claude
+              iOS / Android / desktop apps and{' '}
+              <span className="font-mono">claude.ai</span> is structurally invisible —
+              Anthropic doesn't expose a feed for consumer products. The COST of
+              those products IS tracked, via your imported subscription charges.
+            </p>
           </div>
         </section>
 

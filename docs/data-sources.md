@@ -70,3 +70,18 @@ These get resolved by inspecting a real `~/.claude/projects/.../*.jsonl` file be
 - Any data Anthropic does not publish. There is no public per-request region attribution, no per-request energy or water metric, no per-request datacenter assignment. Where `tokenscale` shows region- or impact-derived metrics, the underlying assumption is documented and user-configurable.
 - Logs from other LLM providers in v1.
 - File contents Claude Code touched on disk during a session — `tokenscale` ingests only the JSONL session logs, not the artefacts those sessions produced.
+
+### Structurally invisible consumer surfaces
+
+The following are **inaccessible by design** to any external tool, including a future version of `tokenscale`:
+
+- **Claude iOS app** — chat data lives in the app's iOS sandbox container; not readable from outside the app without jailbreak. iOS encrypted backups also do not expose it readably.
+- **Claude Android app** — same reasoning as iOS (per-app sandboxing).
+- **Claude desktop apps (Mac / Windows)** — primarily thin clients around `claude.ai`; conversation data is server-side and not exposed to local readers.
+- **`claude.ai` web** — session data lives server-side at Anthropic; the only access path is the authenticated browser session itself. Scraping is rejected on ToS / account-safety / brittleness grounds (see `decisions.md`).
+
+These surfaces ALL contribute to a Pro / Max / Team subscriber's billed usage. **Their COST is fully captured** via the billing-CSV import path (`source = "stripe_csv"`, future `"anthropic_admin"`) — the subscription line items in `billing_charges` cover everything Anthropic charges for. What's missing is **per-conversation, per-token granularity** for those surfaces.
+
+**This is a structural limitation of Anthropic's product surface, not a `tokenscale` gap to close.** Anthropic does not currently expose any consumer-side usage feed (web, iOS, Android, desktop app); ChatGPT, Gemini, and Mistral are the same. The dashboard surfaces this honestly in a footnote rather than fabricating data we don't have.
+
+If Anthropic ever ships a per-user consumer usage API (analogous to the Admin API but for consumer products), it would slot into `tokenscale` as a new source — same pattern as adding any other ingest path: row in `sources`, new crate under `crates/`, ingester emits `Event` rows that flow through the existing pipeline.
