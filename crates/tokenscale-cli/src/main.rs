@@ -21,7 +21,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokenscale_core::{EnvironmentalFactorsFile, PricingFile};
-use tokenscale_ingest_cc::run_scan;
+use tokenscale_ingest_cc::{run_scan_multi, ScanSummary};
 use tokenscale_server::{serve, AppState};
 use tokenscale_store::{
     clear_file_state_for_source, delete_events_for_source, sync_environmental_factors, Database,
@@ -254,7 +254,7 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
     // outlives any single request.
     let scan_handle = spawn_auto_scan_loop(
         database.clone(),
-        config.effective_claude_code_root()?,
+        config.effective_claude_code_roots()?,
         config.ingest.store_raw,
         config.ingest.scan_interval_seconds,
     );
@@ -292,7 +292,7 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
 /// don't pile up if a scan ever takes longer than the interval.
 fn spawn_auto_scan_loop(
     database: Database,
-    claude_code_root: std::path::PathBuf,
+    claude_code_roots: Vec<std::path::PathBuf>,
     capture_raw_payloads: bool,
     interval_seconds: u64,
 ) -> Option<tokio::task::JoinHandle<()>> {
@@ -306,7 +306,7 @@ fn spawn_auto_scan_loop(
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            match run_scan(&database, &claude_code_root, capture_raw_payloads).await {
+            match run_scan_multi(&database, &claude_code_roots, capture_raw_payloads).await {
                 Ok(summary) if summary.events_inserted > 0 || summary.files_parsed > 0 => {
                     info!(?summary, "auto-scan ingested fresh data");
                 }
@@ -345,8 +345,14 @@ fn render_starter_config() -> String {
 # Persist the full JSONL payload in events.raw. Disable to keep token counts
 # and metadata only — see Privacy in the README.
 store_raw = true
-# Override for the Claude Code session root (default: ~/.claude/projects).
-# claude_code_root = \"/path/to/claude/projects\"
+# One or more directories to scan for Claude Code JSONL session logs.
+# Defaults to the platform-standard ~/.claude/projects when unset. List
+# multiple paths when you sync sessions from other machines (Syncthing,
+# Dropbox, etc.) — the scan walks each in turn and de-dupes by content.
+# claude_code_roots = [
+#   \"~/.claude/projects\",
+#   \"~/SyncedCode/laptop/.claude/projects\",
+# ]
 # How often `tokenscale serve` re-runs an incremental scan in the background,
 # in seconds. The first scan runs at startup; the interval governs subsequent
 # runs. Set to 0 to disable auto-scan and run `tokenscale scan` manually.
@@ -443,10 +449,11 @@ async fn command_scan(config_path: &std::path::Path, mode: ScanMode) -> Result<(
         );
     }
 
-    let claude_code_root = config.effective_claude_code_root()?;
-    let summary = run_scan(&database, &claude_code_root, config.ingest.store_raw)
-        .await
-        .context("running Claude Code scan")?;
+    let claude_code_roots = config.effective_claude_code_roots()?;
+    let summary: ScanSummary =
+        run_scan_multi(&database, &claude_code_roots, config.ingest.store_raw)
+            .await
+            .context("running Claude Code scan")?;
 
     println!(
         "Scan complete: {} files seen, {} parsed, {} unchanged. {} new events, {} duplicates skipped. {} non-assistant lines, {} malformed.",

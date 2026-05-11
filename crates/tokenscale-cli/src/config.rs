@@ -71,9 +71,22 @@ pub struct IngestConfig {
     /// to keep token counts and metadata only — see README "Privacy".
     pub store_raw: bool,
 
-    /// Override for `~/.claude/projects`. If unset, the default path under
-    /// the user's home directory is used.
+    /// **Deprecated:** prefer `claude_code_roots` (plural) so multiple
+    /// machines' synced log directories can be scanned in one pass.
+    /// Read for back-compat with v0.x configs; emits a one-time warning
+    /// on load when set without the plural form.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_code_root: Option<PathBuf>,
+
+    /// One or more directories to walk for Claude Code JSONL session
+    /// logs. When unset, defaults to the platform-standard
+    /// `~/.claude/projects`. Power users running multi-machine setups
+    /// (Syncthing / Dropbox / iCloud mirroring laptop sessions to a
+    /// desktop, etc.) list every synced root here — the scan walks
+    /// each in turn and `_ingest_file_state` keys by full path, so
+    /// roots don't collide even if filenames repeat.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_code_roots: Option<Vec<PathBuf>>,
 
     /// How often `tokenscale serve` should run an incremental scan in the
     /// background, in seconds. The first scan runs at startup; the
@@ -88,6 +101,7 @@ impl Default for IngestConfig {
         Self {
             store_raw: true,
             claude_code_root: None,
+            claude_code_roots: None,
             scan_interval_seconds: 60,
         }
     }
@@ -179,6 +193,13 @@ impl Config {
                  and will be removed in a future version."
             );
         }
+        if config.ingest.claude_code_root.is_some() && config.ingest.claude_code_roots.is_none() {
+            warn!(
+                "config field `[ingest].claude_code_root` (singular) is deprecated; \
+                 use `claude_code_roots` (plural, list of paths) so multi-machine \
+                 setups can scan synced log directories alongside the local one."
+            );
+        }
         Ok(config)
     }
 
@@ -204,14 +225,26 @@ impl Config {
         toml::to_string_pretty(self).context("serializing config to TOML")
     }
 
-    /// Resolved Claude Code root path: the configured override, or the
-    /// platform default `~/.claude/projects`.
-    pub fn effective_claude_code_root(&self) -> Result<PathBuf> {
-        if let Some(configured) = self.ingest.claude_code_root.clone() {
-            return Ok(configured);
+    /// Resolved list of Claude Code root paths. Resolution order:
+    ///   1. `[ingest].claude_code_roots` (plural) — preferred form.
+    ///   2. `[ingest].claude_code_root` (singular, deprecated) wrapped
+    ///      in a single-element Vec.
+    ///   3. Platform default `~/.claude/projects`.
+    ///
+    /// The Vec is always non-empty when this returns Ok. Empty config
+    /// (Some([])) is treated as "use the default" rather than "scan
+    /// nothing" — that's the less-surprising behavior, since an empty
+    /// list is almost certainly a typo.
+    pub fn effective_claude_code_roots(&self) -> Result<Vec<PathBuf>> {
+        if let Some(plural) = self.ingest.claude_code_roots.as_ref() {
+            if !plural.is_empty() {
+                return Ok(plural.clone());
+            }
         }
-        let home = home_directory()?;
-        Ok(home.join(".claude").join("projects"))
+        if let Some(singular) = self.ingest.claude_code_root.clone() {
+            return Ok(vec![singular]);
+        }
+        Ok(vec![default_claude_code_root()?])
     }
 
     /// Resolved database path: the configured override, or the platform
@@ -240,6 +273,14 @@ fn home_directory() -> Result<PathBuf> {
     directories::BaseDirs::new()
         .map(|base| base.home_dir().to_path_buf())
         .context("could not resolve user home directory")
+}
+
+/// Platform-default Claude Code session root: `~/.claude/projects`.
+/// Used by `Config::effective_claude_code_roots` when no override is
+/// configured.
+fn default_claude_code_root() -> Result<PathBuf> {
+    let home = home_directory()?;
+    Ok(home.join(".claude").join("projects"))
 }
 
 fn default_data_directory() -> Result<PathBuf> {
@@ -309,6 +350,53 @@ default_inference_region = "us-east-2"
         std::fs::write(&path, toml_inference).unwrap();
         let config = Config::load_or_default(&path).unwrap();
         assert_eq!(config.effective_inference_region(), "us-east-2");
+    }
+
+    #[test]
+    fn claude_code_roots_plural_wins_over_singular_back_compat() {
+        let toml_both = r#"
+[ingest]
+claude_code_root = "/old/singular"
+claude_code_roots = ["/new/plural/a", "/new/plural/b"]
+"#;
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, toml_both).unwrap();
+        let config = Config::load_or_default(&path).unwrap();
+        let roots = config.effective_claude_code_roots().unwrap();
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[0], std::path::PathBuf::from("/new/plural/a"));
+        assert_eq!(roots[1], std::path::PathBuf::from("/new/plural/b"));
+    }
+
+    #[test]
+    fn singular_only_resolves_to_one_root_for_back_compat() {
+        let toml_singular = r#"
+[ingest]
+claude_code_root = "/legacy/path"
+"#;
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, toml_singular).unwrap();
+        let config = Config::load_or_default(&path).unwrap();
+        let roots = config.effective_claude_code_roots().unwrap();
+        assert_eq!(roots, vec![std::path::PathBuf::from("/legacy/path")]);
+    }
+
+    #[test]
+    fn empty_plural_falls_back_to_default_root() {
+        // Empty list is treated as "unset" — assume typo, not "scan nothing."
+        let toml_empty = r"
+[ingest]
+claude_code_roots = []
+";
+        let temp = TempDir::new().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, toml_empty).unwrap();
+        let config = Config::load_or_default(&path).unwrap();
+        let roots = config.effective_claude_code_roots().unwrap();
+        assert_eq!(roots.len(), 1);
+        assert!(roots[0].ends_with(".claude/projects"));
     }
 
     #[test]

@@ -955,27 +955,45 @@ export default function App() {
     )
   }, [subscriptionsState, fromDate, toDate])
 
-  // Imported billing charges (Stripe CSV today, Anthropic Admin
-  // cost_report next) summed inside the active window. Refunds are
-  // negative-amount rows so they reduce the total — that's the right
-  // accounting.
-  const importedChargesUsd = useMemo(() => {
+  // Imported billing charges split by category. Subscription-category
+  // rows belong to the "Subscriptions paid" stat (they ARE
+  // subscriptions, just sourced from an import instead of a manual
+  // entry). Everything else — overages, one-time, refunds, unknown —
+  // belongs in "Other charges". Refunds are negative-amount rows so
+  // they reduce their respective bucket; that's the right accounting.
+  const importedSubscriptionsUsd = useMemo(() => {
     if (billingChargesState.status !== 'ok') return null
-    return billingChargesState.data.charges.reduce(
-      (sum, charge) => sum + charge.amount_usd,
-      0,
-    )
+    return billingChargesState.data.charges
+      .filter((charge) => charge.category === 'subscription')
+      .reduce((sum, charge) => sum + charge.amount_usd, 0)
+  }, [billingChargesState])
+  const importedOtherUsd = useMemo(() => {
+    if (billingChargesState.status !== 'ok') return null
+    return billingChargesState.data.charges
+      .filter((charge) => charge.category !== 'subscription')
+      .reduce((sum, charge) => sum + charge.amount_usd, 0)
   }, [billingChargesState])
 
-  // Total Anthropic billed = manual subscriptions (pro-rated) +
-  // imported charges. The import preview's conflict-resolution UI
-  // ensures these don't double-count: dismissing a manual entry on
-  // import means it's no longer in `subscriptions`, so summing is
-  // safe.
-  const totalBilledUsd =
-    subscriptionCostUsd === null && importedChargesUsd === null
+  // "Subscriptions paid in window" combines manually-declared
+  // subscriptions (pro-rated over their date overlap) with imported
+  // subscription-category charges (already date-stamped — included if
+  // their occurred_at falls in window). Dedup is handled at import
+  // time: dismissing a manual entry during the preview removes it
+  // from `subscriptions`, so summing is safe.
+  const combinedSubscriptionsUsd =
+    subscriptionCostUsd === null && importedSubscriptionsUsd === null
       ? null
-      : (subscriptionCostUsd ?? 0) + (importedChargesUsd ?? 0)
+      : (subscriptionCostUsd ?? 0) + (importedSubscriptionsUsd ?? 0)
+
+  // "Other charges in window" is overages + one-time + refunds. The
+  // CSV import surfaces these distinctly from subscriptions so the
+  // dashboard can split them in the stat row.
+  const otherChargesUsd = importedOtherUsd
+
+  const totalBilledUsd =
+    combinedSubscriptionsUsd === null && otherChargesUsd === null
+      ? null
+      : (combinedSubscriptionsUsd ?? 0) + (otherChargesUsd ?? 0)
 
   const netValueUsd =
     counterfactualCostUsd !== null && totalBilledUsd !== null
@@ -1377,17 +1395,20 @@ export default function App() {
 
           <StatRow
             counterfactualCostUsd={counterfactualCostUsd}
-            subscriptionCostUsd={subscriptionCostUsd}
-            importedChargesUsd={importedChargesUsd}
+            combinedSubscriptionsUsd={combinedSubscriptionsUsd}
+            otherChargesUsd={otherChargesUsd}
             totalBilledUsd={totalBilledUsd}
             netValueUsd={netValueUsd}
-            hasSubscriptions={
-              subscriptionsState.status === 'ok' &&
-              subscriptionsState.data.subscriptions.length > 0
+            hasSubscriptionsData={
+              (subscriptionsState.status === 'ok' &&
+                subscriptionsState.data.subscriptions.length > 0) ||
+              (importedSubscriptionsUsd !== null && importedSubscriptionsUsd !== 0)
             }
-            hasImportedCharges={
+            hasOtherCharges={
               billingChargesState.status === 'ok' &&
-              billingChargesState.data.charges.length > 0
+              billingChargesState.data.charges.some(
+                (charge) => charge.category !== 'subscription',
+              )
             }
             pricingNeedsReview={pricingNeedsReview}
           />
@@ -1459,6 +1480,7 @@ export default function App() {
 
         <SubscriptionsPanel
           subscriptionsState={subscriptionsState}
+          billingChargesState={billingChargesState}
           onMutated={refreshSubscriptions}
         />
 
@@ -1486,31 +1508,31 @@ export default function App() {
 }
 
 // ---------------------------------------------------------------------------
-// StatRow — counterfactual API cost, subscriptions, imported charges,
-// net value. The Stripe-CSV import path adds the "Imported charges"
-// card; before any import lands, the card is muted with a hint pointing
-// at the import panel below.
+// StatRow — counterfactual API cost, combined subscriptions, other
+// charges, net value. Subscriptions = manual entries + imported rows
+// tagged `subscription` (one bucket, one card). Other charges =
+// imported rows tagged anything else (overages, one-time, refunds).
 // ---------------------------------------------------------------------------
 
 type StatRowProps = {
   counterfactualCostUsd: number | null
-  subscriptionCostUsd: number | null
-  importedChargesUsd: number | null
+  combinedSubscriptionsUsd: number | null
+  otherChargesUsd: number | null
   totalBilledUsd: number | null
   netValueUsd: number | null
-  hasSubscriptions: boolean
-  hasImportedCharges: boolean
+  hasSubscriptionsData: boolean
+  hasOtherCharges: boolean
   pricingNeedsReview: boolean
 }
 
 function StatRow({
   counterfactualCostUsd,
-  subscriptionCostUsd,
-  importedChargesUsd,
+  combinedSubscriptionsUsd,
+  otherChargesUsd,
   totalBilledUsd,
   netValueUsd,
-  hasSubscriptions,
-  hasImportedCharges,
+  hasSubscriptionsData,
+  hasOtherCharges,
   pricingNeedsReview,
 }: StatRowProps) {
   if (counterfactualCostUsd === null) return null
@@ -1519,17 +1541,15 @@ function StatRow({
     ? 'Counterfactual API cost (approx)'
     : 'Counterfactual API cost'
 
-  // When the user has imported charges, the "Subscriptions paid"
-  // figure is supplementary information (most subs become charges).
-  // We collapse to a single "Anthropic billed" card by default when
-  // imports exist, and surface the manual-subs breakdown only when
-  // there are no imports yet.
-  const showImportedChargesCard = hasImportedCharges
+  // The "Other charges" card only appears when there's something to
+  // show in it — pre-import, the user has just subscriptions, and a
+  // 4-card row with a permanently-muted card adds visual noise.
+  const showOtherChargesCard = hasOtherCharges
 
   return (
     <div
       className={
-        showImportedChargesCard
+        showOtherChargesCard
           ? 'grid grid-cols-1 sm:grid-cols-4 gap-3'
           : 'grid grid-cols-1 sm:grid-cols-3 gap-3'
       }
@@ -1542,27 +1562,27 @@ function StatRow({
       <StatCard
         label="Subscriptions paid in window"
         value={
-          subscriptionCostUsd === null
+          combinedSubscriptionsUsd === null
             ? '—'
-            : formatExactDollars(subscriptionCostUsd)
+            : formatExactDollars(combinedSubscriptionsUsd)
         }
         helpText={
-          hasSubscriptions
-            ? 'Sum of manually-declared subscriptions, pro-rated by the days each one overlaps the chart window. Imports from Stripe CSV are counted separately in the Imported charges card.'
-            : 'No subscriptions declared yet. Add one below or import a Stripe CSV to populate this automatically.'
+          hasSubscriptionsData
+            ? 'Manually-declared subscriptions (pro-rated over each window overlap) PLUS imported billing rows tagged "subscription" whose date falls in window. The import preview keeps these from double-counting against manual entries.'
+            : 'No subscriptions declared yet. Add one below or import a billing CSV to populate this automatically.'
         }
-        muted={!hasSubscriptions}
+        muted={!hasSubscriptionsData}
       />
-      {showImportedChargesCard && (
+      {showOtherChargesCard && (
         <StatCard
-          label="Imported charges in window"
+          label="Other charges in window"
           value={
-            importedChargesUsd === null
+            otherChargesUsd === null
               ? '—'
-              : formatExactDollars(importedChargesUsd)
+              : formatExactDollars(otherChargesUsd)
           }
-          helpText="Sum of billing-line-item imports (Stripe CSV today, Anthropic Admin cost_report later) whose date falls in the chart window. Refunds are negative-amount rows that reduce the total."
-          muted={!hasImportedCharges}
+          helpText="Imported billing rows tagged overage / one-time / refund — anything that's not a recurring subscription. Refunds are negative-amount rows that reduce the total."
+          muted={!hasOtherCharges}
         />
       )}
       <StatCard
@@ -1573,8 +1593,8 @@ function StatRow({
             : formatExactDollars(netValueUsd)
         }
         helpText={
-          showImportedChargesCard
-            ? `Counterfactual API cost minus everything you've actually paid (subscriptions + imported charges${totalBilledUsd === null ? '' : ` = ${formatExactDollars(totalBilledUsd)}`}). Positive means your plan is cheaper than running the same usage on the API.`
+          showOtherChargesCard
+            ? `Counterfactual API cost minus everything you've actually paid (subscriptions + other charges${totalBilledUsd === null ? '' : ` = ${formatExactDollars(totalBilledUsd)}`}). Positive means your plan is cheaper than running the same usage on the API.`
             : 'Counterfactual API cost minus subscriptions paid. Positive means your subscription is cheaper than running the same usage on the API.'
         }
         emphasize={netValueUsd !== null && netValueUsd > 0}
@@ -2084,10 +2104,63 @@ type FormMode =
 
 type SubscriptionsPanelProps = {
   subscriptionsState: FetchState<SubscriptionsResponse>
+  billingChargesState: FetchState<BillingChargesResponse>
   onMutated: () => void
 }
 
-function SubscriptionsPanel({ subscriptionsState, onMutated }: SubscriptionsPanelProps) {
+/// Group imported subscription-category charges into one row per
+/// (amount, description). The dashboard displays each group like a
+/// virtual subscription — e.g. "Claude Pro · $21.60 × 5 charges since
+/// 2025-10-20" — instead of 5 separate line items. Same amount with
+/// different descriptions stays separate, since that probably means
+/// the user re-tagged some rows during import.
+type ImportedSubscriptionGroup = {
+  amountUsd: number
+  description: string
+  chargeCount: number
+  earliestDate: string
+  latestDate: string
+  totalUsd: number
+}
+
+function groupImportedSubscriptions(
+  charges: BillingChargeRow[],
+): ImportedSubscriptionGroup[] {
+  const buckets = new Map<string, ImportedSubscriptionGroup>()
+  for (const charge of charges) {
+    if (charge.category !== 'subscription') continue
+    const description = charge.description ?? ''
+    // Round amount to cents so $21.60 and $21.6 collapse to one
+    // bucket; tax-quirky cents in the future won't fracture.
+    const roundedAmount = Math.round(charge.amount_usd * 100) / 100
+    const key = `${roundedAmount.toFixed(2)}|${description}`
+    const existing = buckets.get(key)
+    if (existing) {
+      existing.chargeCount += 1
+      existing.totalUsd += charge.amount_usd
+      if (charge.occurred_at < existing.earliestDate)
+        existing.earliestDate = charge.occurred_at
+      if (charge.occurred_at > existing.latestDate)
+        existing.latestDate = charge.occurred_at
+    } else {
+      buckets.set(key, {
+        amountUsd: roundedAmount,
+        description,
+        chargeCount: 1,
+        earliestDate: charge.occurred_at,
+        latestDate: charge.occurred_at,
+        totalUsd: charge.amount_usd,
+      })
+    }
+  }
+  return Array.from(buckets.values()).sort((a, b) => b.amountUsd - a.amountUsd)
+}
+
+function SubscriptionsPanel({
+  subscriptionsState,
+  billingChargesState,
+  onMutated,
+}: SubscriptionsPanelProps) {
   const [formMode, setFormMode] = useState<FormMode>({ kind: 'closed' })
   const [formError, setFormError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
@@ -2234,6 +2307,48 @@ function SubscriptionsPanel({ subscriptionsState, onMutated }: SubscriptionsPane
           ))}
         </ul>
       )}
+
+      {billingChargesState.status === 'ok' &&
+        (() => {
+          const groups = groupImportedSubscriptions(billingChargesState.data.charges)
+          if (groups.length === 0) return null
+          return (
+            <div className="pt-2 border-t border-slate-100 space-y-2">
+              <div className="text-xs font-medium text-slate-500 uppercase tracking-wide">
+                Imported subscription charges
+              </div>
+              <ul className="divide-y divide-slate-100">
+                {groups.map((group) => (
+                  <li
+                    key={`${group.amountUsd}|${group.description}`}
+                    className="py-2 text-sm"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-slate-900">
+                        {group.description || '(no description)'}
+                      </span>
+                      <span className="text-slate-500 text-xs">
+                        {group.chargeCount} charge{group.chargeCount === 1 ? '' : 's'} ·{' '}
+                        {formatExactDollars(group.totalUsd)} total
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {formatExactDollars(group.amountUsd)} per charge · since{' '}
+                      {group.earliestDate}
+                      {group.earliestDate === group.latestDate
+                        ? ''
+                        : ` (most recent ${group.latestDate})`}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-[11px] text-slate-400">
+                Sourced from imported billing data. Re-categorize individual charges from
+                the import panel above if any of these were mis-tagged.
+              </p>
+            </div>
+          )
+        })()}
     </section>
   )
 }

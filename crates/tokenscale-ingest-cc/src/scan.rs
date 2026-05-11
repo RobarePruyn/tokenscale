@@ -10,13 +10,13 @@
 //! a full re-parse of that file; a future optimization (Phase 2+) tracks
 //! a byte offset so we read only the appended tail.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokenscale_store::{get_file_state, insert_events, upsert_file_state, Database};
 use tracing::{debug, info, warn};
 
 use crate::error::Result;
 use crate::parser::{parse_line, ParseOutcome};
-use crate::walker::{walk_claude_code_root, JsonlFile};
+use crate::walker::{walk_claude_code_roots, JsonlFile};
 
 const SOURCE_KIND: &str = "claude_code";
 
@@ -33,24 +33,51 @@ pub struct ScanSummary {
     pub lines_malformed: usize,
 }
 
-/// Run a full scan against the given Claude Code root.
+/// Run a full scan across one or more Claude Code roots. Each root
+/// is walked independently and the union of discovered JSONL files is
+/// scanned; `_ingest_file_state` keys by full path so multiple roots
+/// can carry identically-named session files without collision.
 ///
-/// `capture_raw_payloads` mirrors the `ingest.store_raw` config flag — when
-/// `false`, the parser drops the raw JSONL line after extracting the fields
-/// we need, trading diagnostic flexibility for reduced disk usage and
-/// reduced exposure of session content. See the README's Privacy section.
+/// `capture_raw_payloads` mirrors the `ingest.store_raw` config flag
+/// — when `false`, the parser drops the raw JSONL line after
+/// extracting the fields we need, trading diagnostic flexibility for
+/// reduced disk usage and reduced exposure of session content.
+pub async fn run_scan_multi(
+    database: &Database,
+    claude_code_roots: &[PathBuf],
+    capture_raw_payloads: bool,
+) -> Result<ScanSummary> {
+    info!(
+        roots = ?claude_code_roots,
+        capture_raw_payloads,
+        "starting Claude Code JSONL scan"
+    );
+
+    let candidate_files = walk_claude_code_roots(claude_code_roots).await?;
+    run_scan_over_files(database, candidate_files, capture_raw_payloads).await
+}
+
+/// Single-root scan retained for callers that don't yet need the
+/// multi-root surface (existing tests, and `run_scan` users that
+/// still pass a single path). Thin wrapper around `run_scan_multi`.
 pub async fn run_scan(
     database: &Database,
     claude_code_root: &Path,
     capture_raw_payloads: bool,
 ) -> Result<ScanSummary> {
-    info!(
-        root = %claude_code_root.display(),
+    run_scan_multi(
+        database,
+        std::slice::from_ref(&claude_code_root.to_path_buf()),
         capture_raw_payloads,
-        "starting Claude Code JSONL scan"
-    );
+    )
+    .await
+}
 
-    let candidate_files = walk_claude_code_root(claude_code_root).await?;
+async fn run_scan_over_files(
+    database: &Database,
+    candidate_files: Vec<JsonlFile>,
+    capture_raw_payloads: bool,
+) -> Result<ScanSummary> {
     let mut summary = ScanSummary {
         files_seen: candidate_files.len(),
         ..ScanSummary::default()

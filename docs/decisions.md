@@ -6,6 +6,40 @@ The goal here is simple: anyone (the maintainer, a future contributor, a future 
 
 ---
 
+## 2026-05-06 — Multi-machine ingest leans on external sync (Syncthing recommended); native `tokenscale agent` mode deferred to Phase 3
+
+**Decision.** v1 supports multi-machine Claude Code usage by reading from multiple locally-accessible JSONL roots (`[ingest].claude_code_roots = [...]`). Getting JSONL from other machines onto the host running `tokenscale serve` is the user's job, accomplished with any file-sync tool — Syncthing is the recommended default in the README. A future Phase 3 `tokenscale agent` mode (a lightweight daemon on each machine that HTTP-posts events to a central `tokenscale serve`) is deferred; tracked as a future enhancement, not part of v1.
+
+**Why.**
+- **Easy install + cross-platform are v1 priorities.** Syncthing is packaged everywhere (`brew`, `apt`, `dnf`, `pacman`, `winget`), runs as a service, requires no account, and works on every OS `tokenscale` targets. Pairing two machines is a UI-driven one-time setup. Anyone willing to install `tokenscale` is willing to install one supporting tool alongside it.
+- **A native agent does more work for the same outcome in v1.** Building `tokenscale agent` properly requires auth (shared secret or webauthn), networking config UX (LAN vs WAN, NAT, optional reverse-proxy / Tailscale), conflict resolution against the central DB, and an upgrade story for the agent independent of the server. None of that is necessary for users who can already drop a folder into Syncthing.
+- **`claude_code_roots` is sync-tool-agnostic.** Whether the user picks Syncthing, Dropbox, iCloud, OneDrive, `rsync` over cron, or something else, the tokenscale-side config is the same. We don't tie ourselves to any specific sync technology.
+- **The agent mode pays off later, not now.** Once `tokenscale` is being packaged for `brew install` etc. (the longer-term distribution goal), having a single binary that can self-orchestrate multi-machine ingest becomes more compelling. Until then, the engineering cost outweighs the marginal install-burden reduction.
+
+**How to apply.**
+- Anyone building multi-machine ingest features should target `claude_code_roots` first (it composes with every sync tool) before reaching for new architecture.
+- When/if Phase 3 lands a native agent, it should land *additively* — `claude_code_roots` stays the default path, the agent is an opt-in for users who prefer it.
+- Don't refactor away the file-walking ingester in favor of a network-only ingester. Local JSONL is the canonical path for local users and stays the fastest install surface.
+
+---
+
+## 2026-05-06 — Manual CSV import is the default billing data path until Admin API is available
+
+**Decision.** Anthropic billing data lands in `tokenscale` via a user-driven CSV import flow (parse, preview, commit). Auto-ingest from the Anthropic Admin API is parked as a follow-on for users with organization accounts; the manual path remains the always-supported fallback.
+
+**Why.**
+- The Anthropic Admin API is gated to organization accounts; individual-tier accounts cannot access it.
+- Service-account credentials (`svac_...`) use a Workload Identity Federation OIDC exchange that is impractical for a local-dev tool — it assumes the caller is a cloud workload with an IdP-issued OIDC token.
+- Neither claude.ai nor the Anthropic Console currently exposes a bulk billing CSV export. Per-invoice PDFs only.
+- A manually-composed CSV (assembled from on-screen invoice rows) is workable for typical Claude Pro / Max / Team users: ~12-30 charges per year, parsed in under a minute, repeatable as new invoices arrive.
+
+**How to apply.**
+- Keep the `billing_charges` schema source-tagged (`source = 'stripe_csv'` today, `'anthropic_admin'` later). New ingest sources land *additively*; they don't replace the manual path.
+- The CSV importer's preview / commit / conflict-resolution flow is the canonical UX; auto-ingest sources should produce the same `BillingCharge` shape and hit the same persistence path.
+- Don't gate the manual path behind a feature flag once auto-ingest exists — some users will have data that auto-ingest can't see (older charges, refunds, manual adjustments).
+
+---
+
 ## 2026-04-29 — TOML `= null` rewritten to comments at load time
 
 **Decision.** The factor-file loader pre-processes `key = null` lines into comments before handing the TOML to `serde`. Maintainers continue to use the kickoff-prompt convention of `wh_per_mtok_input = null` to mark "explicitly unknown"; missing keys then surface as `Option::None` through `#[serde(default)]`.

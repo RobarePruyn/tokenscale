@@ -26,5 +26,5 @@ mod walker;
 
 pub use error::{IngestError, Result};
 pub use parser::{parse_line, ParseOutcome};
-pub use scan::{run_scan, ScanSummary};
-pub use walker::{walk_claude_code_root, JsonlFile};
+pub use scan::{run_scan, run_scan_multi, ScanSummary};
+pub use walker::{walk_claude_code_root, walk_claude_code_roots, JsonlFile};

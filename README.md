@@ -104,12 +104,56 @@ Notable fields:
 |---|---|---|
 | `default_inference_region` | AWS region whose grid factors apply. Anthropic doesn't disclose which region served any given request; this is your declared assumption. | (unset — Phase 2 will fall back to `us-east-1`) |
 | `ingest.store_raw` | Persist the full JSONL payload. See Privacy above. | `true` |
-| `ingest.claude_code_root` | Override `~/.claude/projects` | (auto-detected) |
+| `ingest.claude_code_roots` | List of directories to walk for Claude Code JSONL session logs. List multiple paths for multi-machine setups (see [Multi-machine setup](#multi-machine-setup) below). | `["~/.claude/projects"]` (auto-detected) |
+| `ingest.scan_interval_seconds` | How often `tokenscale serve` re-scans in the background. `0` disables auto-scan. | `60` |
 | `storage.database_path` | Override the SQLite file location | (auto-detected) |
 | `server.bind` | Address the server binds to | `127.0.0.1:8787` |
 | `auth.mode` | `localhost` (no auth) or `network` (passkey required, Phase 3) | `localhost` |
 | `pricing.file` | Override path to `pricing.toml`. Unset = embedded default. | (unset) |
 | `factors.file` | Override path to `environmental-factors.toml`. The "local research mode" the [CHARTER](CHARTER.md) describes. | (unset) |
+
+## Multi-machine setup
+
+`tokenscale` reads Claude Code session logs from local JSONL files. If you use Claude Code on more than one machine — laptop and desktop, say — each machine only sees its own usage by default. To get a unified dashboard, **sync the JSONL directories** to one place (where `tokenscale serve` runs) using any file-sync tool you already trust.
+
+**Recommended: [Syncthing](https://syncthing.net/)** — open-source, peer-to-peer, no cloud account, free, packaged on every major platform. Installs in seconds via your usual package manager:
+
+```bash
+# macOS
+brew install syncthing && brew services start syncthing
+
+# Debian / Ubuntu
+sudo apt install syncthing && systemctl --user enable --now syncthing
+
+# Fedora
+sudo dnf install syncthing && systemctl --user enable --now syncthing
+
+# Arch
+sudo pacman -S syncthing && systemctl --user enable --now syncthing
+
+# Windows (PowerShell as admin)
+winget install Syncthing.Syncthing
+```
+
+After installing on both machines, open `http://localhost:8384` to pair them (each shows its own device ID; add the other's). Then on the **source** machine, share `~/.claude/projects` as a folder; on the **destination** machine where `tokenscale` runs, accept it into a distinct subdirectory like `~/.claude-synced/<source-hostname>/projects` (don't merge into your local `~/.claude/projects` — keeping the source machines separate makes `_ingest_file_state` simpler to reason about if anything ever goes wrong).
+
+Then point `tokenscale` at every synced root:
+
+```toml
+# ~/.config/tokenscale/config.toml
+[ingest]
+claude_code_roots = [
+  "~/.claude/projects",                       # this machine's logs
+  "~/.claude-synced/laptop/projects",         # syncthing mirror of the laptop
+  "~/.claude-synced/desktop/projects",        # …and any other machine
+]
+```
+
+Run `tokenscale scan` once to backfill, or just leave `tokenscale serve` running — the auto-scan loop picks up new sessions as Syncthing delivers them, typically within seconds.
+
+**Other sync tools** (Dropbox / OneDrive / iCloud Drive / `rsync` cron / etc.) work the same way — `claude_code_roots` doesn't care which tool put the files there. Syncthing is just the path with the fewest gotchas: no cloud account required, no rate limits, no eviction surprises, and it runs on every platform `tokenscale` does.
+
+> **Why not have `tokenscale` itself sync?** That's on the roadmap as a Phase 3 native agent mode (lightweight `tokenscale agent` on each machine, HTTP-posting to a central `tokenscale serve`). For v1, leaning on Syncthing or your sync tool of choice avoids re-inventing networking + auth + conflict resolution, and keeps the install surface minimal.
 
 ## Building the frontend
 

@@ -34,6 +34,35 @@ pub struct JsonlFile {
     pub len: i64,
 }
 
+/// Walk every configured Claude Code root and return the union of
+/// JSONL files found. A missing root logs a warning and is skipped
+/// (multi-machine setups regularly list roots that are mirrored from
+/// elsewhere — the mirror's first sync may not have landed yet, but
+/// that shouldn't block scanning of the other roots). An empty input
+/// is an error to surface misconfiguration loudly.
+///
+/// `_ingest_file_state` keys by full path, so identically-named files
+/// under different roots don't collide even when filenames repeat —
+/// e.g., two machines each have a `session-abc.jsonl` in their own
+/// `~/.claude/projects/myproject/`.
+pub async fn walk_claude_code_roots(claude_code_roots: &[std::path::PathBuf]) -> Result<Vec<JsonlFile>> {
+    if claude_code_roots.is_empty() {
+        return Err(IngestError::RootNotFound(std::path::PathBuf::new()));
+    }
+    let mut all_files = Vec::new();
+    for root in claude_code_roots {
+        match walk_claude_code_root(root).await {
+            Ok(mut files) => all_files.append(&mut files),
+            Err(IngestError::RootNotFound(missing)) => {
+                warn!(path = %missing.display(), "claude_code_roots entry does not exist; skipping");
+            }
+            Err(other) => return Err(other),
+        }
+    }
+    all_files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(all_files)
+}
+
 /// Walk one level deep under `claude_code_root` and return every `*.jsonl`
 /// file encountered. Returns an error if the root itself doesn't exist; an
 /// individual unreadable subdirectory only logs a warning and is skipped.
