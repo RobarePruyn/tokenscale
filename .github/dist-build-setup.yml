@@ -21,10 +21,12 @@
   with:
     node-version: "20"
 
+# `dist generate` strips the `working-directory:` key when inlining
+# this fragment, so we inline the `cd frontend &&` instead. Verified
+# in CI run 25691326440 — that's the v0.1.0 release failure that
+# led to this fix.
 - name: Install frontend dependencies
-  run: npm ci
-  working-directory: frontend
+  run: cd frontend && npm ci
 
 - name: Build frontend (rust-embed needs this before cargo build)
-  run: npm run build
-  working-directory: frontend
+  run: cd frontend && npm run build

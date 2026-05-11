@@ -56,4 +56,4 @@ publish-jobs = ["homebrew"]
 #
 # Path is relative to the workspace root; dist inlines the file's
 # YAML fragment into the build job's `steps:` list.
-github-build-setup = "build-setup.yml"
+github-build-setup = "../dist-build-setup.yml"
