@@ -1462,15 +1462,35 @@ export default function App() {
           onMutated={refreshSubscriptions}
         />
 
-        <BillingImportPanel
-          billingChargesState={billingChargesState}
-          onCommitted={() => {
-            // Subscriptions may have changed (dismissed manual entries),
-            // and we need a fresh charges list to update the stat row.
-            refreshSubscriptions()
-            refreshBillingCharges()
-          }}
-        />
+        {/*
+         * BillingImportPanel deliberately not rendered.
+         *
+         * The CSV importer assumed Anthropic exposed a bulk billing
+         * export (Stripe Customer Portal CSV); confirmed in the field
+         * that they don't — both claude.ai and Console invoice
+         * history only offer per-row PDF downloads. Without a usable
+         * export path, the panel adds UI surface for a flow no one
+         * can complete, so it's hidden until either:
+         *   (a) Anthropic ships a CSV export, OR
+         *   (b) we wire up an alternate ingest source that lands
+         *       into the same billing_charges table.
+         *
+         * The backend (schema, parser, endpoints) is intact and is
+         * the foundation Phase 2's Admin API cost_report ingester
+         * builds on — `source = "anthropic_admin"` reuses
+         * insert_billing_charges and the existing dedup contract.
+         * Re-enable by un-commenting; component definition + state
+         * wiring upstream all still compile.
+         */}
+        {false && (
+          <BillingImportPanel
+            billingChargesState={billingChargesState}
+            onCommitted={() => {
+              refreshSubscriptions()
+              refreshBillingCharges()
+            }}
+          />
+        )}
       </main>
     </div>
   )
