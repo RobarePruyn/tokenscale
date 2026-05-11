@@ -48,43 +48,31 @@ If you are running `tokenscale` on a shared or institutionally-managed machine, 
 
 ## Quick start
 
-```bash
-git clone https://github.com/RobarePruyn/tokenscale
-cd tokenscale
-
-# One-time frontend deps + build (rust-embed needs frontend/dist/ at compile time)
-cd frontend && npm install && npm run build && cd ..
-
-# Build, init, ingest, serve
-cargo build --release
-./target/release/tokenscale init
-./target/release/tokenscale scan
-./target/release/tokenscale serve
-```
-
-Then open `http://127.0.0.1:8787`.
-
-The frontend is bundled into the binary at compile time via `rust-embed`, so end users do **not** need Node.js installed at runtime. Node is a build-time dependency only.
-
-### Pre-built binaries
-
-Each tagged release ships pre-built binaries via [GitHub Releases](https://github.com/RobarePruyn/tokenscale/releases). One-line installers exist for every supported platform:
+Install via your platform's native package manager (or the shell installer):
 
 ```bash
-# macOS / Linux — shell installer (works on any POSIX shell)
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/RobarePruyn/tokenscale/releases/latest/download/tokenscale-cli-installer.sh | sh
+# macOS via Homebrew
+brew tap RobarePruyn/tokenscale && brew install tokenscale-cli
 
-# macOS — via Homebrew (preferred for Mac users)
-brew tap RobarePruyn/tokenscale
-brew install tokenscale
+# macOS / Linux via shell installer (any POSIX shell)
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/RobarePruyn/tokenscale/releases/latest/download/tokenscale-cli-installer.sh | sh
 
-# Windows — PowerShell installer
+# Windows via PowerShell
 powershell -c "irm https://github.com/RobarePruyn/tokenscale/releases/latest/download/tokenscale-cli-installer.ps1 | iex"
 ```
 
-Or download the platform-specific archive directly from [the latest release](https://github.com/RobarePruyn/tokenscale/releases/latest) and extract `tokenscale` (or `tokenscale.exe` on Windows) onto your `$PATH`.
+Then run:
 
-Supported targets:
+```bash
+tokenscale init     # writes ~/.config/tokenscale/config.toml with annotated defaults
+tokenscale scan     # ingests any Claude Code JSONL session logs at ~/.claude/projects
+tokenscale serve    # starts the local HTTP server + dashboard
+```
+
+Open `http://127.0.0.1:8787`. The server keeps scanning in the background (every 60s by default), so new Claude Code sessions appear in the dashboard within a minute.
+
+### Supported platforms
 
 | Platform | Architecture | Archive |
 |---|---|---|
@@ -94,9 +82,7 @@ Supported targets:
 | Linux | aarch64 (ARM64) | `tokenscale-cli-aarch64-unknown-linux-gnu.tar.xz` |
 | Windows | x86_64 | `tokenscale-cli-x86_64-pc-windows-msvc.zip` |
 
-After install, `tokenscale init && tokenscale serve` gets you running. See the [Quick start](#quick-start) above for the full first-run flow.
-
-Releasing is documented separately in [RELEASING.md](RELEASING.md).
+Direct archive downloads available on the [latest release page](https://github.com/RobarePruyn/tokenscale/releases/latest) — extract the `tokenscale` binary (or `tokenscale.exe`) onto your `$PATH`.
 
 ## Dashboard tour
 
@@ -183,20 +169,43 @@ Run `tokenscale scan` once to backfill, or just leave `tokenscale serve` running
 
 > **Why not have `tokenscale` itself sync?** That's on the roadmap as a Phase 3 native agent mode (lightweight `tokenscale agent` on each machine, HTTP-posting to a central `tokenscale serve`). For v1, leaning on Syncthing or your sync tool of choice avoids re-inventing networking + auth + conflict resolution, and keeps the install surface minimal.
 
-## Building the frontend
+## Building from source
 
-The frontend lives in `frontend/` and is a Vite + React + TypeScript SPA styled with Tailwind v4, charting with Recharts. The Rust binary embeds `frontend/dist/` at compile time via `rust-embed`. Workflow:
+For contributors, or anyone who'd rather not use a pre-built binary:
 
 ```bash
-# One-time:
-cd frontend && npm install && cd ..
+git clone https://github.com/RobarePruyn/tokenscale
+cd tokenscale
 
-# Each time you change frontend code:
-cd frontend && npm run build && cd ..
+# One-time: install frontend deps (rust-embed reads frontend/dist/ at compile time)
+cd frontend && npm install && npm run build && cd ..
+
+# Build the binary
 cargo build --release
+
+# Run from the target dir (the install commands above put it on $PATH instead)
+./target/release/tokenscale init
+./target/release/tokenscale scan
+./target/release/tokenscale serve
 ```
 
-For frontend-only iteration, `cd frontend && npm run dev` runs Vite's dev server (typically on `http://localhost:5173`), which proxies `/api/*` calls to the Rust server you can run separately with `cargo run -p tokenscale-cli -- serve`.
+The frontend is bundled into the binary at compile time, so end users don't need Node.js at runtime — Node is a build-time dependency only.
+
+### Frontend development loop
+
+For iterating on the frontend without rebuilding the Rust binary every time:
+
+```bash
+# Terminal 1: backend
+cargo run -p tokenscale-cli -- serve
+
+# Terminal 2: Vite dev server with hot-reload
+cd frontend && npm run dev
+```
+
+Vite typically runs on `http://localhost:5173` and proxies `/api/*` calls through to the Rust server on `:8787`. Each frontend change refreshes the browser instantly without a Rust recompile.
+
+After substantive frontend work, run `npm run build` once so the embedded `dist/` reflects the latest changes for the next production build.
 
 ## Workspace layout
 

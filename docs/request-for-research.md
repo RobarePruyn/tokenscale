@@ -1,0 +1,119 @@
+# tokenscale — Open Research Questions
+
+Open questions the maintainer (or Cowork research agent, when that lands) should pick up in the next quarterly sweep — or sooner if any of them get answered by external publication.
+
+See [`research-cadence.md`](research-cadence.md) for the process around how these get worked. See [`research-log.md`](research-log.md) for past sweep outcomes.
+
+Format: each entry has a status, the question, why it matters, what good answers look like, and pointers for where to start looking.
+
+---
+
+## Open
+
+### Grid-factor uncertainty bands
+
+**Status**: Open. Carried forward from v0.1 — model uncertainty is captured per row, grid uncertainty is not.
+
+**Question**: What's the honest ± band on `co2e_kg_per_kwh` and `water_l_per_kwh` for each subregion?
+
+**Why it matters**: The dashboard's "± X%" cell badge currently reflects only the model-side uncertainty (the `uncertainty_range_pct` field in each `[providers.*.models.*]` block). Grid factors carry their own uncertainty — annual variance, methodology differences between EPA's eGRID year and live operating conditions, plus the gap between subregion-average and any specific datacenter's real grid mix. Treating grid as exact under-reports the total uncertainty on every CO₂e number in the dashboard.
+
+**What good answers look like**:
+
+- A `co2e_uncertainty_range_pct` and `water_uncertainty_range_pct` field on each `[grid_factors.*]` block, with a documented derivation.
+- For eGRID values: the year-over-year variance across the last 3–5 eGRID releases is probably the right anchor. EPA publishes this; we just need to do the read.
+- For AWS WUE (currently the same 0.15 L/kWh applied to every AWS region as a fallback): an honest band reflecting that we're applying a global average to specific regions. Probably ±50% absent better data.
+
+**Starting points**:
+
+- [EPA eGRID historical data](https://www.epa.gov/egrid/historical-egrid-data).
+- AWS sustainability page year-over-year WUE drift (the global figure was 0.18 → 0.15 between 2022 and 2024, so the trajectory itself is informative).
+- Ren et al. (water methodology, ACM) discusses water-factor uncertainty.
+
+---
+
+### Indirect water (power-plant cooling) methodology
+
+**Status**: Open. Phase 2 ships direct water only (data-center cooling).
+
+**Question**: How do we add indirect water (cooling consumed at the power plants generating the electricity our datacenters draw) to the dashboard, separately from direct water?
+
+**Why it matters**: Ren et al. ("Making AI Less 'Thirsty'", Communications of the ACM, 2024) distinguishes **direct water** (DC cooling) from **indirect water** (power-plant cooling). For grid mixes heavy on thermoelectric generation (coal, gas, nuclear), indirect water is often the larger of the two. v0.1 reports direct water only, which understates the total water footprint by a factor that varies dramatically by region.
+
+**What good answers look like**:
+
+- A new field on each `[grid_factors.*]` block — `indirect_water_l_per_kwh` — sourced from Ren et al.'s region-by-fuel-mix figures.
+- A dashboard option to view "direct + indirect" total water, with the breakdown surfaced in tooltip.
+- Honest acknowledgment that indirect water for hydro / wind / solar is essentially zero, so renewable-heavy grids (NWPP for example, with strong hydro) have smaller indirect-water deltas than coal-heavy grids (RFCW).
+
+**Starting points**:
+
+- [Ren et al., "Making AI Less 'Thirsty'"](https://arxiv.org/abs/2304.03271).
+- USGS data on water consumption by power-generation type.
+
+---
+
+### Anthropic tokenizer-change inflation factor verification
+
+**Status**: Open. v0.1 file estimates the factor from third-party analysis; we'd like a primary source.
+
+**Question**: What's Anthropic's actual tokenizer-change ratio for Opus 4.7 vs 4.6 — i.e., how much more does Opus 4.7 spend in tokens for the same English text?
+
+**Why it matters**: The v0.1 factor file uses `tokenizer_token_count_inflation_factor = 1.175` for Opus 4.7 (the midpoint of a 1.0–1.35× range observed by Caylent's third-party analysis). If we ever surface "per-task" comparisons across model versions, this factor is load-bearing — per-token energy may be lower for Opus 4.7 but per-task energy may be similar or higher because the same task takes more tokens.
+
+**What good answers look like**:
+
+- A primary source from Anthropic confirming (or correcting) the 1.0–1.35× range.
+- Per-language tokenizer behavior: the inflation factor probably varies by input language. English is one number; CJK languages might be very different. v0.1 doesn't model this; it should be flagged or addressed.
+
+**Starting points**:
+
+- [Vellum benchmarks for Opus 4.7](https://www.vellum.ai/blog/claude-opus-4-7-benchmarks-explained).
+- [Caylent's tokenizer analysis](https://caylent.com/...) (cited in `environmental-factors.toml`).
+- Anthropic's tokenizer source if/when they publish one.
+
+---
+
+### eGRID coverage for non-US AWS regions
+
+**Status**: Open. v0.1 covers us-east-1, us-east-2, us-west-2 only.
+
+**Question**: What grid-intensity equivalents to eGRID exist for non-US AWS regions where Anthropic might run inference (eu-west-1 Ireland, ap-northeast-1 Tokyo, etc.)?
+
+**Why it matters**: Users outside the US can't currently configure their `default_inference_region` to a non-US AWS region and get honest CO₂e numbers. The `grid_factors` table only carries US subregions; everything else falls back to defaults.
+
+**What good answers look like**:
+
+- New `[grid_factors.*]` rows for the major AWS regions: eu-west-1, eu-central-1, ap-northeast-1, ap-southeast-1, ap-southeast-2, eu-north-1.
+- For each, the equivalent of an eGRID subregion code: in EU it's ENTSO-E zones; in Japan it's TEPCO/KEPCO/etc.; in Australia it's AEMO regions.
+- Source URLs and methodology notes explaining what "subregion" means for that country (every country defines this differently).
+
+**Starting points**:
+
+- ENTSO-E published carbon intensity data (Europe).
+- [Electricity Maps](https://app.electricitymaps.com/) — has region-by-region annual data with API access.
+- AWS's own region pages occasionally list carbon-intensity context.
+
+---
+
+### Methodology — confidence in the "comprehensive" methodology choice over time
+
+**Status**: Open ongoing. v0.1 chose Google's August 2025 "comprehensive methodology" (Elsworth et al. 2025) as the canonical approach. We should periodically verify that's still the right call.
+
+**Question**: As the LLM impact research field evolves, does Google's comprehensive methodology remain the most defensible single methodology to standardize on — or has a peer-reviewed alternative shifted the consensus?
+
+**Why it matters**: This is the methodological foundation. Switching it later would require recomputing every impact number in the dashboard, retroactively. We should make sure the foundation is still correct each year rather than discovering after years that we anchored on a now-superseded methodology.
+
+**Triggers for action**:
+
+- Anthropic publishes their own methodology (currently unannounced).
+- A consensus emerges in academic literature for a non-Google methodology.
+- Google publishes a v2 of their methodology that materially shifts the approach.
+
+---
+
+## Resolved
+
+(Move entries here when they're answered in `research-log.md`.)
+
+_None yet — first sweep landed v0.1 in April 2026._

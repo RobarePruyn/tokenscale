@@ -2375,8 +2375,13 @@ function SubscriptionsPanel({
         (() => {
           const groups = groupImportedSubscriptions(billingChargesState.data.charges)
           if (groups.length === 0) return null
+          // The pt-2 + border-t pair separates this section from the
+          // manual subscriptions list above. Drop both when the manual
+          // list is empty — otherwise it's a divider above nothing.
+          const dividerClass =
+            subscriptions.length > 0 ? 'pt-2 border-t border-slate-100' : ''
           return (
-            <div className="pt-2 border-t border-slate-100 space-y-2">
+            <div className={`space-y-2 ${dividerClass}`.trim()}>
               <div className="text-xs font-medium text-slate-500 uppercase tracking-wide">
                 Imported subscription charges
               </div>
