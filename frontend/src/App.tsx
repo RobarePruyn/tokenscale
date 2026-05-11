@@ -322,10 +322,39 @@ const MILLIS_PER_DAY = 1000 * 60 * 60 * 24
  *  calendar days. Tuned so the chart never has more than ~60 buckets:
  *  daily up to 60 days, weekly to a year, monthly beyond that.
  */
+/// Auto-pick the bucket size based on window length, keeping the
+/// visual comparison honest across adjacent window presets:
+///   * `≤ 120 days` → daily buckets (so 7d / 30d / 90d all share the
+///     same bucket size and the user can visually compare peaks
+///     between them without a 7× scale jump from the bucket
+///     changing under their feet).
+///   * `≤ 730 days` → weekly buckets (1y view; daily would be 365
+///     spiky bars across a ~1500px chart, ~4px per bar — unreadable).
+///   * `> 730 days` → monthly buckets ("All" view back to ChatGPT
+///     launch is ~3.5 years; weekly would be 180+ bars).
+///
+/// Thresholds were retuned upward (from 60 / 365) after the user
+/// reported that 90d / 1y views looked "somewhat broken" — the old
+/// boundaries flipped granularity at exactly the points where they
+/// got compared against the next preset, magnifying the peak-height
+/// mismatch.
 function autoGranularity(daysInWindow: number): Granularity {
-  if (daysInWindow <= 60) return 'day'
-  if (daysInWindow <= 365) return 'week'
+  if (daysInWindow <= 120) return 'day'
+  if (daysInWindow <= 730) return 'week'
   return 'month'
+}
+
+/// Render the chart's H2 title for a given (granularity, view-mode)
+/// pair. The cadence word in the title MUST match the bucket size
+/// shown — otherwise the y-axis values look mis-scaled because the
+/// label promises "Daily" but the bars represent a week's or month's
+/// worth of tokens.
+function chartTitleForGranularity(granularity: Granularity, viewMode: ViewMode): string {
+  const cadence =
+    granularity === 'month' ? 'Monthly' : granularity === 'week' ? 'Weekly' : 'Daily'
+  if (viewMode === 'cost') return `${cadence} cost (USD, API list)`
+  if (viewMode === 'billable') return `${cadence} cost-weighted tokens`
+  return `${cadence} token usage`
 }
 
 function daysBetween(fromDate: string, toDate: string): number {
@@ -1437,11 +1466,13 @@ export default function App() {
 
           <div>
             <h2 className="text-base font-medium mb-3">
-              {viewMode === 'cost'
-                ? 'Daily cost (USD, API list)'
-                : viewMode === 'billable'
-                  ? 'Daily cost-weighted tokens'
-                  : 'Daily token usage'}{' '}
+              {/* Bucket-cadence label mirrors the actual granularity
+                  (auto-picked or user-overridden). Without this, a wide
+                  window auto-picks weekly buckets but the title still
+                  says "Daily" — the y-axis peaks suddenly look ~7×
+                  larger than the user expects and there's no on-screen
+                  cue why. */}
+              {chartTitleForGranularity(effectiveGranularity, viewMode)}{' '}
               · {stackBy === 'model' ? 'stacked by model' : 'stacked by token type'}
             </h2>
 
