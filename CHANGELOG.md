@@ -6,6 +6,27 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.2 — 2026-05-11
+
+The credibility-deepening release. Ships the **methodology / transparency page** the CHARTER named as required-not-optional from day one — every number on the dashboard now has a one-click trail to its source, methodology, and derivation.
+
+### Added
+
+- **`docs/methodology.md`** — narrative walkthrough of how every environmental number gets computed. Covers Google's comprehensive methodology adoption, per-token energy math, PUE/CO₂e/water formulas, the eGRID subregion vs state distinction, uncertainty surfacing, structurally-invisible consumer surfaces, and how factor refreshes propagate.
+- **Methodology page** in the dashboard (`Methodology` nav button in the header). Four tabs:
+  - **Methodology** — the new narrative doc.
+  - **Bibliography** — renders `docs/sources.md`. Every factor source with confidence tag, access date, and summary.
+  - **Research log** — renders `docs/research-log.md`. Audit trail of past sweeps.
+  - **Open questions** — renders `docs/request-for-research.md`. What the next sweep should address.
+- **`GET /api/v1/docs/<slug>`** endpoint that serves the four bundled markdown docs. Bundled via `include_str!` at compile time so the page works offline. Slug-restricted to the user-facing docs (other repo docs stay out of the API surface).
+- **`react-markdown` + `remark-gfm`** for rendering. Hand-rolled `.prose-tokenscale` CSS for typography consistent with the rest of the dashboard.
+
+### Changed
+
+- Header gains a Dashboard / Methodology nav switcher. Pricing-review banner now suppresses on the methodology view (it's dashboard-contextual).
+
+---
+
 ## v0.1.1 — 2026-05-11
 
 Polish release on top of v0.1.0. No new features; quality-of-life fixes around the dashboard's wider-window views and the install/setup path now that pre-built binaries are the recommended way in.

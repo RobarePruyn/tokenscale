@@ -67,6 +67,7 @@ pub fn build_router(state: AppState) -> axum::Router {
             "/api/v1/billing/charges/commit",
             axum::routing::post(routes::billing::commit_handler),
         )
+        .route("/api/v1/docs/{slug}", get(routes::docs::handler))
         .fallback(embed::static_handler)
         .layer(TraceLayer::new_for_http())
         .with_state(state)

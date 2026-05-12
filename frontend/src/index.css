@@ -31,3 +31,108 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+/*
+ * Methodology-page markdown styling. Hand-rolled rather than pulling in
+ * @tailwindcss/typography — we render four docs, want a consistent voice
+ * with the rest of the dashboard, and a few opinionated overrides
+ * (link color, code-block density) are easier in plain CSS than via
+ * the typography plugin's deep class-override surface.
+ */
+.prose-tokenscale {
+  color: #1e293b;
+  font-size: 0.9375rem;
+  line-height: 1.65;
+}
+.prose-tokenscale h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 1.5em 0 0.5em;
+  letter-spacing: -0.01em;
+}
+.prose-tokenscale h1:first-child { margin-top: 0; }
+.prose-tokenscale h2 {
+  font-size: 1.2rem;
+  font-weight: 600;
+  margin: 1.5em 0 0.5em;
+  padding-top: 0.25em;
+  border-top: 1px solid #e2e8f0;
+}
+.prose-tokenscale h2:first-child { border-top: none; padding-top: 0; }
+.prose-tokenscale h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 1.2em 0 0.4em;
+}
+.prose-tokenscale h4 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 1em 0 0.3em;
+}
+.prose-tokenscale p { margin: 0.75em 0; }
+.prose-tokenscale ul, .prose-tokenscale ol {
+  margin: 0.75em 0;
+  padding-left: 1.5em;
+}
+.prose-tokenscale li { margin: 0.25em 0; }
+.prose-tokenscale li > ul, .prose-tokenscale li > ol { margin: 0.25em 0; }
+.prose-tokenscale a {
+  color: #2563eb;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.prose-tokenscale a:hover { color: #1d4ed8; }
+.prose-tokenscale strong { font-weight: 600; color: #0f172a; }
+.prose-tokenscale code {
+  background: #f1f5f9;
+  padding: 0.1em 0.35em;
+  border-radius: 0.2em;
+  font-size: 0.85em;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.prose-tokenscale pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 0.9em 1em;
+  border-radius: 0.4em;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 1em 0;
+}
+.prose-tokenscale pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+.prose-tokenscale blockquote {
+  border-left: 3px solid #cbd5e1;
+  margin: 1em 0;
+  padding: 0.25em 1em;
+  color: #475569;
+  font-style: italic;
+}
+.prose-tokenscale hr {
+  border: 0;
+  border-top: 1px solid #e2e8f0;
+  margin: 1.75em 0;
+}
+.prose-tokenscale table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.85rem;
+}
+.prose-tokenscale th, .prose-tokenscale td {
+  text-align: left;
+  padding: 0.4em 0.75em;
+  border-bottom: 1px solid #e2e8f0;
+}
+.prose-tokenscale th {
+  font-weight: 600;
+  background: #f8fafc;
+  border-bottom: 2px solid #cbd5e1;
+}
+.prose-tokenscale img { max-width: 100%; }

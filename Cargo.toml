@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version      = "0.1.1"
+version      = "0.1.2"
 edition      = "2021"
 # 1.82 (Oct 2024) is the floor — we use `Option::is_none_or` and other
 # stabilizations from that release. See docs/decisions.md.

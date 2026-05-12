@@ -19,6 +19,8 @@
  */
 
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   Area,
   AreaChart,
@@ -682,6 +684,14 @@ function subscriptionCostOverWindow(
 // ---------------------------------------------------------------------------
 
 export default function App() {
+  // Page-level view switcher: dashboard (the default) vs the
+  // methodology / transparency page. State-based rather than
+  // URL-routed to keep the dependency surface minimal; if/when we
+  // grow past two pages we can add react-router. Browser back button
+  // doesn't preserve the methodology view across reloads — that's
+  // an acceptable v0.1 trade.
+  const [currentView, setCurrentView] = useState<'dashboard' | 'methodology'>('dashboard')
+
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all')
 
   const [rangePreset, setRangePreset] = useState<RangePreset>(DEFAULT_RANGE_PRESET)
@@ -1138,7 +1148,32 @@ export default function App() {
             <h1 className="text-xl font-semibold tracking-tight">tokenscale</h1>
             <span className="text-sm text-slate-500">Understand your impact.</span>
           </div>
-          <span className="text-xs text-slate-500">Phase 1 — local Claude Code only</span>
+          <nav className="flex items-baseline gap-1 text-sm">
+            <button
+              type="button"
+              onClick={() => setCurrentView('dashboard')}
+              className={
+                'px-3 py-1 rounded-md transition-colors ' +
+                (currentView === 'dashboard'
+                  ? 'bg-blue-50 text-blue-700 font-medium'
+                  : 'text-slate-600 hover:bg-slate-50')
+              }
+            >
+              Dashboard
+            </button>
+            <button
+              type="button"
+              onClick={() => setCurrentView('methodology')}
+              className={
+                'px-3 py-1 rounded-md transition-colors ' +
+                (currentView === 'methodology'
+                  ? 'bg-blue-50 text-blue-700 font-medium'
+                  : 'text-slate-600 hover:bg-slate-50')
+              }
+            >
+              Methodology
+            </button>
+          </nav>
         </div>
       </header>
 
@@ -1188,7 +1223,9 @@ export default function App() {
         </div>
       )}
 
-      {(viewMode === 'billable' || viewMode === 'cost') && pricingAccessedAt && (
+      {currentView === 'dashboard' &&
+        (viewMode === 'billable' || viewMode === 'cost') &&
+        pricingAccessedAt && (
         <div
           className={
             'border-b text-xs px-6 py-2 ' +
@@ -1231,6 +1268,8 @@ export default function App() {
         </div>
       )}
 
+      {currentView === 'methodology' && <MethodologyPage />}
+      {currentView === 'dashboard' && (
       <main className="mx-auto max-w-6xl px-6 py-8 space-y-6">
         <section className="bg-white rounded-lg border border-slate-200 p-5 space-y-5">
           {/* Top row: provider + window summary */}
@@ -1557,6 +1596,7 @@ export default function App() {
           }}
         />
       </main>
+      )}
     </div>
   )
 }
@@ -2913,5 +2953,134 @@ function Chevron({ direction }: { direction: 'right' | 'down' }) {
     >
       <path d={path} />
     </svg>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// MethodologyPage — the "how every number gets computed" surface.
+// Fetches bundled markdown from the server (which `include_str!`'d each
+// doc at build time) and renders with react-markdown + GFM. Four tabs:
+// methodology narrative, bibliography, research log, open questions.
+// All four docs are also visible directly on GitHub — the tap on this
+// page is convenience, not data ownership.
+// ---------------------------------------------------------------------------
+
+type DocSlug = 'methodology' | 'sources' | 'research-log' | 'request-for-research'
+
+const METHODOLOGY_TABS: ReadonlyArray<{
+  slug: DocSlug
+  label: string
+  description: string
+}> = [
+  {
+    slug: 'methodology',
+    label: 'Methodology',
+    description: 'How every environmental number gets computed.',
+  },
+  {
+    slug: 'sources',
+    label: 'Bibliography',
+    description: 'Every factor source with confidence tag, access date, and summary.',
+  },
+  {
+    slug: 'research-log',
+    label: 'Research log',
+    description: 'Audit trail of past factor-model sweeps.',
+  },
+  {
+    slug: 'request-for-research',
+    label: 'Open questions',
+    description: 'What the next quarterly sweep should address.',
+  },
+]
+
+function MethodologyPage() {
+  const [activeTab, setActiveTab] = useState<DocSlug>('methodology')
+  const [docContent, setDocContent] = useState<FetchState<string>>({ status: 'idle' })
+
+  // Re-fetch on tab change. Docs are small (the largest is ~25KB);
+  // no need to cache across tab switches for v0.1.
+  useEffect(() => {
+    let cancelled = false
+    setDocContent({ status: 'loading' })
+    fetch(`/api/v1/docs/${activeTab}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return await response.text()
+      })
+      .then((markdown) => {
+        if (!cancelled) setDocContent({ status: 'ok', data: markdown })
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setDocContent({ status: 'error', message: (error as Error).message })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab])
+
+  return (
+    <main className="mx-auto max-w-4xl px-6 py-8 space-y-6">
+      <section className="bg-white rounded-lg border border-slate-200 p-5 space-y-5">
+        <header className="space-y-2">
+          <h2 className="text-xl font-semibold tracking-tight">
+            How tokenscale's numbers are computed
+          </h2>
+          <p className="text-sm text-slate-600">
+            Every environmental-impact figure on the dashboard traces back to a published
+            source and a documented derivation. This page is the audit trail — methodology
+            narrative, source bibliography, research log, and open questions for future
+            refinement.
+          </p>
+        </header>
+
+        <nav className="flex flex-wrap gap-1 border-b border-slate-200 -mx-5 px-5">
+          {METHODOLOGY_TABS.map((tab) => {
+            const active = tab.slug === activeTab
+            return (
+              <button
+                key={tab.slug}
+                type="button"
+                onClick={() => setActiveTab(tab.slug)}
+                className={
+                  'px-3 py-2 text-sm transition-colors border-b-2 -mb-px ' +
+                  (active
+                    ? 'border-blue-600 text-blue-700 font-medium'
+                    : 'border-transparent text-slate-600 hover:text-slate-900 hover:border-slate-300')
+                }
+                title={tab.description}
+              >
+                {tab.label}
+              </button>
+            )
+          })}
+        </nav>
+
+        {docContent.status === 'loading' && (
+          <div className="text-sm text-slate-500 py-12 text-center">Loading…</div>
+        )}
+        {docContent.status === 'error' && (
+          <div className="text-sm text-rose-700 py-4">
+            Could not load this doc: {docContent.message}. The doc is also viewable on{' '}
+            <a
+              className="underline"
+              href={`https://github.com/RobarePruyn/tokenscale/blob/main/docs/${activeTab}.md`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              GitHub
+            </a>
+            .
+          </div>
+        )}
+        {docContent.status === 'ok' && (
+          <article className="prose-tokenscale">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{docContent.data}</ReactMarkdown>
+          </article>
+        )}
+      </section>
+    </main>
   )
 }
