@@ -58,7 +58,11 @@ brew tap RobarePruyn/tokenscale && brew install tokenscale-cli
 curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/RobarePruyn/tokenscale/releases/latest/download/tokenscale-cli-installer.sh | sh
 
-# Windows via PowerShell
+# Windows via Scoop
+scoop bucket add tokenscale https://github.com/RobarePruyn/scoop-tokenscale
+scoop install tokenscale
+
+# Windows via PowerShell installer
 powershell -c "irm https://github.com/RobarePruyn/tokenscale/releases/latest/download/tokenscale-cli-installer.ps1 | iex"
 ```
 

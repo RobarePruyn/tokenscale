@@ -158,7 +158,21 @@ Homebrew expects tap repos to be named `homebrew-<tap-name>` and contain only Fo
 These are deferred Phase-3-ish work:
 
 - **APT / DNF / RPM packages**: Linux distro packaging is a community-maintained activity per distro; the prebuilt `.tar.xz` archives are sufficient for users until/unless someone wants to take ownership of a package.
-- **Scoop bucket / Winget manifest**: Windows users currently install via the `powershell` installer. A Scoop bucket would be a separate tap-like repo; Winget submission is a manual PR per release.
+- **Winget manifest**: Windows users on Winget have to install from the PowerShell installer or Scoop bucket (`scoop install tokenscale`) for now. Winget submission is a manual PR per release; would be nice to automate.
+
+### Scoop bucket — semi-automatic
+
+Scoop support exists via a separate hand-maintained bucket repo: <https://github.com/RobarePruyn/scoop-tokenscale>. The manifest there uses Scoop's `autoupdate` block tied to the GitHub Releases URL pattern, so new tokenscale releases propagate to Scoop users on `scoop update` without any maintainer action per release — `dist` doesn't (yet) have native Scoop support, but the autoupdate-driven flow is functionally equivalent for users.
+
+If you need to manually bump the bucket's pinned version (e.g. forcing a hash refresh without an autoupdate trip):
+
+```bash
+git clone https://github.com/RobarePruyn/scoop-tokenscale
+cd scoop-tokenscale
+# Edit bucket/tokenscale.json: bump "version" and refresh "hash"
+git commit -am "chore: bump to vX.Y.Z"
+git push
+```
 - **macOS notarization + codesigning**: out of scope for v1. Users will see a "this app is from an unidentified developer" warning on first run; right-click → Open clears it.
 - **APT/DNF official-distro inclusion**: requires sustained popularity + a maintainer who can shepherd the package through Debian / Fedora processes. Far future.
 
