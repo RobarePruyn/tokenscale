@@ -6,6 +6,33 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.5 — 2026-05-15
+
+The run-it-as-a-service release. No code changes — purely installer- and docs-side polish, but a meaningful UX win: post-install messages now tell every brew / Scoop user exactly how to start the dashboard, and `brew services start tokenscale-cli` works out of the box for set-and-forget background operation.
+
+### Added
+
+- **`def caveats` + `service do` blocks** on the Homebrew formula. After `brew install tokenscale-cli`, users see how to run the dashboard (`tokenscale serve`) or register it as a managed background service (`brew services start tokenscale-cli`) right in the install output. The service block declares `keep_alive true`, so the dashboard auto-restarts on crash and auto-starts on login. Logs land in `$(brew --prefix)/var/log/tokenscale.log`.
+- **`notes` block on the Scoop manifest** — same UX on Windows. Post-install message covers `tokenscale serve` and the NSSM recipe for running as a Windows service.
+- **README "Running as a service" section** — covers macOS (`brew services`), Linux (`systemd` user unit, with a ready-to-paste unit file), and Windows (NSSM). All three platforms get a recipe that takes less than a minute to set up.
+
+### How it's wired
+
+dist 0.31's Homebrew installer doesn't expose hooks for `caveats` or `service` — they're not in `HomebrewInstallerLayer`. To work around that without losing dist's zero-touch publishing, the Homebrew tap repo (`RobarePruyn/homebrew-tokenscale`) gets its own GitHub Actions workflow (`.github/workflows/amend-formula.yml`) that fires whenever dist commits a new formula version, splices the two blocks in before the closing `end` of the class, and commits the amended formula. Sentinel markers bracket the injected region for idempotent strip-and-replace on re-runs.
+
+### Migration note for existing v0.1.4 users
+
+The formula amendment was applied to the live v0.1.4 formula before this tag, so the simplest path is:
+
+```bash
+brew update && brew reinstall tokenscale-cli
+brew services start tokenscale-cli
+```
+
+(`brew upgrade` would no-op since the binary is unchanged; `reinstall` is what picks up the new caveats + service block.) Then open `http://127.0.0.1:8787` and the dashboard's running without a terminal open.
+
+---
+
 ## v0.1.4 — 2026-05-15
 
 The honest-headline release. Combines model and grid uncertainty into a single per-metric `± X%` badge on every environmental KPI — the v0.4 follow-on v0.1.3 explicitly deferred — and propagates grid uncertainty all the way through the DB compute path so per-event impact carries it natively rather than as a render-time afterthought.

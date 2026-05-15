@@ -88,6 +88,62 @@ Open `http://127.0.0.1:8787`. The server keeps scanning in the background (every
 
 Direct archive downloads available on the [latest release page](https://github.com/RobarePruyn/tokenscale/releases/latest) — extract the `tokenscale` binary (or `tokenscale.exe`) onto your `$PATH`.
 
+## Running as a service
+
+`tokenscale serve` runs in the foreground and exits when you close the terminal. To keep the dashboard available without leaving a terminal open — and to auto-start it on login / boot — register it as a background service:
+
+### macOS — `brew services`
+
+The Homebrew formula declares a service block, so `brew services` manages everything:
+
+```bash
+brew services start tokenscale-cli   # start now + auto-start on login
+brew services stop  tokenscale-cli   # stop + disable auto-start
+brew services info  tokenscale-cli   # check status
+```
+
+Logs land in `$(brew --prefix)/var/log/tokenscale.log`. If you installed v0.1.4 before the service block landed (May 2026), run `brew update && brew reinstall tokenscale-cli` once to pick it up.
+
+### Linux — `systemd` (user unit)
+
+Drop the following at `~/.config/systemd/user/tokenscale.service`:
+
+```ini
+[Unit]
+Description=tokenscale local dashboard
+After=network.target
+
+[Service]
+ExecStart=%h/.cargo/bin/tokenscale serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+Adjust `ExecStart` to point at wherever you installed the binary (`$(which tokenscale)`). Then:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now tokenscale.service
+journalctl --user -u tokenscale -f      # follow logs
+```
+
+The user unit runs at login, not boot — that's almost always what you want for a personal dashboard. If you need it at boot (multi-user host, kiosk, etc.), install a system-wide unit at `/etc/systemd/system/tokenscale.service` with `User=youruser` instead.
+
+### Windows — NSSM
+
+[NSSM](https://nssm.cc/) is the standard way to turn an arbitrary `.exe` into a Windows service. The Scoop manifest's post-install notes spell out the recipe; the short version:
+
+```powershell
+scoop install nssm
+nssm install tokenscale "$env:USERPROFILE\scoop\apps\tokenscale\current\tokenscale.exe" serve
+nssm start tokenscale
+```
+
+Manage via `nssm status tokenscale`, `nssm stop tokenscale`, or the Services control panel (`services.msc`). Logs default to `nssm.exe`'s own log location; tune via `nssm edit tokenscale` if you want them somewhere specific.
+
 ## Dashboard tour
 
 What you'll see when the dashboard loads:
