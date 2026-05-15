@@ -163,6 +163,53 @@ type SubscriptionsResponse = {
 }
 
 // ---------------------------------------------------------------------------
+// Active factor provenance — what factor rows the dashboard currently
+// resolves against. Fetched from /api/v1/factors/active once on mount.
+// Lets the Sources panel show "this Energy number rests on these
+// specific (model, region) rows from environmental-factors.toml."
+// ---------------------------------------------------------------------------
+
+type ModelFactorEntry = {
+  provider: string
+  model_id: string
+  display_name: string
+  released_at: string | null
+  valid_from: string | null
+  source_doc: string | null
+  confidence: string | null
+  uncertainty_range_pct: number | null
+  wh_per_mtok_input: number | null
+  wh_per_mtok_output: number | null
+  wh_per_mtok_cache_read: number | null
+  wh_per_mtok_cache_write_5m: number | null
+  wh_per_mtok_cache_write_1h: number | null
+  notes: string | null
+}
+
+type GridFactorEntry = {
+  region_id: string
+  display_name: string
+  valid_from: string | null
+  co2e_kg_per_kwh: number | null
+  water_l_per_kwh: number | null
+  pue: number | null
+  egrid_subregion: string | null
+  egrid_subregion_full_name: string | null
+  source_url_co2e: string | null
+  source_accessed_at: string | null
+  notes: string | null
+}
+
+type ActiveFactorsResponse = {
+  models: ModelFactorEntry[]
+  regions: GridFactorEntry[]
+  configured_region: string
+  file_version: string | null
+  methodology: string | null
+  methodology_source: string | null
+}
+
+// ---------------------------------------------------------------------------
 // Billing types — Stripe CSV import preview/commit + historical list.
 // ---------------------------------------------------------------------------
 
@@ -730,6 +777,9 @@ export default function App() {
   const [billingChargesState, setBillingChargesState] = useState<FetchState<BillingChargesResponse>>({
     status: 'idle',
   })
+  const [activeFactorsState, setActiveFactorsState] = useState<FetchState<ActiveFactorsResponse>>({
+    status: 'idle',
+  })
 
   // Bumped after a subscription / billing-import mutation so the GET re-runs.
   const [subscriptionsRevision, setSubscriptionsRevision] = useState(0)
@@ -758,6 +808,31 @@ export default function App() {
       cancelled = true
     }
   }, [subscriptionsRevision])
+
+  // Active factor rows — fetched once on mount. The endpoint is
+  // backed by the in-memory factor file snapshot, which only changes
+  // when `tokenscale serve` is restarted with a new file. Stale-after-
+  // upgrade is acceptable; users restart the server to update factors.
+  useEffect(() => {
+    let cancelled = false
+    setActiveFactorsState({ status: 'loading' })
+    fetch('/api/v1/factors/active')
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return (await response.json()) as ActiveFactorsResponse
+      })
+      .then((data) => {
+        if (!cancelled) setActiveFactorsState({ status: 'ok', data })
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setActiveFactorsState({ status: 'error', message: (error as Error).message })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Billing charges — fetched once on mount and after any import
   // commit. Intentionally NOT scoped by the chart's date window:
@@ -1503,6 +1578,15 @@ export default function App() {
             />
           )}
 
+          {environmentalReady && activeFactorsState.status === 'ok' && (
+            <FactorProvenancePanel
+              activeFactors={activeFactorsState.data}
+              visibleModelIds={
+                dailyState.status === 'ok' ? dailyState.data.models : []
+              }
+            />
+          )}
+
           <div>
             <h2 className="text-base font-medium mb-3">
               {/* Bucket-cadence label mirrors the actual granularity
@@ -1760,6 +1844,236 @@ function EnvironmentalStatRow({
         </div>
       )}
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// FactorProvenancePanel — surfaces which env_factors / grid_factors rows
+// the dashboard's environmental numbers currently rest on. Collapsed by
+// default; expanding shows the per-(provider, model) row metadata plus
+// the configured region's grid row, with links back to the methodology
+// page and the bibliography. v0.1 of per-value provenance — v0.2
+// would tie it to specific chart cells on hover.
+// ---------------------------------------------------------------------------
+
+type FactorProvenancePanelProps = {
+  activeFactors: ActiveFactorsResponse
+  /// Models present in the current chart window. Used to filter the
+  /// "Models" list to just what the user is actually seeing —
+  /// surfacing the full 17-row factor file would be noise.
+  visibleModelIds: string[]
+}
+
+function FactorProvenancePanel({
+  activeFactors,
+  visibleModelIds,
+}: FactorProvenancePanelProps) {
+  const [expanded, setExpanded] = useState(false)
+
+  const visibleModelSet = new Set(visibleModelIds)
+  const visibleModels = activeFactors.models.filter((model) =>
+    visibleModelSet.has(model.model_id),
+  )
+  const configuredRegion = activeFactors.regions.find(
+    (region) => region.region_id === activeFactors.configured_region,
+  )
+
+  if (visibleModels.length === 0 && !configuredRegion) {
+    return null
+  }
+
+  return (
+    <section className="rounded-md border border-slate-200 bg-slate-50">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center justify-between px-4 py-2 text-sm text-slate-700 hover:bg-slate-100 rounded-md"
+      >
+        <span className="flex items-center gap-2">
+          <Chevron direction={expanded ? 'down' : 'right'} />
+          <span className="font-medium">Sources for these numbers</span>
+          <span className="text-xs text-slate-500">
+            ({visibleModels.length} model{visibleModels.length === 1 ? '' : 's'}
+            {configuredRegion ? ' · 1 region' : ''}
+            {activeFactors.methodology ? ' · methodology' : ''})
+          </span>
+        </span>
+        <span className="text-xs text-slate-500">
+          {expanded ? 'Hide' : 'Show'}
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="px-4 py-3 border-t border-slate-200 space-y-4 text-sm">
+          {/* Methodology link */}
+          {activeFactors.methodology && (
+            <div className="space-y-1">
+              <div className="text-xs font-medium text-slate-500 uppercase tracking-wide">
+                Methodology
+              </div>
+              <div className="text-slate-700">
+                <span className="font-mono">{activeFactors.methodology}</span>
+                {activeFactors.methodology_source && (
+                  <>
+                    {' · '}
+                    <a
+                      className="underline text-blue-600 hover:text-blue-700"
+                      href={activeFactors.methodology_source}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      source paper
+                    </a>
+                  </>
+                )}
+                {activeFactors.file_version && (
+                  <span className="text-slate-500">
+                    {' · '}factor file v{activeFactors.file_version}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Per-model factor rows */}
+          {visibleModels.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-slate-500 uppercase tracking-wide">
+                Model factors (per-token energy)
+              </div>
+              <ul className="space-y-2">
+                {visibleModels.map((model) => (
+                  <li
+                    key={`${model.provider}/${model.model_id}`}
+                    className="rounded border border-slate-200 bg-white px-3 py-2"
+                  >
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="font-medium text-slate-900">
+                        {model.display_name}
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        {model.confidence && (
+                          <span className="font-mono mr-2">{model.confidence}</span>
+                        )}
+                        {model.uncertainty_range_pct !== null &&
+                          model.uncertainty_range_pct !== 0 &&
+                          `± ${model.uncertainty_range_pct}%`}
+                      </span>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1 space-x-3">
+                      {model.valid_from && <span>valid from {model.valid_from}</span>}
+                      {model.source_doc && (
+                        <span>
+                          src:{' '}
+                          <span className="font-mono">{model.source_doc}</span>
+                        </span>
+                      )}
+                    </div>
+                    {model.notes && (
+                      <details className="text-xs text-slate-600 mt-1">
+                        <summary className="cursor-pointer text-slate-500">
+                          Notes
+                        </summary>
+                        <div className="mt-1 pl-3 border-l-2 border-slate-200">
+                          {model.notes}
+                        </div>
+                      </details>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Configured region */}
+          {configuredRegion && (
+            <div className="space-y-2">
+              <div className="text-xs font-medium text-slate-500 uppercase tracking-wide">
+                Grid factors (CO₂e + water + PUE)
+              </div>
+              <div className="rounded border border-slate-200 bg-white px-3 py-2">
+                <div className="flex items-baseline justify-between gap-3">
+                  <span className="font-medium text-slate-900">
+                    {configuredRegion.display_name}
+                  </span>
+                  <span className="text-xs text-slate-500 font-mono">
+                    {configuredRegion.region_id}
+                  </span>
+                </div>
+                <div className="text-xs text-slate-500 mt-1 space-y-0.5">
+                  {configuredRegion.egrid_subregion && (
+                    <div>
+                      eGRID:{' '}
+                      <span className="font-mono">
+                        {configuredRegion.egrid_subregion}
+                      </span>
+                      {configuredRegion.egrid_subregion_full_name && (
+                        <span>
+                          {' '}({configuredRegion.egrid_subregion_full_name})
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  <div>
+                    {configuredRegion.co2e_kg_per_kwh !== null && (
+                      <span className="mr-3">
+                        CO₂e:{' '}
+                        <span className="font-mono">
+                          {configuredRegion.co2e_kg_per_kwh} kg/kWh
+                        </span>
+                      </span>
+                    )}
+                    {configuredRegion.water_l_per_kwh !== null && (
+                      <span className="mr-3">
+                        Water:{' '}
+                        <span className="font-mono">
+                          {configuredRegion.water_l_per_kwh} L/kWh
+                        </span>
+                      </span>
+                    )}
+                    {configuredRegion.pue !== null && (
+                      <span>
+                        PUE:{' '}
+                        <span className="font-mono">{configuredRegion.pue}</span>
+                      </span>
+                    )}
+                  </div>
+                  {configuredRegion.source_url_co2e && (
+                    <div>
+                      <a
+                        className="underline text-blue-600 hover:text-blue-700"
+                        href={configuredRegion.source_url_co2e}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        EPA eGRID source
+                      </a>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <p className="text-xs text-slate-500 pt-1 border-t border-slate-200">
+            Full narrative + bibliography on the{' '}
+            <button
+              type="button"
+              // Note: button only, can't link to sibling state directly
+              // — user navigates via the header tab.
+              className="underline text-blue-600 hover:text-blue-700"
+              onClick={() => {
+                window.scrollTo({ top: 0, behavior: 'smooth' })
+              }}
+              title="Click 'Methodology' in the header"
+            >
+              Methodology
+            </button>{' '}
+            tab.
+          </p>
+        </div>
+      )}
+    </section>
   )
 }
 
