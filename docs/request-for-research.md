@@ -10,28 +10,6 @@ Format: each entry has a status, the question, why it matters, what good answers
 
 ## Open
 
-### Grid-factor uncertainty bands
-
-**Status**: Open. Carried forward from v0.1 — model uncertainty is captured per row, grid uncertainty is not.
-
-**Question**: What's the honest ± band on `co2e_kg_per_kwh` and `water_l_per_kwh` for each subregion?
-
-**Why it matters**: The dashboard's "± X%" cell badge currently reflects only the model-side uncertainty (the `uncertainty_range_pct` field in each `[providers.*.models.*]` block). Grid factors carry their own uncertainty — annual variance, methodology differences between EPA's eGRID year and live operating conditions, plus the gap between subregion-average and any specific datacenter's real grid mix. Treating grid as exact under-reports the total uncertainty on every CO₂e number in the dashboard.
-
-**What good answers look like**:
-
-- A `co2e_uncertainty_range_pct` and `water_uncertainty_range_pct` field on each `[grid_factors.*]` block, with a documented derivation.
-- For eGRID values: the year-over-year variance across the last 3–5 eGRID releases is probably the right anchor. EPA publishes this; we just need to do the read.
-- For AWS WUE (currently the same 0.15 L/kWh applied to every AWS region as a fallback): an honest band reflecting that we're applying a global average to specific regions. Probably ±50% absent better data.
-
-**Starting points**:
-
-- [EPA eGRID historical data](https://www.epa.gov/egrid/historical-egrid-data).
-- AWS sustainability page year-over-year WUE drift (the global figure was 0.18 → 0.15 between 2022 and 2024, so the trajectory itself is informative).
-- Ren et al. (water methodology, ACM) discusses water-factor uncertainty.
-
----
-
 ### Indirect water (power-plant cooling) methodology
 
 **Status**: Open. Phase 2 ships direct water only (data-center cooling).
@@ -116,4 +94,13 @@ Format: each entry has a status, the question, why it matters, what good answers
 
 (Move entries here when they're answered in `research-log.md`.)
 
-_None yet — first sweep landed v0.1 in April 2026._
+### Grid-factor uncertainty bands (CO₂e portion)
+
+**Status**: Partially resolved by Sweep #1, 2026-05-12. See [research-log.md](research-log.md).
+
+**Resolution**: Per-subregion `co2e_uncertainty_range_pct` bands now ship in `environmental-factors.toml` v0.2, derived from year-over-year variance across eGRID 2019 / 2020 / 2022 / 2023 plus a buffer for the subregion-to-datacenter mix gap:
+- SRVC: ±15% · RFCW: ±20% · NWPP: ±20% · CAMX: ±20%
+
+`water_uncertainty_range_pct = 50` applied across all AWS regions, reflecting the global-to-regional WUE application gap (AWS publishes no per-region WUE).
+
+**Remaining**: Combining model + grid uncertainty into the dashboard's headline `± X%` cell badge is a deliberate v0.3 follow-on — kept separate in v0.2 so users can see the decomposition before we collapse it. Per-region WUE values from AWS would let us tighten the water band; tracked separately.

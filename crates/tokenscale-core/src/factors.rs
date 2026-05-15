@@ -150,9 +150,28 @@ pub struct GridFactors {
     #[serde(default)]
     pub co2e_kg_per_kwh: Option<f64>,
 
+    /// Honest ± band on `co2e_kg_per_kwh`, in percent. Captures three
+    /// sources of uncertainty in one number: year-to-year drift across
+    /// eGRID releases (the EPA's own methodology variability),
+    /// secular decarbonization between the eGRID year and the event
+    /// date the dashboard is attributing emissions to, and the gap
+    /// between the subregion-average value here and the specific
+    /// datacenter's actual grid mix. Added in research-log entry
+    /// 2026-05-12 (Sweep #1 — Grid-factor uncertainty bands).
+    #[serde(default)]
+    pub co2e_uncertainty_range_pct: Option<i32>,
+
     /// Liters of water per kWh.
     #[serde(default)]
     pub water_l_per_kwh: Option<f64>,
+
+    /// Honest ± band on `water_l_per_kwh`. AWS publishes only a global
+    /// WUE figure; we apply it flat across all AWS regions. This
+    /// percentage reflects the "global-to-regional" gap — a specific
+    /// datacenter's real water draw can differ substantially from the
+    /// fleetwide average, especially in arid regions vs. wet ones.
+    #[serde(default)]
+    pub water_uncertainty_range_pct: Option<i32>,
 
     /// Power Usage Effectiveness — facility energy / IT energy. Multiplier
     /// applied AFTER per-token energy to get total facility energy.

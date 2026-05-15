@@ -191,7 +191,9 @@ type GridFactorEntry = {
   display_name: string
   valid_from: string | null
   co2e_kg_per_kwh: number | null
+  co2e_uncertainty_range_pct: number | null
   water_l_per_kwh: number | null
+  water_uncertainty_range_pct: number | null
   pue: number | null
   egrid_subregion: string | null
   egrid_subregion_full_name: string | null
@@ -2021,6 +2023,11 @@ function FactorProvenancePanel({
                         <span className="font-mono">
                           {configuredRegion.co2e_kg_per_kwh} kg/kWh
                         </span>
+                        {configuredRegion.co2e_uncertainty_range_pct !== null && (
+                          <span className="text-slate-400">
+                            {' '}± {configuredRegion.co2e_uncertainty_range_pct}%
+                          </span>
+                        )}
                       </span>
                     )}
                     {configuredRegion.water_l_per_kwh !== null && (
@@ -2029,6 +2036,11 @@ function FactorProvenancePanel({
                         <span className="font-mono">
                           {configuredRegion.water_l_per_kwh} L/kWh
                         </span>
+                        {configuredRegion.water_uncertainty_range_pct !== null && (
+                          <span className="text-slate-400">
+                            {' '}± {configuredRegion.water_uncertainty_range_pct}%
+                          </span>
+                        )}
                       </span>
                     )}
                     {configuredRegion.pue !== null && (

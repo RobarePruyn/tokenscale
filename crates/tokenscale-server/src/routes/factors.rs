@@ -66,7 +66,13 @@ pub struct GridFactorEntry {
     pub display_name: String,
     pub valid_from: Option<String>,
     pub co2e_kg_per_kwh: Option<f64>,
+    /// ± band on `co2e_kg_per_kwh` from the v0.2 grid-uncertainty
+    /// sweep (research-log 2026-05-12). Surfaced inline on the
+    /// FactorProvenancePanel so users see grid uncertainty alongside
+    /// model uncertainty.
+    pub co2e_uncertainty_range_pct: Option<i32>,
     pub water_l_per_kwh: Option<f64>,
+    pub water_uncertainty_range_pct: Option<i32>,
     pub pue: Option<f64>,
     pub egrid_subregion: Option<String>,
     pub egrid_subregion_full_name: Option<String>,
@@ -109,7 +115,9 @@ pub async fn active_handler(
             display_name: grid.display_name.clone(),
             valid_from: grid.valid_from.clone(),
             co2e_kg_per_kwh: grid.co2e_kg_per_kwh,
+            co2e_uncertainty_range_pct: grid.co2e_uncertainty_range_pct,
             water_l_per_kwh: grid.water_l_per_kwh,
+            water_uncertainty_range_pct: grid.water_uncertainty_range_pct,
             pue: grid.pue,
             egrid_subregion: grid.egrid_subregion.clone(),
             egrid_subregion_full_name: grid.egrid_subregion_full_name.clone(),

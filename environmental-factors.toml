@@ -27,8 +27,8 @@
 
 schema_version = 1
 file_status = "production"
-file_version = "0.1"
-file_published = "2026-04-28"
+file_version = "0.2"
+file_published = "2026-05-12"
 methodology = "google-comprehensive-aug-2025"
 methodology_source = "https://arxiv.org/abs/2508.15734"
 
@@ -429,8 +429,10 @@ egrid_subregion = "SRVC"
 egrid_subregion_full_name = "SERC Virginia/Carolina"
 egrid_subregion_co2e_lb_per_mwh = 596.3   # ANCHOR: eGRID2023 summary tables, page 2
 co2e_kg_per_kwh = 0.270              # ANCHOR: 596.3 × 0.4536 / 1000 = 0.2705
+co2e_uncertainty_range_pct = 15      # Sweep #1 (2026-05-12): SRVC observed range 13.0% across eGRID 2019/2020/2022/2023 (range 596-679 lb/MWh, std dev 4.7%). Rounded up for subregion-to-datacenter mix gap.
 co2e_state_check_va_kg_per_kwh = 0.245   # cross-reference: VA state = 539.6 lb/MWh = 0.2448 kg/kWh; subregion is canonical
 water_l_per_kwh = 0.15               # ANCHOR: AWS 2024 global WUE; per-region NOT disclosed
+water_uncertainty_range_pct = 50     # AWS publishes global only; per-region real draw can vary substantially with climate. 50% is honest for a global-to-regional gap.
 pue = 1.15                           # ANCHOR: AWS 2024 global PUE; per-region NOT disclosed
 source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
 source_url_water = "https://aws.amazon.com/sustainability/data-centers/"
@@ -445,8 +447,10 @@ egrid_subregion = "RFCW"
 egrid_subregion_full_name = "RFC West"
 egrid_subregion_co2e_lb_per_mwh = 916.1   # ANCHOR: eGRID2023 summary tables
 co2e_kg_per_kwh = 0.416              # ANCHOR: 916.1 × 0.4536 / 1000 = 0.4156
+co2e_uncertainty_range_pct = 20      # Sweep #1 (2026-05-12): RFCW observed range 15.7% across eGRID 2019/2020/2022/2023 (range 916-1073 lb/MWh, std dev 5.6%). Widened to 20% for coal-heavy sub-area variability.
 co2e_state_check_oh_kg_per_kwh = 0.485   # cross-reference: OH state = 1068.3 lb/MWh = 0.4845 kg/kWh
 water_l_per_kwh = 0.15               # ANCHOR: AWS 2024 global WUE
+water_uncertainty_range_pct = 50     # Same global-to-regional gap as us-east-1.
 pue = 1.15                           # ANCHOR: AWS 2024 global PUE
 source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
 source_url_water = "https://aws.amazon.com/sustainability/data-centers/"
@@ -461,8 +465,10 @@ egrid_subregion = "NWPP"
 egrid_subregion_full_name = "WECC Northwest"
 egrid_subregion_co2e_lb_per_mwh = 635.3   # ANCHOR: eGRID2023 summary tables
 co2e_kg_per_kwh = 0.288              # ANCHOR: 635.3 × 0.4536 / 1000 = 0.2882
+co2e_uncertainty_range_pct = 20      # Sweep #1 (2026-05-12): NWPP observed range 17.9% across eGRID 2019/2020/2022/2023 (range 604-719 lb/MWh, std dev 7.3%). Pacific NW hydro generation varies with precipitation, hence the higher year-to-year variance vs SRVC.
 co2e_state_check_or_kg_per_kwh = 0.166   # cross-reference: OR state = 365.0 lb/MWh = 0.1656 kg/kWh — STATE much cleaner than SUBREGION because Oregon-specific is hydro-heavy whereas NWPP includes ID/MT/WY parts
 water_l_per_kwh = 0.15               # ANCHOR: AWS 2024 global WUE
+water_uncertainty_range_pct = 50     # Same global-to-regional gap. Pacific NW datacenters often use cooler ambient air → likely below global average, but unverified.
 pue = 1.15                           # ANCHOR: AWS 2024 global PUE
 source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
 source_url_water = "https://aws.amazon.com/sustainability/data-centers/"
@@ -478,6 +484,7 @@ valid_from = "2023-01-01"
 egrid_subregion = "CAMX"
 egrid_subregion_co2e_lb_per_mwh = 430.0
 co2e_kg_per_kwh = 0.195
+co2e_uncertainty_range_pct = 20      # Sweep #1 (2026-05-12): CAMX observed range 18.0% across eGRID 2019/2020/2022/2023 (range 430-516 lb/MWh, std dev 7.2%). High renewables share → meaningful day-to-day mix variability.
 notes = "Reference subregion. No AWS Anthropic compute hosted here. Cleanest of WECC subregions due to CA renewables mix."
 source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
 source_accessed_at = "2026-04-28"

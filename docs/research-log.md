@@ -6,6 +6,64 @@ Newest entries appear at the top.
 
 ---
 
+## 2026-05-12 — Sweep #1: grid-factor uncertainty bands
+
+### Question
+
+`request-for-research.md` flagged that v0.1 reported only model-side uncertainty in the dashboard's `± X%` cell badge. Grid factors (`co2e_kg_per_kwh`, `water_l_per_kwh`, `pue`) carry their own uncertainty — annual EPA methodology variability, secular grid decarbonization between the eGRID year and the event's actual year, and the gap between subregion-average and a specific datacenter's real mix. Establish honest per-subregion bands.
+
+### Methodology
+
+Pulled total-output CO₂e emission rates (lb/MWh) from four eGRID releases — 2019, 2020, 2022, and 2023 — for the four subregions tokenscale tracks (SRVC, RFCW, NWPP, CAMX). eGRID2019 data sourced via [SIMAP](https://unhsimap.org/cmap/resources/electricity2019) in kg/kWh and converted; eGRID2020 and eGRID2022 from EPA's published summary tables PDFs; eGRID2023 from our existing v0.1 anchors. The 2019 source publishes CO₂-only rates rather than CO₂e — added a +0.5% adjustment per typical CH₄+N₂O contribution observed in the 2020-2023 deltas.
+
+Computed for each subregion: arithmetic mean, range (max − min), range as % of mean, and sample standard deviation as % of mean. Range captures the secular drift plus any methodology change; std dev captures the year-to-year noise.
+
+### Source corpus (this cycle)
+
+Primary sources newly added or used:
+
+- EPA eGRID2020 Summary Tables (PDF, January 2022 release): <https://www.epa.gov/system/files/documents/2022-01/egrid2020_summary_tables.pdf>
+- EPA eGRID2022 Summary Tables (PDF, January 2024 release): <https://www.epa.gov/system/files/documents/2024-01/egrid2022_summary_tables.pdf>
+- SIMAP electricity factors 2019 (Univ. of New Hampshire Sustainability Indicator Management & Analysis Platform): <https://unhsimap.org/cmap/resources/electricity2019>
+
+### Findings — raw data
+
+| Subregion | 2019 CO₂e | 2020 CO₂e | 2022 CO₂e | 2023 CO₂e | Range | Range % | StdDev % |
+|---|---|---|---|---|---|---|---|
+| SRVC | 678.7 | 626.3 | 625.9 | 596.3 | 82.4 | **13.0%** | 4.7% |
+| RFCW | 1072.9 | 990.8 | 1005.9 | 916.1 | 156.8 | **15.7%** | 5.6% |
+| NWPP | 718.8 | 603.8 | 605.9 | 635.3 | 115.0 | **17.9%** | 7.3% |
+| CAMX | 455.5 | 515.5 | 499.3 | 430.0 | 85.5 | **18.0%** | 7.2% |
+
+(All values in lb CO₂e per MWh. 2019 values are CO₂-only with +0.5% adjustment to approximate CO₂e.)
+
+### What changed in `environmental-factors.toml`
+
+- Bumped `file_version` from `"0.1"` to `"0.2"`. Schema is back-compat (new fields are optional, schema_version stays at 1).
+- New `co2e_uncertainty_range_pct` field on each `[grid_factors.*]` block:
+  - SRVC: **±15%** (range observed; coastal SE has lowest variance)
+  - RFCW: **±20%** (range observed widened for coal-heavy sub-area variance)
+  - NWPP: **±20%** (hydro-precipitation-driven variance)
+  - CAMX: **±20%** (high renewables share + day-to-day mix variability)
+- New `water_uncertainty_range_pct = 50` on every AWS region. AWS publishes only a global WUE figure; specific-datacenter water draw can differ substantially with climate. ±50% honestly reflects the "global-to-regional" application gap.
+- Inline comments on each row trace the band back to this sweep's analysis.
+
+### What this changes for users
+
+The `/api/v1/factors/active` endpoint now returns `co2e_uncertainty_range_pct` and `water_uncertainty_range_pct` per grid row. The dashboard's `FactorProvenancePanel` displays these inline next to the CO₂e and water values when the user clicks "Sources for these numbers". The aggregate stat-row `± X%` badge still reflects only model uncertainty — combining model + grid uncertainty into the headline badge is a deliberate v0.3 follow-on so users can see the decomposition before we collapse it.
+
+### Carry-forward
+
+- Adding a fifth+ year of data (eGRID2021, possibly historical pre-2019) would tighten the std-dev estimate. Not blocking; current bands are conservative-enough for v0.2.
+- AWS publishing per-region WUE would let us drop the ±50% water band to something defensible. Tracked as ongoing in `request-for-research.md`.
+- Indirect water (power-plant cooling per Ren et al.) is still missing. Next sweep target.
+
+### Resolved from `request-for-research.md`
+
+- ✅ "Grid-factor uncertainty bands" — partially resolved. CO₂e bands established; water + PUE bands are honest "global-to-regional gap" placeholders pending per-region vendor disclosure.
+
+---
+
 ## 2026-04-28 — v0.1 broadened factor model derivation
 
 ### Question

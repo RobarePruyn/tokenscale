@@ -156,7 +156,14 @@ impl GridFactorRow {
             display_name: String::new(),
             valid_from: Some(self.valid_from),
             co2e_kg_per_kwh: self.co2e_kg_per_kwh,
+            // Uncertainty bands live in the in-memory TOML snapshot
+            // only — the DB schema doesn't carry them yet. Future:
+            // add columns when grid uncertainty becomes part of the
+            // per-event impact compute, not just the dashboard's
+            // sources-panel display.
+            co2e_uncertainty_range_pct: None,
             water_l_per_kwh: self.water_l_per_kwh,
+            water_uncertainty_range_pct: None,
             pue: self.pue,
             egrid_subregion: self.egrid_subregion,
             egrid_subregion_full_name: self.egrid_subregion_full_name,

@@ -6,6 +6,39 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.3 — 2026-05-12
+
+Two feature additions + the first quarterly research sweep, all driven by closing the loop on items the v0.1.2 docs flagged as future work.
+
+### Added
+
+- **Per-value factor provenance panel** (methodology page v0.2). A new **"Sources for these numbers"** disclosure below the environmental stat row. When expanded, shows three sections:
+  - Methodology identifier + link to the source paper + factor file version.
+  - Per-model factor rows for the **models visible in the current chart** — display name, confidence tag, model uncertainty ±%, valid_from, source_doc, expandable notes.
+  - The configured region's grid factor row — eGRID subregion, CO₂e/water/PUE values with inline uncertainty bands, link to EPA source.
+- **`GET /api/v1/factors/active` endpoint** — reads the in-memory factor-file snapshot and serves every (provider, model) row + every grid row + the configured region + methodology metadata. ~5KB payload, fetched once on mount.
+- **Scoop bucket** at [RobarePruyn/scoop-tokenscale](https://github.com/RobarePruyn/scoop-tokenscale) — Windows users can now `scoop bucket add tokenscale https://github.com/RobarePruyn/scoop-tokenscale && scoop install tokenscale`. Hand-maintained because `dist` v0.31 doesn't have native Scoop support yet, but uses Scoop's `autoupdate` block tied to GitHub Releases — `scoop update` propagates new tokenscale releases with zero maintainer action per release.
+
+### Research
+
+- **Sweep #1: grid-factor uncertainty bands** (first quarterly sweep, see [`docs/research-cadence.md`](docs/research-cadence.md)). Pulled 4 years of EPA eGRID CO₂e data (2019/2020/2022/2023) for the four subregions tokenscale tracks, computed YoY variance + std dev, and established honest ± bands per subregion. New `co2e_uncertainty_range_pct` field on each `[grid_factors.*]` block in `environmental-factors.toml`:
+  - SRVC: **±15%** · RFCW: **±20%** · NWPP: **±20%** · CAMX: **±20%**
+- New `water_uncertainty_range_pct = 50` across all AWS regions, honestly reflecting the gap between AWS's global WUE and any specific datacenter's real water draw (AWS publishes no per-region WUE).
+- Factor file `file_version` bumped from `0.1` to `0.2`. Full audit trail in [`docs/research-log.md`](docs/research-log.md).
+- "Grid-factor uncertainty bands" moved from Open → Resolved in [`docs/request-for-research.md`](docs/request-for-research.md).
+
+### Changed
+
+- `GridFactors` struct in `tokenscale-core::factors` gains `co2e_uncertainty_range_pct` and `water_uncertainty_range_pct` optional fields. Schema is back-compat — `schema_version` stays at 1.
+- `GET /api/v1/factors/active` response includes the new uncertainty fields per grid row; FactorProvenancePanel displays them inline next to the CO₂e and water values.
+
+### Notably NOT in this release
+
+- **Aggregate stat-row `± X%` badge still reflects only model uncertainty.** Combining model + grid uncertainty into the headline badge is a deliberate v0.4 follow-on; v0.3 keeps the decomposition visible (model bands in the stat row, grid bands in the sources panel) so users can see both before we collapse them.
+- **Per-event compute math does NOT use grid uncertainty.** The DB schema for `grid_factors` doesn't carry the uncertainty fields yet; per-event impact stays exact (point-estimate) compute. Display-only for now.
+
+---
+
 ## v0.1.2 — 2026-05-11
 
 The credibility-deepening release. Ships the **methodology / transparency page** the CHARTER named as required-not-optional from day one — every number on the dashboard now has a one-click trail to its source, methodology, and derivation.
