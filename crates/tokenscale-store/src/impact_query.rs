@@ -67,10 +67,20 @@ pub struct ImpactByBucketRow {
     /// fallback WUE was also unset. Otherwise the sum, in liters.
     pub water_l: Option<f64>,
 
-    /// Maximum per-event uncertainty within the bucket. The dashboard
-    /// renders this as the bucket's `± X%` band — a conservative
-    /// choice (the widest model's band wins).
+    /// Maximum per-event model-factor uncertainty within the bucket, %.
+    /// Used as the energy-side `± X%` band (energy / facility_wh have no
+    /// separate grid component to combine with). Also the input to the
+    /// quadrature combinations below.
     pub max_uncertainty_pct: i32,
+
+    /// Combined `± %` for `co2e_g`. Quadrature of `max_uncertainty_pct`
+    /// (model side) and the configured region's grid CO₂e uncertainty.
+    /// See [`tokenscale_core::combine_uncertainty_pct`].
+    pub co2e_uncertainty_pct: i32,
+
+    /// Combined `± %` for `water_l`. Same combination rule as
+    /// `co2e_uncertainty_pct` but with the grid's water uncertainty.
+    pub water_uncertainty_pct: i32,
 
     /// Number of events whose env_factor row was missing entirely
     /// (model isn't in `env_factors` at the event's `occurred_at`).
@@ -212,7 +222,12 @@ pub async fn aggregate_impact_by_bucket(
     builder.push(" THEN 1
                 ELSE 0
             END)                                         AS events_with_water,
-        COALESCE(MAX(ef.uncertainty_range_pct), 0)       AS max_uncertainty_pct,
+        COALESCE(MAX(ef.uncertainty_range_pct), 0)             AS max_uncertainty_pct,
+        -- Grid uncertainty is region-constant across the bucket (same
+        -- configured region for every event), so MAX is just a way to
+        -- pull the row value through aggregation.
+        COALESCE(MAX(gf.co2e_uncertainty_range_pct), 0)        AS grid_co2e_uncertainty_pct,
+        COALESCE(MAX(gf.water_uncertainty_range_pct), 0)       AS grid_water_uncertainty_pct,
         SUM(CASE WHEN ef.id IS NULL THEN 1 ELSE 0 END)   AS events_missing_env_factor,
         SUM(CASE WHEN gf.pue IS NULL THEN 1 ELSE 0 END)  AS events_using_fallback_pue,
         SUM(CASE WHEN gf.water_l_per_kwh IS NULL THEN 1 ELSE 0 END) AS events_using_fallback_wue,
@@ -288,6 +303,8 @@ struct RawImpactByBucketRow {
     water_l_raw: Option<f64>,
     events_with_water: i64,
     max_uncertainty_pct: i32,
+    grid_co2e_uncertainty_pct: i32,
+    grid_water_uncertainty_pct: i32,
     events_missing_env_factor: i64,
     events_using_fallback_pue: i64,
     events_using_fallback_wue: i64,
@@ -309,6 +326,15 @@ impl RawImpactByBucketRow {
             None
         };
 
+        let co2e_uncertainty_pct = tokenscale_core::combine_uncertainty_pct(
+            self.max_uncertainty_pct,
+            self.grid_co2e_uncertainty_pct,
+        );
+        let water_uncertainty_pct = tokenscale_core::combine_uncertainty_pct(
+            self.max_uncertainty_pct,
+            self.grid_water_uncertainty_pct,
+        );
+
         ImpactByBucketRow {
             bucket: self.bucket,
             provider: self.provider,
@@ -323,6 +349,8 @@ impl RawImpactByBucketRow {
             co2e_g,
             water_l,
             max_uncertainty_pct: self.max_uncertainty_pct,
+            co2e_uncertainty_pct,
+            water_uncertainty_pct,
             events_missing_env_factor: self.events_missing_env_factor,
             events_using_fallback_pue: self.events_using_fallback_pue,
             events_using_fallback_wue: self.events_using_fallback_wue,
@@ -448,6 +476,44 @@ egrid_subregion_full_name = "SERC Virginia/Carolina"
         assert_eq!(row.events_using_fallback_pue, 0);
         assert_eq!(row.events_using_fallback_wue, 0);
         assert_eq!(row.events_count, 1);
+    }
+
+    #[tokio::test]
+    async fn combined_uncertainty_pulls_grid_bands_through_quadrature() {
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        // PROD_TOML's SRVC profile augmented with Sweep #1's CO₂e and
+        // water uncertainty bands. Model uncertainty stays at 35
+        // (Sonnet 4.6 "secondary"), so:
+        //   energy   ± = 35
+        //   CO₂e     ± = √(35² + 15²) = 38
+        //   water    ± = √(35² + 50²) = 61
+        let toml = PROD_TOML.replace(
+            "egrid_subregion = \"SRVC\"",
+            "co2e_uncertainty_range_pct = 15\nwater_uncertainty_range_pct = 50\negrid_subregion = \"SRVC\"",
+        );
+        let factors_file = EnvironmentalFactorsFile::parse(&toml).unwrap();
+        sync_environmental_factors(&database, &factors_file).await.unwrap();
+
+        insert_events(&database, &[event("claude-sonnet-4-6", 21, 1_000_000, 100_000)])
+            .await
+            .unwrap();
+
+        let rows = aggregate_impact_by_bucket(
+            &database,
+            "2026-04-01",
+            "2026-04-30",
+            ALL_PROVIDERS,
+            &[],
+            Granularity::Day,
+            &factors(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.max_uncertainty_pct, 35);
+        assert_eq!(row.co2e_uncertainty_pct, 38);
+        assert_eq!(row.water_uncertainty_pct, 61);
     }
 
     #[tokio::test]

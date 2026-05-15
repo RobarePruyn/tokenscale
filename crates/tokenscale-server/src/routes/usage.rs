@@ -152,11 +152,17 @@ pub struct ModelImpact {
     /// factor and no fallback was configured.
     #[serde(rename = "waterL")]
     pub water_l: Option<f64>,
-    /// Maximum per-event uncertainty inside the bucket (in percent).
-    /// The dashboard renders this as the cell's `± X%` band — a
-    /// conservative widest-band-wins choice.
+    /// Energy-side `± %` band (model-factor uncertainty only — PUE has
+    /// no separately-tracked band yet, so it folds in here).
     #[serde(rename = "maxUncertaintyPct")]
     pub max_uncertainty_pct: i32,
+    /// Combined `± %` for `co2e_g` — quadrature of the model and grid
+    /// CO₂e uncertainty bands. See `tokenscale_core::combine_uncertainty_pct`.
+    #[serde(rename = "co2eUncertaintyPct")]
+    pub co2e_uncertainty_pct: i32,
+    /// Combined `± %` for `water_l` — quadrature of model + grid water.
+    #[serde(rename = "waterUncertaintyPct")]
+    pub water_uncertainty_pct: i32,
     /// Number of events whose env_factor row was missing entirely. The
     /// dashboard surfaces this as "X events without factor data".
     #[serde(rename = "eventsMissingEnvFactor")]
@@ -342,6 +348,8 @@ pub async fn daily_handler(
                 co2e_g: row.co2e_g,
                 water_l: row.water_l,
                 max_uncertainty_pct: row.max_uncertainty_pct,
+                co2e_uncertainty_pct: row.co2e_uncertainty_pct,
+                water_uncertainty_pct: row.water_uncertainty_pct,
                 events_missing_env_factor: row.events_missing_env_factor,
                 events_using_fallback_pue: row.events_using_fallback_pue,
                 events_using_fallback_wue: row.events_using_fallback_wue,

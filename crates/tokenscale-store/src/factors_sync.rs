@@ -104,8 +104,9 @@ pub async fn sync_environmental_factors(
             "INSERT INTO grid_factors (
                 region, valid_from, valid_to, co2e_kg_per_kwh, water_l_per_kwh,
                 pue, egrid_subregion, egrid_subregion_full_name,
-                source_url, source_accessed_at
-             ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)",
+                source_url, source_accessed_at,
+                co2e_uncertainty_range_pct, water_uncertainty_range_pct
+             ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(region_id)
         .bind(valid_from)
@@ -116,6 +117,8 @@ pub async fn sync_environmental_factors(
         .bind(grid.egrid_subregion_full_name.as_deref())
         .bind(grid.source_url_co2e.as_deref().unwrap_or(""))
         .bind(grid.source_accessed_at.as_deref().unwrap_or(valid_from))
+        .bind(grid.co2e_uncertainty_range_pct)
+        .bind(grid.water_uncertainty_range_pct)
         .execute(&mut *transaction)
         .await?;
         summary.grid_factor_rows += 1;

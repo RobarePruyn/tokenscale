@@ -84,7 +84,8 @@ pub async fn lookup_grid_factors(
             valid_from, valid_to,
             co2e_kg_per_kwh, water_l_per_kwh, pue,
             egrid_subregion, egrid_subregion_full_name,
-            source_url, source_accessed_at
+            source_url, source_accessed_at,
+            co2e_uncertainty_range_pct, water_uncertainty_range_pct
          FROM grid_factors
          WHERE region = ?
            AND valid_from <= ?
@@ -148,6 +149,8 @@ struct GridFactorRow {
     egrid_subregion_full_name: Option<String>,
     source_url: String,
     source_accessed_at: String,
+    co2e_uncertainty_range_pct: Option<i32>,
+    water_uncertainty_range_pct: Option<i32>,
 }
 
 impl GridFactorRow {
@@ -156,14 +159,9 @@ impl GridFactorRow {
             display_name: String::new(),
             valid_from: Some(self.valid_from),
             co2e_kg_per_kwh: self.co2e_kg_per_kwh,
-            // Uncertainty bands live in the in-memory TOML snapshot
-            // only — the DB schema doesn't carry them yet. Future:
-            // add columns when grid uncertainty becomes part of the
-            // per-event impact compute, not just the dashboard's
-            // sources-panel display.
-            co2e_uncertainty_range_pct: None,
+            co2e_uncertainty_range_pct: self.co2e_uncertainty_range_pct,
             water_l_per_kwh: self.water_l_per_kwh,
-            water_uncertainty_range_pct: None,
+            water_uncertainty_range_pct: self.water_uncertainty_range_pct,
             pue: self.pue,
             egrid_subregion: self.egrid_subregion,
             egrid_subregion_full_name: self.egrid_subregion_full_name,

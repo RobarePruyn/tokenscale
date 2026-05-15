@@ -90,6 +90,35 @@ Format: each entry has a status, the question, why it matters, what good answers
 
 ---
 
+### Amortized model-training cost (energy / CO₂e / water) per served token
+
+**Status**: Open — aspirational. The dashboard today only reports **inference-side** impact. A model's training run consumed energy, CO₂e, and water that is logically attributable to every token the model serves over its lifetime; including it would make tokenscale's lifecycle picture complete.
+
+**Question**: Can we add a per-token *amortized training cost* (energy / CO₂e / water) that, when added to the per-token inference cost, gives a full-lifecycle impact figure? As global usage of a model grows, the per-token amortized share naturally drops.
+
+**Why it matters**: Inference-only numbers systematically *under-state* a model's full environmental footprint. Frontier-class models have non-trivial training footprints (BLOOM-176B: ~25 tCO₂e training-run, ~50 tCO₂e full-envelope per Luccioni 2022); ignoring them means the dashboard tells only part of the story. The amortization framing is academic-consensus (Strubell 2019, Patterson 2021, Luccioni 2022).
+
+**What good answers look like**:
+
+- A `[providers.<p>.models.<m>.training]` block in `environmental-factors.toml` carrying `training_energy_kwh`, `training_co2e_kg`, `training_water_l`, `cumulative_tokens_served` (as of a `valid_at` date), and a `training_amortization_confidence` tag.
+- A computed per-token amortization (`training_*` / `cumulative_tokens_served`) summed with the existing inference per-token factors when an "Include amortized training cost" toggle is on.
+- Honest acknowledgment of three load-bearing data gaps: **(a)** Anthropic has not published Claude training compute — confidence on third-party FLOPs estimates will be `low_speculative` and uncertainty bands will be wide (±100% is realistic); **(b)** `cumulative_tokens_served` is unpublished by every provider — we will have to Fermi-estimate from subscriber counts × usage assumptions; **(c)** the numerator question — what counts in "training cost"? Conventional definition is the final successful run; honest definition is +failed runs +data prep +embodied GPU carbon, which is ~3–5× larger per Luccioni 2022's BLOOM-2 envelope analysis. We should pick a position and label it explicitly.
+
+**Triggers for action**:
+
+- Anthropic publishes Claude training compute or LCA numbers.
+- A reliable third-party estimate of Claude training compute lands (peer-reviewed or audited).
+- The aggregate amortized envelope across the frontier-model field becomes well-enough characterized that the headline number isn't dominated by guesswork.
+
+**Starting points**:
+
+- [Strubell et al., "Energy and Policy Considerations for Deep Learning in NLP"](https://aclanthology.org/P19-1355/) — original amortization framing.
+- [Patterson et al., "Carbon Emissions and Large Neural Network Training"](https://arxiv.org/abs/2104.10350) — Google's methodology, includes amortization formulas.
+- [Luccioni et al., "Estimating the Carbon Footprint of BLOOM"](https://arxiv.org/abs/2211.02001) — full lifecycle including failed runs and embodied carbon. BLOOM-2 envelope analysis is the gold standard reference.
+- Hugging Face's `codecarbon` and the AI Energy Score initiative for open-model training-cost estimates.
+
+---
+
 ## Resolved
 
 (Move entries here when they're answered in `research-log.md`.)

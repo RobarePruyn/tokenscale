@@ -134,7 +134,15 @@ Every factor row in the file carries a `uncertainty_range_pct` field reflecting 
 - **Multi-step estimates** (OpenAI derived from Altman's blog × Jegham et al. benchmarks × token-share assumptions): typically ±50%, reflecting compounding uncertainty.
 - **Deep extrapolations** (Mistral energy reverse-derived from CO₂e + assumed European grid mix): 60%+.
 
-The dashboard's per-bucket "± X%" badge shows the **widest** model band in the visible cell. Grid uncertainty is currently NOT in the band (only model uncertainty); adding it is tracked as an open research question.
+The dashboard combines model and grid bands honestly: each environmental KPI gets its own combined `± %` badge, derived as the **quadrature sum** of independent uncertainties (the standard error-propagation rule for a product of two independent fractional uncertainties):
+
+- **Energy (facility)**: model band only. PUE has no separately-tracked band; it folds into the model side.
+- **CO₂e**: `√(model² + grid_co2e²)`. Sonnet 4.6 (±35%) on SRVC (±15% CO₂e) → **±38%**.
+- **Water**: `√(model² + grid_water²)`. Sonnet 4.6 (±35%) on any AWS region (±50% water) → **±61%**.
+
+The water band is large because AWS publishes a single global WUE rather than per-region figures, and we apply a ±50% band to capture the global-to-region application gap. CO₂e bands are tighter because eGRID publishes per-subregion values directly.
+
+Across multiple visible cells (multiple models in one window) the dashboard takes the widest band per metric — a conservative widest-wins choice. The combined-uncertainty math runs in [`tokenscale_core::combine_uncertainty_pct`](https://github.com/RobarePruyn/tokenscale/blob/main/crates/tokenscale-core/src/impact.rs) so the per-event compute path and the bucket-aggregate SQL path produce identical numbers.
 
 ### What "primary" / "secondary" / "superseded" mean
 
@@ -191,7 +199,7 @@ Most relevant primary sources for v0.1:
 
 A few framing notes to keep in mind when looking at the environmental view:
 
-- **The numbers are estimates within ± bands.** Even the "primary" sources carry their own uncertainty; multi-step derivations stack uncertainty on uncertainty. The dashboard shows the widest model band per cell as a "± X%" badge — that's a floor, not a ceiling, on real uncertainty.
+- **The numbers are estimates within ± bands.** Even the "primary" sources carry their own uncertainty; multi-step derivations stack uncertainty on uncertainty. The dashboard combines model and grid bands via quadrature for CO₂e and water; the result is a floor, not a ceiling, on real uncertainty.
 - **Region is your declared assumption.** Unless you happen to know Anthropic's request-routing logic, the CO₂e and water numbers reflect the region you set in `[inference].default_inference_region`. If you're worldwide and don't know where your inference ran, the configured region is a defensible-but-arguable best guess.
 - **Comparisons across model versions are tricky.** A new model version might consume fewer Wh per output token but more output tokens per task (because of tokenizer changes — see Opus 4.7's reported 1.0–1.35× ratio). Per-task comparisons across versions need the tokenizer-inflation factor; the factor file carries it where we know it, defaults to 1.0× where we don't.
 - **Cost ≠ environmental impact.** The dashboard's "Counterfactual API cost" and "Net value" math is about money, not joules. The two correlate but not 1:1 — a model with cheaper output tokens can still consume more energy per token than a more expensive alternative if it's deployed less efficiently.
@@ -202,10 +210,10 @@ A few framing notes to keep in mind when looking at the environmental view:
 
 Things v0.1 does NOT do well, with where to follow up:
 
-- Grid-factor uncertainty bands (currently only model uncertainty in the ± badge).
 - Indirect water (power-plant cooling) per Ren et al.
 - Anthropic tokenizer-change factor verification (currently using a third-party estimate).
 - Non-US AWS region eGRID equivalents (currently us-east-1 / us-east-2 / us-west-2 only).
 - Periodic re-verification that Google's comprehensive methodology remains the right canonical choice.
+- Amortized model-training cost (energy / CO₂e / water) per served token, for full-lifecycle accounting (aspirational; gated on Anthropic publishing training compute or a defensible third-party estimate).
 
 All five are tracked in [`request-for-research.md`](request-for-research.md) with status, why-it-matters, and starting points. The quarterly research sweep cycle (see [`research-cadence.md`](research-cadence.md)) picks them up; pull requests welcome from anyone with credible data to contribute.

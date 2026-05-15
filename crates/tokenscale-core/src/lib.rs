@@ -39,7 +39,8 @@ pub use factors::{
     EnvironmentalFactorsFile, FactorDefaults, GridFactors, ModelFactors, ProviderFactors,
 };
 pub use impact::{
-    compute_impact, EnvironmentalImpact, EventTokenCounts, FactorsProvenance, ImpactInputs,
+    combine_uncertainty_pct, compute_impact, EnvironmentalImpact, EventTokenCounts,
+    FactorsProvenance, ImpactInputs,
 };
 pub use pricing::{ModelPricing, PricingFile, ProviderPricing};
 

@@ -88,7 +88,37 @@ pub struct EnvironmentalImpact {
     /// is set.
     pub water_l: Option<f64>,
 
+    /// Uncertainty on `facility_wh` in percent. Currently inherits the
+    /// model factor's `uncertainty_range_pct` only — PUE uncertainty is
+    /// not separately tracked, so it folds into this band.
+    pub energy_uncertainty_pct: i32,
+
+    /// Uncertainty on `co2e_g`, in percent. Quadrature of model + grid
+    /// CO₂e uncertainties when both are present; degrades to whichever
+    /// one is non-zero. See [`combine_uncertainty_pct`].
+    pub co2e_uncertainty_pct: i32,
+
+    /// Uncertainty on `water_l`, in percent. Same combination rule as
+    /// `co2e_uncertainty_pct` but with the grid's water uncertainty.
+    pub water_uncertainty_pct: i32,
+
     pub factors_used: FactorsProvenance,
+}
+
+/// Combine two independent uncertainty bands (in percent) via quadrature:
+/// `√(a² + b²)`. The standard error-propagation rule for a product of two
+/// values with independent fractional uncertainties — applies to
+/// `facility_wh × co2e_kg_per_kwh` (model and grid are independent) and
+/// `facility_wh × water_l_per_kwh` for the same reason.
+///
+/// Returns an `i32` rounded to nearest. When both inputs are zero the
+/// result is zero (no published bands → no combined band).
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn combine_uncertainty_pct(model_pct: i32, grid_pct: i32) -> i32 {
+    let m = f64::from(model_pct);
+    let g = f64::from(grid_pct);
+    (m.mul_add(m, g * g)).sqrt().round() as i32
 }
 
 /// Audit trail attached to every `EnvironmentalImpact`. Phase 2 doesn't
@@ -108,8 +138,9 @@ pub struct FactorsProvenance {
     /// `"primary"` / `"secondary"` / `"superseded"` per `docs/sources.md`.
     pub model_factor_confidence: Option<String>,
 
-    /// Honest uncertainty band, %. Surfaced to the dashboard as
-    /// "12.3 Wh ± 35%".
+    /// Honest uncertainty band on the model row, %. The energy-side
+    /// surface for `± X%` rendering; combines with grid bands via
+    /// quadrature for CO₂e and water (see [`combine_uncertainty_pct`]).
     pub model_factor_uncertainty_pct: i32,
 
     pub region: String,
@@ -118,6 +149,15 @@ pub struct FactorsProvenance {
     pub grid_factor_source_url: String,
 
     pub grid_factor_egrid_subregion: Option<String>,
+
+    /// Honest uncertainty band on the grid row's `co2e_kg_per_kwh`, %.
+    /// Zero when the row didn't publish one; in v0.1.4 this happens only
+    /// for legacy / placeholder grid rows.
+    pub grid_co2e_uncertainty_pct: i32,
+
+    /// Honest uncertainty band on the grid row's `water_l_per_kwh`, %.
+    /// Same zero-means-not-published convention.
+    pub grid_water_uncertainty_pct: i32,
 
     pub schema_version: i64,
 
@@ -180,22 +220,39 @@ pub fn compute_impact(inputs: &ImpactInputs<'_>) -> EnvironmentalImpact {
         },
     };
 
+    let model_uncertainty_pct = inputs.model_factors.uncertainty_range_pct.unwrap_or(0);
+    let grid_co2e_uncertainty_pct = inputs
+        .grid_factors
+        .co2e_uncertainty_range_pct
+        .unwrap_or(0);
+    let grid_water_uncertainty_pct = inputs
+        .grid_factors
+        .water_uncertainty_range_pct
+        .unwrap_or(0);
+
     EnvironmentalImpact {
         energy_wh,
         facility_wh,
         co2e_g,
         water_l: water_litres,
+        // facility_wh inherits model uncertainty only — PUE has no
+        // separately-tracked uncertainty band yet, so it folds in here.
+        energy_uncertainty_pct: model_uncertainty_pct,
+        co2e_uncertainty_pct: combine_uncertainty_pct(
+            model_uncertainty_pct,
+            grid_co2e_uncertainty_pct,
+        ),
+        water_uncertainty_pct: combine_uncertainty_pct(
+            model_uncertainty_pct,
+            grid_water_uncertainty_pct,
+        ),
         factors_used: FactorsProvenance {
             provider: inputs.provider.to_owned(),
             model: inputs.model_id.to_owned(),
             model_factor_valid_from: inputs.model_factors.valid_from.clone().unwrap_or_default(),
             model_factor_source_doc: inputs.model_factors.source_doc.clone().unwrap_or_default(),
             model_factor_confidence: inputs.model_factors.confidence.clone(),
-            // Per kickoff answer #2: only model uncertainty for now —
-            // grid uncertainty is a request-for-research entry. Default
-            // to 0 when the file doesn't carry one (zero "uncertainty"
-            // is wrong but visibly so; safer than fabricating a band).
-            model_factor_uncertainty_pct: inputs.model_factors.uncertainty_range_pct.unwrap_or(0),
+            model_factor_uncertainty_pct: model_uncertainty_pct,
             region: inputs.region.to_owned(),
             grid_factor_valid_from: inputs.grid_factors.valid_from.clone().unwrap_or_default(),
             grid_factor_source_url: inputs
@@ -204,6 +261,8 @@ pub fn compute_impact(inputs: &ImpactInputs<'_>) -> EnvironmentalImpact {
                 .clone()
                 .unwrap_or_default(),
             grid_factor_egrid_subregion: inputs.grid_factors.egrid_subregion.clone(),
+            grid_co2e_uncertainty_pct,
+            grid_water_uncertainty_pct,
             schema_version: inputs.schema_version,
             used_fallback_pue: pue_was_fallback,
             used_fallback_wue: water_was_fallback,
@@ -472,6 +531,78 @@ mod tests {
 
         // Only output contributes: 100K × 965 / 1e6 = 96.5 Wh
         assert!((impact.energy_wh - 96.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn combined_uncertainty_quadrature_when_both_model_and_grid_bands_present() {
+        // Model = 35%, grid CO₂e = 15%, grid water = 50% — Sweep #1's
+        // SRVC profile combined with Sonnet 4.6's "secondary" band.
+        let mut grid = us_east_1_grid();
+        grid.co2e_uncertainty_range_pct = Some(15);
+        grid.water_uncertainty_range_pct = Some(50);
+
+        let impact = compute_impact(&ImpactInputs {
+            tokens: EventTokenCounts {
+                input: 1_000_000,
+                ..Default::default()
+            },
+            provider: "anthropic",
+            region: "us-east-1",
+            schema_version: 1,
+            model_factors: &sonnet_4_6_factors(),
+            model_id: "claude-sonnet-4-6",
+            grid_factors: &grid,
+            defaults: &defaults_with_fallbacks(),
+        });
+
+        // facility_wh inherits model only (no separate PUE band yet).
+        assert_eq!(impact.energy_uncertainty_pct, 35);
+        // CO₂e: √(35² + 15²) = √1450 ≈ 38.08 → 38
+        assert_eq!(impact.co2e_uncertainty_pct, 38);
+        // Water: √(35² + 50²) = √3725 ≈ 61.03 → 61
+        assert_eq!(impact.water_uncertainty_pct, 61);
+
+        // Provenance carries the raw grid bands for the dashboard's
+        // sources panel to display alongside the combined badge.
+        assert_eq!(impact.factors_used.grid_co2e_uncertainty_pct, 15);
+        assert_eq!(impact.factors_used.grid_water_uncertainty_pct, 50);
+    }
+
+    #[test]
+    fn combined_uncertainty_degrades_to_model_when_grid_bands_absent() {
+        // Grid file with NULL uncertainty fields (the v0.1 legacy state
+        // before Sweep #1 — present in tests via DB-backed lookups that
+        // hit grid_factors rows from older factor-file syncs).
+        let impact = compute_impact(&ImpactInputs {
+            tokens: EventTokenCounts {
+                input: 1,
+                ..Default::default()
+            },
+            provider: "anthropic",
+            region: "us-east-1",
+            schema_version: 1,
+            model_factors: &sonnet_4_6_factors(),
+            model_id: "claude-sonnet-4-6",
+            grid_factors: &us_east_1_grid(), // co2e/water uncertainty = None
+            defaults: &defaults_with_fallbacks(),
+        });
+
+        assert_eq!(impact.energy_uncertainty_pct, 35);
+        assert_eq!(impact.co2e_uncertainty_pct, 35);
+        assert_eq!(impact.water_uncertainty_pct, 35);
+    }
+
+    #[test]
+    fn combine_uncertainty_pct_math() {
+        assert_eq!(combine_uncertainty_pct(0, 0), 0);
+        assert_eq!(combine_uncertainty_pct(35, 0), 35);
+        assert_eq!(combine_uncertainty_pct(0, 50), 50);
+        // 3-4-5 triangle: √(3² + 4²) = 5
+        assert_eq!(combine_uncertainty_pct(3, 4), 5);
+        // √(35² + 15²) = √1450 ≈ 38.08 → 38 (rounds down by .08)
+        assert_eq!(combine_uncertainty_pct(35, 15), 38);
+        // √(35² + 50²) = √3725 ≈ 61.03 → 61
+        assert_eq!(combine_uncertainty_pct(35, 50), 61);
     }
 
     #[test]

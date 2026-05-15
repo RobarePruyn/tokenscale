@@ -55,7 +55,11 @@ type ModelImpact = {
   facility_wh: number
   co2eG: number | null
   waterL: number | null
+  // Energy-side ± band (model-factor uncertainty only; PUE folds in).
   maxUncertaintyPct: number
+  // Combined ± bands for CO₂e and water — model + grid via quadrature.
+  co2eUncertaintyPct: number
+  waterUncertaintyPct: number
   eventsMissingEnvFactor: number
   eventsUsingFallbackPue: number
   eventsUsingFallbackWue: number
@@ -1142,7 +1146,9 @@ export default function App() {
     let facilityWh = 0
     let co2eG = 0
     let waterL = 0
-    let maxUncertaintyPct = 0
+    let energyUncertaintyPct = 0
+    let co2eUncertaintyPct = 0
+    let waterUncertaintyPct = 0
     let eventsMissingFactor = 0
     let eventsCount = 0
     let anyCo2 = false
@@ -1162,8 +1168,14 @@ export default function App() {
           waterL += impact.waterL
           anyWater = true
         }
-        if (impact.maxUncertaintyPct > maxUncertaintyPct) {
-          maxUncertaintyPct = impact.maxUncertaintyPct
+        if (impact.maxUncertaintyPct > energyUncertaintyPct) {
+          energyUncertaintyPct = impact.maxUncertaintyPct
+        }
+        if (impact.co2eUncertaintyPct > co2eUncertaintyPct) {
+          co2eUncertaintyPct = impact.co2eUncertaintyPct
+        }
+        if (impact.waterUncertaintyPct > waterUncertaintyPct) {
+          waterUncertaintyPct = impact.waterUncertaintyPct
         }
         eventsMissingFactor += impact.eventsMissingEnvFactor
         eventsCount += impact.eventsCount
@@ -1174,7 +1186,9 @@ export default function App() {
       facilityWh,
       co2eG: anyCo2 ? co2eG : null,
       waterL: anyWater ? waterL : null,
-      maxUncertaintyPct,
+      energyUncertaintyPct,
+      co2eUncertaintyPct,
+      waterUncertaintyPct,
       eventsMissingFactor,
       eventsCount,
     }
@@ -1797,7 +1811,9 @@ type EnvironmentalStatRowProps = {
     facilityWh: number
     co2eG: number | null
     waterL: number | null
-    maxUncertaintyPct: number
+    energyUncertaintyPct: number
+    co2eUncertaintyPct: number
+    waterUncertaintyPct: number
     eventsMissingFactor: number
     eventsCount: number
   }
@@ -1808,15 +1824,16 @@ function EnvironmentalStatRow({
   impact,
   modelsWithoutFactors,
 }: EnvironmentalStatRowProps) {
-  const uncertaintySuffix =
-    impact.maxUncertaintyPct > 0 ? ` ± ${impact.maxUncertaintyPct}%` : ''
+  const suffix = (pct: number) => (pct > 0 ? ` ± ${pct}%` : '')
+  const energyValue = `${formatEnergy(impact.facilityWh)}${suffix(impact.energyUncertaintyPct)}`
   const co2eValue =
-    impact.co2eG === null ? '—' : `${formatCo2(impact.co2eG)}${uncertaintySuffix}`
+    impact.co2eG === null
+      ? '—'
+      : `${formatCo2(impact.co2eG)}${suffix(impact.co2eUncertaintyPct)}`
   const waterValue =
     impact.waterL === null
       ? '—'
-      : `${formatWater(impact.waterL)}${uncertaintySuffix}`
-  const energyValue = `${formatEnergy(impact.facilityWh)}${uncertaintySuffix}`
+      : `${formatWater(impact.waterL)}${suffix(impact.waterUncertaintyPct)}`
 
   return (
     <div className="space-y-2">
@@ -1824,18 +1841,18 @@ function EnvironmentalStatRow({
         <StatCard
           label="Energy (facility)"
           value={energyValue}
-          helpText="Per-event energy summed across visible cells, including PUE-weighted facility overhead. Uncertainty is the widest model band in the window."
+          helpText="Per-event energy summed across visible cells, including PUE-weighted facility overhead. ± band is the widest model uncertainty in the window."
         />
         <StatCard
           label="CO₂e"
           value={co2eValue}
-          helpText="Greenhouse-gas emissions attributed via the configured region's grid intensity. Anthropic does not disclose which region served any given request — region is your declared assumption."
+          helpText="Greenhouse-gas emissions attributed via the configured region's grid intensity. ± band combines model and grid CO₂e uncertainty via quadrature. Anthropic does not disclose which region served any given request — region is your declared assumption."
           muted={impact.co2eG === null}
         />
         <StatCard
           label="Water"
           value={waterValue}
-          helpText="Direct datacenter water (cooling) using the configured region's WUE, falling back to the file's defaults.fallback_wue_l_per_kwh when absent. Indirect (power-plant) water is a v0.2 enhancement."
+          helpText="Direct datacenter water (cooling) using the configured region's WUE, falling back to the file's defaults.fallback_wue_l_per_kwh when absent. ± band combines model and grid water uncertainty via quadrature. Indirect (power-plant) water is a future enhancement."
           muted={impact.waterL === null}
         />
       </div>

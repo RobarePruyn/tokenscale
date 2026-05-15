@@ -6,6 +6,37 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.4 — 2026-05-15
+
+The honest-headline release. Combines model and grid uncertainty into a single per-metric `± X%` badge on every environmental KPI — the v0.4 follow-on v0.1.3 explicitly deferred — and propagates grid uncertainty all the way through the DB compute path so per-event impact carries it natively rather than as a render-time afterthought.
+
+### Added
+
+- **Combined `± %` badges in the environmental stat row.** Each KPI now shows its own quadrature-combined uncertainty:
+  - **Energy (facility)**: model-factor band only (PUE folds in — no separate band tracked).
+  - **CO₂e**: √(model² + grid_co2e²) — e.g. Sonnet 4.6 (±35%) on SRVC (±15% CO₂e) → **±38%**.
+  - **Water**: √(model² + grid_water²) — e.g. Sonnet 4.6 (±35%) on any AWS region (±50% water) → **±61%**.
+- **`tokenscale_core::combine_uncertainty_pct(model, grid)`** — public quadrature helper used by both the per-event compute path (`compute_impact`) and the bucket-aggregate SQL path (`aggregate_impact_by_bucket::cook`). Single source of truth for the math, so the two redundant compute paths stay in lockstep.
+- **`co2eUncertaintyPct`** and **`waterUncertaintyPct`** fields on the daily-endpoint `ModelImpact` payload, alongside the existing `maxUncertaintyPct` (now energy-only). All three are per-(bucket, model) cells; the frontend reduces to max across visible cells for the headline badges.
+- **Migration `20260515000001_grid_factor_uncertainty.sql`** — additive `co2e_uncertainty_range_pct` and `water_uncertainty_range_pct` columns on the `grid_factors` table. Both nullable, populated on next factor-file sync. v0.1.3 ran the in-memory snapshot only; v0.1.4 promotes uncertainty into the schema so it can flow through per-event compute.
+
+### Changed
+
+- **`FactorsProvenance`** gains `grid_co2e_uncertainty_pct` and `grid_water_uncertainty_pct` fields for symmetry with `model_factor_uncertainty_pct`. Per-event audit trail now carries every band that fed the combined badge.
+- **`aggregate_impact_by_bucket` SQL** projects `MAX(gf.co2e_uncertainty_range_pct)` and `MAX(gf.water_uncertainty_range_pct)` alongside the existing `MAX(ef.uncertainty_range_pct)`. Quadrature runs in Rust (`RawImpactByBucketRow::cook`) so the SQL stays portable.
+- **`factors_sync`** propagates the two new uncertainty fields from `environmental-factors.toml` into `grid_factors` on every startup. **`factors_lookup`** reads them back into the canonical `GridFactors` struct so single-row lookups carry them too.
+
+### Research
+
+- **Training-cost amortization** added as an aspirational open question in [`docs/request-for-research.md`](docs/request-for-research.md). Full lifecycle (training + inference) accounting per the Strubell 2019 / Patterson 2021 / Luccioni 2022 framing. Gated on Anthropic publishing Claude training compute or a defensible third-party estimate; the numerator-scope question (final run vs full envelope) is called out explicitly.
+
+### Notably NOT in this release
+
+- **Per-region WUE values from AWS.** Water bands stay at ±50% across all AWS regions until AWS publishes per-region WUE; tracked separately in `request-for-research.md`.
+- **PUE uncertainty as a separate band.** Currently folded into the model uncertainty; honest improvement would carry it explicitly through the quadrature.
+
+---
+
 ## v0.1.3 — 2026-05-12
 
 Two feature additions + the first quarterly research sweep, all driven by closing the loop on items the v0.1.2 docs flagged as future work.
