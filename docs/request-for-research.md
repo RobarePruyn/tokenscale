@@ -96,6 +96,31 @@ Format: each entry has a status, the question, why it matters, what good answers
 - [`crates/tokenscale-store/src/impact_query.rs`](../crates/tokenscale-store/src/impact_query.rs) — the SQL aggregate path uses correlated subqueries on `valid_from` for env factors. Pricing would need an analogous structure.
 - Server-side pricing was originally loaded once at startup from the embedded `pricing.toml`. The promotion is: TOML → DB tables (analogous to `env_factors` / `grid_factors`) → per-event lookup at compute time.
 
+#### Companion item: pricing-rate-card divergence detection
+
+The hard trigger above ("must land before the next Anthropic price change") is documented but has no detection mechanism. A documented trigger with no detector depends on a human noticing — exactly the failure mode the trigger exists to prevent. Anthropic could change Opus or Sonnet per-token pricing and the historical net-value numbers would drift silently in the gap before the next maintainer-initiated pricing review.
+
+**Self-enforcing fix**: a CI check (nightly cron, not user-startup) that compares the rates in `pricing.toml` against Anthropic's published rate card and warns on divergence. Converts "hope someone notices" into a GitHub Actions alarm. This item is independently useful even before the time-anchoring fix lands: if 6b takes time to design and ship, the detector at least tells the maintainer the *moment* historical numbers go stale.
+
+**Implementation sketch**:
+
+- Nightly GH Action that fetches Anthropic's published rate card (e.g. parse `https://docs.anthropic.com/...` pricing page, or a stable JSON endpoint if one exists). Failure modes: page restructuring, network errors, parse mismatches — the action should fail open (warn, don't block) on parse uncertainty.
+- Compare each `input_usd_per_mtok` / `output_usd_per_mtok` / `cache_*_usd_per_mtok` in `pricing.toml` against the parsed rate card.
+- On divergence: open a GitHub Issue tagged `pricing-divergence` with the affected models + before/after rates, ping the maintainer, and (optionally) bump `[pricing] file_status` from `production` to `review_pending` so the dashboard's banner surfaces it to users.
+- Fallback if Anthropic's pricing page is too brittle to scrape reliably: a hand-maintained `pricing-rate-card.snapshot.json` committed to the repo, with a nightly check that the snapshot timestamp is < 90 days old AND a per-quarter prompt to re-verify against the live page. Less automated but more robust.
+- **NOT user-startup**: every user start should NOT hit Anthropic's web property. The dashboard is local-first; networked checks at startup would violate that and add a privacy surface. Keep detection on the CI side, propagate via release tagging or a banner refresh.
+
+**Why file together with the time-anchoring fix**: the detector is the trigger; the fix is the resolution. Wiring them in one item (or as siblings) ensures the implementer doesn't ship one without the other and rebuild the same gap a year later.
+
+**Triggers for action**:
+
+- Same as parent (next Anthropic price change), but with this companion landed, the maintainer doesn't have to notice — the CI does.
+
+**Starting points**:
+
+- `.github/workflows/` — the amend-formula workflow in the homebrew-tokenscale tap is a working precedent for "GH Action that compares one source-of-truth file against another and surfaces drift."
+- [`pricing.toml`](../pricing.toml) — the file the detector compares against. Already has `valid_from` / `accessed_at` / `file_status` plumbing that the detector can update.
+
 ---
 
 ### Amortized model-training cost (energy / CO₂e / water) per served token
