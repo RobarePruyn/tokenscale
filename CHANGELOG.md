@@ -6,9 +6,11 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
-## v0.1.8 — 2026-05-16
+## v0.1.9 — 2026-05-16
 
 The macOS notarization release. Every macOS binary the release pipeline produces is now **signed with the Developer ID Application cert and notarized by Apple** — first launch on a user's Mac no longer triggers the "cannot verify developer" Gatekeeper block dialog, and the verified-developer fingerprint matches across both apple-silicon and intel builds.
+
+> **v0.1.8 was never released** — the initial tag landed without `allow-dirty = ["ci"]` in dist-workspace.toml, so dist's plan-job CI-drift check rejected the manual notarization edit before any artifacts could be built. Fixed in v0.1.9. Skipped tag retained for audit clarity.
 
 ### Added
 
