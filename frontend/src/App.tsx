@@ -369,6 +369,25 @@ const CHART_COLORS = [
   '#65a30d',
 ]
 
+/** Group versions of the same model family under one hue so the legend
+ *  reads "Opus 4.6 and Opus 4.7 are related; Sonnet 4.6 is something
+ *  else." Different shades inside the family separate the versions.
+ *  Falls back to a misc palette for unknown families. */
+const FAMILY_PALETTES: Record<string, string[]> = {
+  opus: ['#1d4ed8', '#60a5fa', '#1e3a8a', '#93c5fd'],
+  sonnet: ['#15803d', '#86efac', '#14532d', '#bbf7d0'],
+  haiku: ['#b45309', '#fcd34d', '#78350f', '#fde68a'],
+  other: ['#9333ea', '#c084fc', '#dc2626', '#fb923c', '#0891b2', '#db2777'],
+}
+
+function modelFamily(modelId: string): keyof typeof FAMILY_PALETTES {
+  const lower = modelId.toLowerCase()
+  if (lower.includes('opus')) return 'opus'
+  if (lower.includes('sonnet')) return 'sonnet'
+  if (lower.includes('haiku')) return 'haiku'
+  return 'other'
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
@@ -635,6 +654,26 @@ function stripTrailingZero(formatted: string): string {
   return formatted.endsWith('.0') ? formatted.slice(0, -2) : formatted
 }
 
+/** Round to N significant figures. Anchors stat-card display precision
+ *  to the published uncertainty band — "499.92 kWh ± 40%" reads as
+ *  false precision (the 0.02 implies confidence to one part in 25,000),
+ *  whereas "~500 kWh" honestly reflects the ±200 kWh band. */
+function roundToSigFigs(value: number, sigFigs: number): number {
+  if (value === 0 || !Number.isFinite(value)) return value
+  const magnitude = Math.floor(Math.log10(Math.abs(value)))
+  const factor = 10 ** (sigFigs - 1 - magnitude)
+  return Math.round(value * factor) / factor
+}
+
+/** Map an uncertainty band to a display precision. Tuned so the LSB
+ *  is roughly within the band: 2 sig figs at ±40% means 500 ± 200,
+ *  where the trailing 0 is at the scale of the band. */
+function sigFigsForUncertainty(uncertaintyPct: number): number {
+  if (uncertaintyPct <= 0 || uncertaintyPct < 5) return 4
+  if (uncertaintyPct < 15) return 3
+  return 2
+}
+
 /** Compact dollar y-axis labels — "$1.2M", "$500", "$0.05".
  *  Falls back to two-decimal precision below $1 so small days don't show
  *  as "$0".
@@ -656,36 +695,65 @@ function formatExactDollars(value: number): string {
   })}`
 }
 
-/** Energy in Wh, auto-scaled to MWh / kWh / Wh / mWh. */
-function formatEnergy(wattHours: number): string {
+/** Format `scaled` at a precision matched to `uncertaintyPct`. Returns
+ *  the rounded body only; the caller appends the unit. */
+function formatPrecision(scaled: number, uncertaintyPct: number): string {
+  if (uncertaintyPct > 0) {
+    return roundToSigFigs(scaled, sigFigsForUncertainty(uncertaintyPct)).toString()
+  }
+  return stripTrailingZero(scaled.toFixed(2))
+}
+
+/** Energy in Wh, auto-scaled to MWh / kWh / Wh / mWh.
+ *  When `uncertaintyPct > 0`, precision is rounded to match the band. */
+function formatEnergy(wattHours: number, uncertaintyPct = 0): string {
   const absolute = Math.abs(wattHours)
-  if (absolute >= 1e6) return `${stripTrailingZero((wattHours / 1e6).toFixed(2))} MWh`
-  if (absolute >= 1e3) return `${stripTrailingZero((wattHours / 1e3).toFixed(2))} kWh`
-  if (absolute >= 1) return `${stripTrailingZero(wattHours.toFixed(2))} Wh`
-  if (absolute >= 1e-3)
-    return `${stripTrailingZero((wattHours * 1000).toFixed(2))} mWh`
-  return `${stripTrailingZero((wattHours * 1_000_000).toFixed(2))} µWh`
+  if (absolute >= 1e6) return `${formatPrecision(wattHours / 1e6, uncertaintyPct)} MWh`
+  if (absolute >= 1e3) return `${formatPrecision(wattHours / 1e3, uncertaintyPct)} kWh`
+  if (absolute >= 1) return `${formatPrecision(wattHours, uncertaintyPct)} Wh`
+  if (absolute >= 1e-3) return `${formatPrecision(wattHours * 1000, uncertaintyPct)} mWh`
+  return `${formatPrecision(wattHours * 1_000_000, uncertaintyPct)} µWh`
 }
 
 /** CO₂ in grams, auto-scaled to t / kg / g / mg. */
-function formatCo2(grams: number): string {
+function formatCo2(grams: number, uncertaintyPct = 0): string {
   const absolute = Math.abs(grams)
   if (absolute >= 1_000_000)
-    return `${stripTrailingZero((grams / 1_000_000).toFixed(2))} t CO₂e`
-  if (absolute >= 1000)
-    return `${stripTrailingZero((grams / 1000).toFixed(2))} kg CO₂e`
-  if (absolute >= 1) return `${stripTrailingZero(grams.toFixed(2))} g CO₂e`
-  if (absolute >= 1e-3)
-    return `${stripTrailingZero((grams * 1000).toFixed(2))} mg CO₂e`
-  return `${stripTrailingZero(grams.toFixed(4))} g CO₂e`
+    return `${formatPrecision(grams / 1_000_000, uncertaintyPct)} t CO₂e`
+  if (absolute >= 1000) return `${formatPrecision(grams / 1000, uncertaintyPct)} kg CO₂e`
+  if (absolute >= 1) return `${formatPrecision(grams, uncertaintyPct)} g CO₂e`
+  if (absolute >= 1e-3) return `${formatPrecision(grams * 1000, uncertaintyPct)} mg CO₂e`
+  return `${formatPrecision(grams, uncertaintyPct)} g CO₂e`
 }
 
 /** Water in liters, auto-scaled to kL / L / mL. */
-function formatWater(liters: number): string {
+function formatWater(liters: number, uncertaintyPct = 0): string {
   const absolute = Math.abs(liters)
-  if (absolute >= 1000) return `${stripTrailingZero((liters / 1000).toFixed(2))} kL`
-  if (absolute >= 1) return `${stripTrailingZero(liters.toFixed(2))} L`
-  return `${stripTrailingZero((liters * 1000).toFixed(2))} mL`
+  if (absolute >= 1000) return `${formatPrecision(liters / 1000, uncertaintyPct)} kL`
+  if (absolute >= 1) return `${formatPrecision(liters, uncertaintyPct)} L`
+  return `${formatPrecision(liters * 1000, uncertaintyPct)} mL`
+}
+
+/** Drop-cents dollars for inherently-approximate values (the
+ *  counterfactual is an idealized upper bound; pretending cents are
+ *  meaningful in `$18,066.94 (approx)` is false precision). */
+function formatRoundedDollars(value: number): string {
+  return `$${Math.round(value).toLocaleString('en-US')}`
+}
+
+/** Compose a "~value (low–high) ± pct%" display. `fmt` is the
+ *  uncertainty-aware formatter to render each of value / low / high in
+ *  matching units. The bracket is the primary cue ("between X and Y");
+ *  the ± is supplementary. */
+function formatBracketedWithUncertainty(
+  rawValue: number,
+  uncertaintyPct: number,
+  fmt: (v: number, pct: number) => string,
+): string {
+  if (uncertaintyPct <= 0) return fmt(rawValue, 0)
+  const low = rawValue * (1 - uncertaintyPct / 100)
+  const high = rawValue * (1 + uncertaintyPct / 100)
+  return `~${fmt(rawValue, uncertaintyPct)} (${fmt(low, uncertaintyPct)} – ${fmt(high, uncertaintyPct)}) ± ${uncertaintyPct}%`
 }
 
 /** Relative time — "12s ago", "3m ago", "4h ago", "2d ago". `null` returns
@@ -802,7 +870,10 @@ export default function App() {
   // an acceptable v0.1 trade.
   const [currentView, setCurrentView] = useState<'dashboard' | 'methodology'>('dashboard')
 
-  const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all')
+  // Provider filter is hard-set to 'all' for v1 since the UI dropdown
+  // is hidden (Claude Code is the only ingest source today). Restore
+  // useState when a second provider lands so the user can filter.
+  const providerFilter: ProviderFilter = 'all'
 
   const [rangePreset, setRangePreset] = useState<RangePreset>(DEFAULT_RANGE_PRESET)
   const [customFromDate, setCustomFromDate] = useState<string>(() => isoDateDaysAgo(30))
@@ -1045,6 +1116,38 @@ export default function App() {
     const allBucketDates = enumerateBuckets(fromDate, toDate, data.granularity)
     const dataByBucket = new Map(data.rows.map((row) => [row.date, row]))
 
+    // Per-model cost share — used to annotate the legend with
+    // "(72% of cost)" regardless of view mode. Computed against raw
+    // input rates (no discounts) using the existing billable fields,
+    // matching how the counterfactual cost is computed. `null` for
+    // any model whose pricing is missing — legend just omits the
+    // share % in that case rather than misrepresenting.
+    const perModelCost = new Map<string, number>()
+    let totalCostForShares = 0
+    for (const row of data.rows) {
+      for (const modelId of visibleModels) {
+        const tokens = row.byModel[modelId]
+        const pricing = data.pricingByModel[modelId]
+        if (!tokens || !tokens.billable || !pricing) continue
+        const ratePerBillable = pricing.input_usd_per_mtok / 1_000_000
+        const billableTotal =
+          tokens.billable.input +
+          tokens.billable.output +
+          tokens.billable.cache_read +
+          tokens.billable.cache_write_5m +
+          tokens.billable.cache_write_1h
+        const cost = billableTotal * ratePerBillable
+        perModelCost.set(modelId, (perModelCost.get(modelId) ?? 0) + cost)
+        totalCostForShares += cost
+      }
+    }
+    const perModelCostShare = new Map<string, number>()
+    if (totalCostForShares > 0) {
+      for (const [modelId, cost] of perModelCost) {
+        perModelCostShare.set(modelId, cost / totalCostForShares)
+      }
+    }
+
     // Rate normalization: divide every cell value by the number of
     // window-days inside its bucket so a 1-day bucket and a 7-day
     // bucket of the same activity *rate* render at the same height.
@@ -1052,11 +1155,23 @@ export default function App() {
     // and All views read as "more usage" purely because the buckets
     // got fatter. The stat cards above the chart stay cumulative.
     if (stackBy === 'model') {
-      const series = visibleModels.map((modelId, index) => ({
-        key: modelId,
-        displayName: modelDisplayName(modelId),
-        color: CHART_COLORS[index % CHART_COLORS.length],
-      }))
+      // Family-aware color assignment: models in the same family
+      // (Opus 4.6 + Opus 4.7) get adjacent shades of one hue; different
+      // families get different hues. Makes the chart legend
+      // visually-meaningful at a glance.
+      const familyCounters: Record<string, number> = {}
+      const series = visibleModels.map((modelId) => {
+        const family = modelFamily(modelId)
+        const indexInFamily = familyCounters[family] ?? 0
+        familyCounters[family] = indexInFamily + 1
+        const palette = FAMILY_PALETTES[family]
+        return {
+          key: modelId,
+          displayName: modelDisplayName(modelId),
+          color: palette[indexInFamily % palette.length],
+          costShareFraction: perModelCostShare.get(modelId) ?? null,
+        }
+      })
       const rows = allBucketDates.map((bucketDate) => {
         const row = dataByBucket.get(bucketDate)
         const activeDays = activeDaysInBucket(bucketDate, data.granularity, fromDate, toDate)
@@ -1082,6 +1197,9 @@ export default function App() {
       key: tokenType,
       displayName: tokenTypeDisplayName(tokenType),
       color: CHART_COLORS[index % CHART_COLORS.length],
+      // Cost share is meaningful only for model series, not token-type
+      // series — a single token type can span multiple models.
+      costShareFraction: null as number | null,
     }))
     const rows = allBucketDates.map((bucketDate) => {
       const row = dataByBucket.get(bucketDate)
@@ -1137,6 +1255,53 @@ export default function App() {
     }
     return total
   }, [dailyState, selectedModels, selectedTokenTypes])
+
+  // Cache accounting — the headline metric for Claude Code users.
+  // Ratio framing: of all the INPUT tokens this period (whether served
+  // from cache or paid in full), what fraction was served from cache?
+  // Denominator includes cache_write_* because those are paid-for cache
+  // entries that aren't (yet) amortizing — a high write/read ratio
+  // means the cache isn't paying off, and the bare percentage hides
+  // that. Dollar savings = cache_read × 0.9 × input_rate, because
+  // cache_read is billed at 10% of the input rate, so the gap is what
+  // the user paid LESS than they would have without the cache discount.
+  const cacheStats = useMemo(() => {
+    if (dailyState.status !== 'ok') return null
+    const data = dailyState.data
+    const visibleModels = data.models.filter((m) => isSelected(selectedModels, m))
+    let inputSum = 0
+    let cacheReadSum = 0
+    let cacheWrite5mSum = 0
+    let cacheWrite1hSum = 0
+    let dollarSavings = 0
+    let anyPricing = false
+    let anyData = false
+    for (const row of data.rows) {
+      for (const modelId of visibleModels) {
+        const tokens = row.byModel[modelId]
+        if (!tokens) continue
+        anyData = true
+        inputSum += tokens.input
+        cacheReadSum += tokens.cache_read
+        cacheWrite5mSum += tokens.cache_write_5m
+        cacheWrite1hSum += tokens.cache_write_1h
+        const pricing = data.pricingByModel[modelId]
+        if (pricing) {
+          anyPricing = true
+          dollarSavings +=
+            (tokens.cache_read * 0.9 * pricing.input_usd_per_mtok) / 1_000_000
+        }
+      }
+    }
+    const denominator = inputSum + cacheReadSum + cacheWrite5mSum + cacheWrite1hSum
+    if (!anyData || denominator === 0) return null
+    return {
+      cacheReadFraction: cacheReadSum / denominator,
+      cacheReadTokens: cacheReadSum,
+      totalInputishTokens: denominator,
+      dollarSavings: anyPricing ? dollarSavings : null,
+    }
+  }, [dailyState, selectedModels])
 
   // Subscription cost is purely date-window based — your subscription costs
   // what it costs regardless of which models / projects you used.
@@ -1450,23 +1615,13 @@ export default function App() {
         <section className="bg-white rounded-lg border border-slate-200 p-5 space-y-5">
           {/* Top row: provider + window summary */}
           <div className="flex flex-wrap items-end gap-4">
-            <div>
-              <label
-                className="block text-xs font-medium text-slate-600 mb-1"
-                htmlFor="provider-filter"
-              >
-                Provider
-              </label>
-              <select
-                id="provider-filter"
-                className="border border-slate-300 rounded-md px-3 py-1.5 text-sm bg-white"
-                value={providerFilter}
-                onChange={(event) => setProviderFilter(event.target.value as ProviderFilter)}
-              >
-                <option value="all">All providers</option>
-                <option value="anthropic">Anthropic</option>
-              </select>
-            </div>
+            {/* Provider dropdown is hidden until a second provider lands.
+                "All providers" implied multi-provider data when in fact
+                only Claude Code is ingested today — the disabled control
+                read as scaffolding that invited confusion. The
+                consumer-apps disclaimer above the environmental row
+                already states the scope. Re-introduce when a real
+                second provider lands and wire the filter back in. */}
             <div className="text-xs text-slate-500 ml-auto">
               {fromDate} → {toDate}
             </div>
@@ -1598,11 +1753,23 @@ export default function App() {
               value={viewMode}
               onChange={setViewMode}
               options={[
-                { value: 'all', label: 'Raw' },
-                { value: 'billable', label: 'Cost-weighted' },
-                { value: 'cost', label: 'Cost (USD)' },
+                {
+                  value: 'all',
+                  label: 'Raw',
+                  help: 'Each token counted equally — input, output, cache reads, and cache writes all add 1 to the bar.',
+                },
+                {
+                  value: 'billable',
+                  label: 'Cost-weighted',
+                  help: 'Each token scaled by its per-token API price relative to input: output ×5, cache_read ×0.1, cache_write_5m ×1.25, cache_write_1h ×2. Unitless; lets you compare effort across token types without converting to dollars.',
+                },
+                {
+                  value: 'cost',
+                  label: 'Cost (USD)',
+                  help: "Cost-weighted total converted to dollars at the model's input-token list price. What these tokens would have cost on the API at raw rates. Models without a pricing entry are hidden from this view.",
+                },
               ]}
-              labelHelp="Raw counts each token equally. Cost-weighted weights each token type by its Anthropic API price relative to input (output ×5, cache_read ×0.1, cache writes ×1.25/×2). Cost (USD) converts cost-weighted to dollars per the model's input price — what these tokens would have cost on the API. Models without pricing are hidden from the latter two views."
+              labelHelp="Hover each option for the precise definition. Models without a pricing entry are hidden from Cost-weighted and Cost (USD)."
             />
           </div>
 
@@ -1656,6 +1823,7 @@ export default function App() {
             otherChargesUsd={otherChargesUsd}
             totalBilledUsd={totalBilledUsd}
             netValueUsd={netValueUsd}
+            cacheStats={cacheStats}
             hasSubscriptionsData={
               (subscriptionsState.status === 'ok' &&
                 subscriptionsState.data.subscriptions.length > 0) ||
@@ -1671,14 +1839,32 @@ export default function App() {
           />
 
           {environmentalReady && windowImpact && (
-            <EnvironmentalStatRow
-              impact={windowImpact}
-              modelsWithoutFactors={
-                dailyState.status === 'ok' ? dailyState.data.modelsWithoutFactors : []
-              }
-              includeIndirectWater={includeIndirectWater}
-              onToggleIndirectWater={setIncludeIndirectWater}
-            />
+            <div className="space-y-2">
+              {/* Consumer-apps disclaimer lives ABOVE the environmental
+                  cards so users see the structural undercount before
+                  they read the kWh / CO₂e / L numbers, not as fine
+                  print after the fact. Methodology page covers this
+                  in depth under "What's structurally invisible". */}
+              <p
+                className="text-xs italic text-slate-500"
+                title="Anthropic does not currently expose a per-user usage feed for consumer products. This is true of ChatGPT, Gemini, and Mistral as well. See docs/data-sources.md."
+              >
+                Environmental numbers below cover Claude Code session
+                data only. Usage from the Claude iOS / Android / desktop
+                apps and <span className="font-mono">claude.ai</span> is
+                structurally invisible — Anthropic doesn't expose a feed
+                for those surfaces. Their subscription cost is still
+                captured via imported billing.
+              </p>
+              <EnvironmentalStatRow
+                impact={windowImpact}
+                modelsWithoutFactors={
+                  dailyState.status === 'ok' ? dailyState.data.modelsWithoutFactors : []
+                }
+                includeIndirectWater={includeIndirectWater}
+                onToggleIndirectWater={setIncludeIndirectWater}
+              />
+            </div>
           )}
 
           {environmentalReady && activeFactorsState.status === 'ok' && (
@@ -1691,16 +1877,24 @@ export default function App() {
           )}
 
           <div>
-            <h2 className="text-base font-medium mb-3">
-              {/* Y-axis is a per-day rate (see `activeDaysInBucket` in
-                  `chartConfig`). The granularity suffix ("daily" /
-                  "weekly average" / "monthly average") tells the user
-                  how much each data point is smoothed — bucket size
-                  no longer drives peak height, but it does drive
-                  visible variance. */}
-              {chartTitleForGranularity(effectiveGranularity, viewMode)}{' '}
-              · {stackBy === 'model' ? 'stacked by model' : 'stacked by token type'}
-            </h2>
+            <div className="flex items-baseline justify-between gap-3 mb-3">
+              <h2 className="text-base font-medium">
+                {/* Y-axis is a per-day rate (see `activeDaysInBucket` in
+                    `chartConfig`). The granularity suffix ("daily" /
+                    "weekly average" / "monthly average") tells the user
+                    how much each data point is smoothed — bucket size
+                    no longer drives peak height, but it does drive
+                    visible variance. */}
+                {chartTitleForGranularity(effectiveGranularity, viewMode)}{' '}
+                · {stackBy === 'model' ? 'stacked by model' : 'stacked by token type'}
+              </h2>
+              <span
+                className="text-xs text-slate-500 whitespace-nowrap"
+                title="Most recent file scan. The server runs an incremental scan in the background — tune `[ingest].scan_interval_seconds` in your config."
+              >
+                Last scanned: {formatRelativeTime(lastScannedAt)}
+              </span>
+            </div>
 
             <div className="h-80">
               {dailyState.status === 'loading' && (
@@ -1745,16 +1939,6 @@ export default function App() {
                   </ResponsiveContainer>
                 )}
             </div>
-            <p
-              className="text-xs text-slate-500 mt-3"
-              title="Anthropic does not currently expose a per-user usage feed for consumer products. This is true of ChatGPT, Gemini, and Mistral as well. See docs/data-sources.md."
-            >
-              Chart shows Claude Code session data only. Usage from the Claude
-              iOS / Android / desktop apps and{' '}
-              <span className="font-mono">claude.ai</span> is structurally invisible —
-              Anthropic doesn't expose a feed for consumer products. The COST of
-              those products IS tracked, via your imported subscription charges.
-            </p>
           </div>
         </section>
 
@@ -1795,12 +1979,20 @@ export default function App() {
 // imported rows tagged anything else (overages, one-time, refunds).
 // ---------------------------------------------------------------------------
 
+type CacheStats = {
+  cacheReadFraction: number
+  cacheReadTokens: number
+  totalInputishTokens: number
+  dollarSavings: number | null
+}
+
 type StatRowProps = {
   counterfactualCostUsd: number | null
   combinedSubscriptionsUsd: number | null
   otherChargesUsd: number | null
   totalBilledUsd: number | null
   netValueUsd: number | null
+  cacheStats: CacheStats | null
   hasSubscriptionsData: boolean
   hasOtherCharges: boolean
   pricingNeedsReview: boolean
@@ -1812,15 +2004,12 @@ function StatRow({
   otherChargesUsd,
   totalBilledUsd,
   netValueUsd,
+  cacheStats,
   hasSubscriptionsData,
   hasOtherCharges,
   pricingNeedsReview,
 }: StatRowProps) {
   if (counterfactualCostUsd === null) return null
-
-  const counterfactualLabel = pricingNeedsReview
-    ? 'Counterfactual API cost (approx)'
-    : 'Counterfactual API cost'
 
   // The "Other charges" card only appears when there's something to
   // show in it — pre-import, the user has just subscriptions, and a
@@ -1828,58 +2017,144 @@ function StatRow({
   const showOtherChargesCard = hasOtherCharges
 
   return (
-    <div
-      className={
-        showOtherChargesCard
-          ? 'grid grid-cols-1 sm:grid-cols-4 gap-3'
-          : 'grid grid-cols-1 sm:grid-cols-3 gap-3'
-      }
-    >
-      <StatCard
-        label={counterfactualLabel}
-        value={formatExactDollars(counterfactualCostUsd)}
-        helpText="What these tokens would have cost on the Anthropic API at list rates, summed across the chart's currently visible cells."
-      />
-      <StatCard
-        label="Subscriptions paid in window"
-        value={
-          combinedSubscriptionsUsd === null
-            ? '—'
-            : formatExactDollars(combinedSubscriptionsUsd)
-        }
-        helpText={
-          hasSubscriptionsData
-            ? 'Manually-declared subscriptions (pro-rated over each window overlap) PLUS imported billing rows tagged "subscription" whose date falls in window. The import preview keeps these from double-counting against manual entries.'
-            : 'No subscriptions declared yet. Add one below or import a billing CSV to populate this automatically.'
-        }
-        muted={!hasSubscriptionsData}
-      />
-      {showOtherChargesCard && (
-        <StatCard
-          label="Other charges in window"
-          value={
-            otherChargesUsd === null
-              ? '—'
-              : formatExactDollars(otherChargesUsd)
-          }
-          helpText="Imported billing rows tagged overage / one-time / refund — anything that's not a recurring subscription. Refunds are negative-amount rows that reduce the total."
-          muted={!hasOtherCharges}
-        />
-      )}
-      <StatCard
-        label="Net value"
-        value={
-          netValueUsd === null
-            ? '—'
-            : formatExactDollars(netValueUsd)
-        }
-        helpText={
+    <div className="space-y-2">
+      <div
+        className={
           showOtherChargesCard
-            ? `Counterfactual API cost minus everything you've actually paid (subscriptions + other charges${totalBilledUsd === null ? '' : ` = ${formatExactDollars(totalBilledUsd)}`}). Positive means your plan is cheaper than running the same usage on the API.`
-            : 'Counterfactual API cost minus subscriptions paid. Positive means your subscription is cheaper than running the same usage on the API.'
+            ? 'grid grid-cols-1 sm:grid-cols-4 gap-3'
+            : 'grid grid-cols-1 sm:grid-cols-3 gap-3'
         }
-        emphasize={netValueUsd !== null && netValueUsd > 0}
-      />
+      >
+        <StatCard
+          label="Counterfactual API cost"
+          value={formatRoundedDollars(counterfactualCostUsd)}
+          helpText={
+            (pricingNeedsReview
+              ? 'Pricing file flagged for maintainer review — values may shift before the next pricing sweep. '
+              : '') +
+            "What these tokens would have cost on the Anthropic API at list rates, summed across the chart's currently visible cells. Assumes API list rates, no volume or enterprise discounts. Pricing is applied at current rates to all historical events (not time-anchored)."
+          }
+        />
+        <StatCard
+          label="Subscriptions paid in window"
+          value={
+            combinedSubscriptionsUsd === null
+              ? '—'
+              : formatExactDollars(combinedSubscriptionsUsd)
+          }
+          helpText={
+            hasSubscriptionsData
+              ? 'Manually-declared subscriptions (pro-rated over each window overlap, flat monthly_usd × overlap_days / 30) PLUS imported billing rows tagged "subscription" whose date falls in window. The import preview keeps these from double-counting against manual entries.'
+              : 'No subscriptions declared yet. Add one below or import a billing CSV to populate this automatically.'
+          }
+          muted={!hasSubscriptionsData}
+        />
+        {showOtherChargesCard && (
+          <StatCard
+            label="Other charges in window"
+            value={
+              otherChargesUsd === null
+                ? '—'
+                : formatExactDollars(otherChargesUsd)
+            }
+            helpText="Imported billing rows tagged overage / one-time / refund — anything that's not a recurring subscription. Refunds are negative-amount rows that reduce the total."
+            muted={!hasOtherCharges}
+          />
+        )}
+        <StatCard
+          label="Estimated savings vs raw API rates"
+          value={
+            netValueUsd === null
+              ? '—'
+              : formatRoundedDollars(netValueUsd)
+          }
+          helpText={
+            showOtherChargesCard
+              ? `Counterfactual API cost minus everything you've actually paid (subscriptions + other charges${totalBilledUsd === null ? '' : ` = ${formatExactDollars(totalBilledUsd)}`}). Positive means your plan is cheaper than running the same usage on the API at list rates.`
+              : 'Counterfactual API cost minus subscriptions paid. Positive means your subscription is cheaper than running the same usage on the API at list rates.'
+          }
+          emphasize={netValueUsd !== null && netValueUsd > 0}
+        />
+      </div>
+      {/* Equation strip (#7) — annotates the cards with the underlying
+          arithmetic so users don't have to mental-math the relationship
+          between counterfactual, what was actually paid, and the
+          savings figure. */}
+      <p className="text-xs text-slate-600 font-mono">
+        {formatRoundedDollars(counterfactualCostUsd)} (counterfactual)
+        {' − '}
+        {formatRoundedDollars(combinedSubscriptionsUsd ?? 0)} (subs)
+        {showOtherChargesCard && (
+          <>
+            {' − '}
+            {formatRoundedDollars(otherChargesUsd ?? 0)} (other)
+          </>
+        )}
+        {' = '}
+        {formatRoundedDollars(netValueUsd ?? 0)} (savings)
+      </p>
+      {/* Cache-accounting strip (#4) — the headline metric for Claude
+          Code users. Validates the counterfactual is sane (no silent
+          summing of cached tokens against raw input rate) and surfaces
+          how much the cache discount has actually saved. */}
+      {cacheStats && cacheStats.totalInputishTokens > 0 && (
+        <div
+          className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700"
+          title="Cache hit ratio = cache_read / (input + cache_read + cache_write_5m + cache_write_1h). Cache writes are paid-for cache that isn't (yet) amortizing — including them in the denominator surfaces a high write/read ratio as a low percentage. Dollar savings = cache_read × 0.9 × input rate (cache reads are billed at 10% of input)."
+        >
+          <span className="font-medium">Cache hits:</span>{' '}
+          {(cacheStats.cacheReadFraction * 100).toFixed(1)}% of input tokens served from cache
+          ({Math.round(cacheStats.cacheReadTokens / 1000).toLocaleString()}K of{' '}
+          {Math.round(cacheStats.totalInputishTokens / 1000).toLocaleString()}K)
+          {cacheStats.dollarSavings !== null && cacheStats.dollarSavings > 0 && (
+            <>
+              {' · '}
+              <span className="font-medium">~{formatRoundedDollars(cacheStats.dollarSavings)} saved</span>
+              {' vs raw input rates'}
+            </>
+          )}
+        </div>
+      )}
+      <details className="text-xs text-slate-500">
+        <summary className="cursor-pointer underline decoration-dotted decoration-slate-400">
+          How is this computed? (4 assumptions)
+        </summary>
+        <ol className="mt-2 ml-4 list-decimal space-y-1 pl-1 border-l-2 border-slate-200">
+          <li>
+            <span className="font-medium">API list rates only.</span>{' '}
+            No volume tier, no enterprise discount, no batch-API discount.
+          </li>
+          <li>
+            <span className="font-medium">Current pricing applied retroactively.</span>{' '}
+            Unlike the environmental side, pricing is not time-anchored — the rate
+            currently in <code>pricing.toml</code> is applied to every historical
+            event. Future pricing changes will silently shift historical
+            counterfactual numbers. Closing this is on the open research queue.
+          </li>
+          <li>
+            <span className="font-medium">Subscriptions pro-rate flat-daily:</span>{' '}
+            <code>monthly_usd × overlap_days / 30</code>, no billing-cycle alignment.
+          </li>
+          <li>
+            <span className="font-medium">Cache reads billed at 10% of input.</span>{' '}
+            Drives the "~$X saved" figure on the Cache hits strip. Cache writes
+            are billed at 1.25× (5m) or 2× (1h) of input and count in the
+            counterfactual.
+          </li>
+        </ol>
+        <p className="mt-2">
+          Full text:{' '}
+          <a
+            className="underline text-blue-600 hover:text-blue-700"
+            href="https://github.com/RobarePruyn/tokenscale/blob/main/docs/cost-methodology.md"
+            target="_blank"
+            rel="noreferrer"
+          >
+            cost-methodology.md
+          </a>{' '}
+          — or open the dashboard's <span className="font-medium">Methodology → Cost</span> tab.
+        </p>
+      </details>
     </div>
   )
 }
@@ -1936,12 +2211,22 @@ function EnvironmentalStatRow({
   includeIndirectWater,
   onToggleIndirectWater,
 }: EnvironmentalStatRowProps) {
-  const suffix = (pct: number) => (pct > 0 ? ` ± ${pct}%` : '')
-  const energyValue = `${formatEnergy(impact.facilityWh)}${suffix(impact.energyUncertaintyPct)}`
+  // Each KPI's value gets a bracketed display "~rounded (low–high) ± pct%"
+  // so the band is the primary cue and the precision is honest to the
+  // uncertainty (no more "499.92 kWh ± 40%" false precision).
+  const energyValue = formatBracketedWithUncertainty(
+    impact.facilityWh,
+    impact.energyUncertaintyPct,
+    formatEnergy,
+  )
   const co2eValue =
     impact.co2eG === null
       ? '—'
-      : `${formatCo2(impact.co2eG)}${suffix(impact.co2eUncertaintyPct)}`
+      : formatBracketedWithUncertainty(
+          impact.co2eG,
+          impact.co2eUncertaintyPct,
+          formatCo2,
+        )
 
   // Direct-only vs direct+indirect water. When the toggle is on AND the
   // region publishes an indirect EWIF, fold both into the displayed
@@ -1961,10 +2246,14 @@ function EnvironmentalStatRow({
       impact.indirectWaterL ?? 0,
       impact.indirectWaterUncertaintyPct,
     )
-    waterValue = `${formatWater(total)}${suffix(combinedPct)}`
-    waterTooltipExtra = ` Breakdown: direct ${formatWater(impact.waterL ?? 0)} (DC cooling) + indirect ${formatWater(impact.indirectWaterL ?? 0)} (power-plant cooling per Ren et al. 2024).`
+    waterValue = formatBracketedWithUncertainty(total, combinedPct, formatWater)
+    waterTooltipExtra = ` Breakdown: direct ${formatWater(impact.waterL ?? 0, impact.waterUncertaintyPct)} (DC cooling) + indirect ${formatWater(impact.indirectWaterL ?? 0, impact.indirectWaterUncertaintyPct)} (power-plant cooling per Ren et al. 2024).`
   } else if (impact.waterL !== null) {
-    waterValue = `${formatWater(impact.waterL)}${suffix(impact.waterUncertaintyPct)}`
+    waterValue = formatBracketedWithUncertainty(
+      impact.waterL,
+      impact.waterUncertaintyPct,
+      formatWater,
+    )
   } else {
     waterValue = '—'
   }
@@ -3192,7 +3481,16 @@ function SubscriptionForm({
 // children.
 // ---------------------------------------------------------------------------
 
-type ChartSeries = { key: string; displayName: string; color: string }
+type ChartSeries = {
+  key: string
+  displayName: string
+  color: string
+  /** Fraction of total cost (across all visible model series) that this
+   *  series contributes — used to annotate the legend with "(N% of cost)".
+   *  `null` for series where cost share is undefined: token-type stacking
+   *  (a single token type spans multiple models) or models missing pricing. */
+  costShareFraction: number | null
+}
 
 type ChartByTypeProps = {
   chartType: ChartType
@@ -3221,6 +3519,9 @@ function ChartByType({
     yAxisScale === 'log' ? [isCostMode ? 0.01 : 1, 'auto'] : ['auto', 'auto']
 
   const yTickFormatter = isCostMode ? formatCompactDollars : formatCompactNumber
+  // Cost-share map for the legend formatter — pre-extracted so the
+  // formatter is pure-lookup, no scan-per-render.
+  const seriesCostShares = new Map(series.map((s) => [s.key, s.costShareFraction]))
   // Chart values are per-day rates (see `activeDaysInBucket` divisor in
   // `chartConfig`). Tooltip suffixes "/day" so the hover hint matches
   // the rate framing of the y-axis.
@@ -3253,7 +3554,19 @@ function ChartByType({
         }
         formatter={(rawValue, displayLabel) => [tooltipValueFormatter(rawValue), displayLabel]}
       />
-      <Legend />
+      <Legend
+        formatter={(value, entry) => {
+          // Append "(N% of cost)" when a cost share is available, so the
+          // legend communicates relative cost contribution even when the
+          // chart itself is showing Raw tokens. Falls back to the bare
+          // name when the share is null (token-type stacking, or model
+          // missing pricing).
+          const dataKey = (entry as { dataKey?: string }).dataKey
+          const share = dataKey ? seriesCostShares.get(dataKey) : undefined
+          if (share === undefined || share === null) return value
+          return `${value} — ${Math.round(share * 100)}% of cost`
+        }}
+      />
     </>
   )
 
@@ -3399,7 +3712,7 @@ type RadioGroupProps<T extends string> = {
   label: string
   value: T
   onChange: (value: T) => void
-  options: Array<{ value: T; label: string }>
+  options: Array<{ value: T; label: string; help?: string }>
   /** Optional help text — when present, the label is rendered with a cursor
    *  hint and a native browser tooltip (`title` attribute) carrying the text.
    */
@@ -3432,6 +3745,7 @@ function RadioGroup<T extends string>({
               key={option.value}
               type="button"
               onClick={() => onChange(option.value)}
+              title={option.help}
               className={
                 'px-3 py-1 text-xs transition-colors border-l border-slate-200 first:border-l-0 ' +
                 (active
@@ -3481,7 +3795,12 @@ function Chevron({ direction }: { direction: 'right' | 'down' }) {
 // page is convenience, not data ownership.
 // ---------------------------------------------------------------------------
 
-type DocSlug = 'methodology' | 'sources' | 'research-log' | 'request-for-research'
+type DocSlug =
+  | 'methodology'
+  | 'cost-methodology'
+  | 'sources'
+  | 'research-log'
+  | 'request-for-research'
 
 const METHODOLOGY_TABS: ReadonlyArray<{
   slug: DocSlug
@@ -3490,8 +3809,13 @@ const METHODOLOGY_TABS: ReadonlyArray<{
 }> = [
   {
     slug: 'methodology',
-    label: 'Methodology',
+    label: 'Environmental',
     description: 'How every environmental number gets computed.',
+  },
+  {
+    slug: 'cost-methodology',
+    label: 'Cost',
+    description: 'Assumptions behind the counterfactual / subscriptions / savings numbers.',
   },
   {
     slug: 'sources',

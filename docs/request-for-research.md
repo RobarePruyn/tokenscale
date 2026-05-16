@@ -69,6 +69,35 @@ Format: each entry has a status, the question, why it matters, what good answers
 
 ---
 
+### Cost-side time-anchoring + Cost Methodology audit trail
+
+**Status**: Open. **HARD TRIGGER: must land before the next time Anthropic changes any model's per-token price.**
+
+**Question**: Promote `pricing.toml`'s already-present `valid_from` field to actually drive per-event time-anchored pricing lookup, with a versioned audit trail mirroring the environmental factor file. Today, `PricingFile::lookup(provider, model)` ignores the date and returns whatever single row matches `(provider, model)` — so the current pricing is applied retroactively to every event in history.
+
+**Why it matters**: This is a credibility-of-the-tool issue, not a feature request. The whole environmental side is built on "every number traces to a source" and "factors resolve to the row authoritative at the event's timestamp." The cost side is the headline of the net-value calculation, and it currently has neither property. The asymmetry is documented (in [`docs/cost-methodology.md`](cost-methodology.md) and in the dashboard's "How is this computed?" disclosure), but documentation is a stopgap. The moment Anthropic changes a price, every historical counterfactual silently shifts and a public methodology-forward tool cannot have that happen undisclosed.
+
+**What good answers look like**:
+
+- `PricingFile::lookup(provider, model, as_of_date)` time-anchored against `valid_from` per-event, mirroring `lookup_environmental_factors`.
+- `pricing.toml` carries a `file_version` and supports multiple rows per `(provider, model)` keyed by `valid_from` (the schema already has the field; the loader needs to accept multiple rows).
+- A parallel **Cost Methodology** section in the dashboard's Methodology page covering: pricing source, refresh cadence, tier assumption, retroactive-pricing fix (this item), subscription pro-rating rule, cache discount math. v0.1.10 ships a short version of this doc; 6b expands it to environmental-page parity.
+- An audit trail of past pricing changes (analog to `research-log.md`) so any historical price shift is visible.
+
+**Triggers for action**:
+
+- **Anthropic changes any model's published per-token price.** This is the hard deadline.
+- The pricing review checklist (`pricing_review_pending = true` in `pricing.toml`) catches a deferred refresh that would touch historical numbers.
+
+**Starting points**:
+
+- [`crates/tokenscale-core/src/pricing.rs`](../crates/tokenscale-core/src/pricing.rs) — `PricingFile::lookup` is the load-bearing call site. Currently ignores date.
+- [`crates/tokenscale-store/src/factors_lookup.rs`](../crates/tokenscale-store/src/factors_lookup.rs) — `lookup_environmental_factors` is the model for what the time-anchored pricing lookup should look like.
+- [`crates/tokenscale-store/src/impact_query.rs`](../crates/tokenscale-store/src/impact_query.rs) — the SQL aggregate path uses correlated subqueries on `valid_from` for env factors. Pricing would need an analogous structure.
+- Server-side pricing was originally loaded once at startup from the embedded `pricing.toml`. The promotion is: TOML → DB tables (analogous to `env_factors` / `grid_factors`) → per-event lookup at compute time.
+
+---
+
 ### Amortized model-training cost (energy / CO₂e / water) per served token
 
 **Status**: Open — aspirational. The dashboard today only reports **inference-side** impact. A model's training run consumed energy, CO₂e, and water that is logically attributable to every token the model serves over its lifetime; including it would make tokenscale's lifecycle picture complete.

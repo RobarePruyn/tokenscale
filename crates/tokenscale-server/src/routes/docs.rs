@@ -34,6 +34,12 @@ const RESEARCH_LOG_MD: &str = include_str!("../../../../docs/research-log.md");
 /// `docs/request-for-research.md`.
 const REQUEST_FOR_RESEARCH_MD: &str = include_str!("../../../../docs/request-for-research.md");
 
+/// Short cost-methodology page that mirrors the environmental
+/// methodology doc's structure but covers list-rates / volume-tier /
+/// pricing-time-anchoring / subscription pro-rating assumptions.
+/// Bundled from `docs/cost-methodology.md`.
+const COST_METHODOLOGY_MD: &str = include_str!("../../../../docs/cost-methodology.md");
+
 /// Map the URL slug to the bundled markdown content. Returning the
 /// raw markdown (not pre-rendered HTML) keeps the frontend in charge
 /// of the visual treatment — same docs can be themed differently as
@@ -44,10 +50,11 @@ pub async fn handler(Path(slug): Path<String>) -> Response {
         "sources" => SOURCES_MD,
         "research-log" => RESEARCH_LOG_MD,
         "request-for-research" => REQUEST_FOR_RESEARCH_MD,
+        "cost-methodology" => COST_METHODOLOGY_MD,
         _ => {
             return (
                 StatusCode::NOT_FOUND,
-                format!("no doc named {slug:?}; valid slugs: methodology, sources, research-log, request-for-research"),
+                format!("no doc named {slug:?}; valid slugs: methodology, sources, research-log, request-for-research, cost-methodology"),
             )
                 .into_response();
         }

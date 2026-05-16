@@ -6,6 +6,52 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.10 — 2026-05-16
+
+The dashboard-credibility release. Folds in the full meta-review pass against the dashboard UX and the cost-side methodology gap. No methodology numbers change; every value visible to the user becomes more honestly *displayed* (precision matched to uncertainty, brackets making the band the primary cue, framing that doesn't oversell) and the cost side gets its first proper paper trail.
+
+### Changed (dashboard precision + framing)
+
+- **False precision killed across the board.** New `roundToSigFigs(value, sigFigs)` + `sigFigsForUncertainty(pct)` helpers route the environmental formatters through precision-matched-to-band rounding. `499.92 kWh ± 40%` becomes `~500 kWh`, `134.98 kg CO₂e ± 43%` becomes `~130 kg CO₂e`, `74.99 L ± 64%` becomes `~75 L`. Mapping: <5% → 4 sig figs, 5–15% → 3, ≥15% → 2.
+- **± badges now show the value bracket.** All three environmental KPIs render as `~rounded (low – high) ± pct%`. Bracket recomputes from the post-rounding value each render, so the indirect-water toggle correctly shows the new bracket when flipped.
+- **Counterfactual cost drops cents** via `formatRoundedDollars` — `(approx)` and ".94 cents" were saying the same imprecision twice. Subscription / other-charges cards keep cents (exact from CSV imports).
+- **"Net value" → "Estimated savings vs raw API rates"**, with a caveat directly under the headline (`Assumes API list rates, no volume or enterprise discounts.`) — green-tinted positive number no longer reads as guaranteed savings.
+
+### Added (information that should have been visible)
+
+- **Cache-accounting strip** under the financial row. Shows `cache_read / (input + cache_read + cache_write_5m + cache_write_1h)` percentage AND the estimated dollar savings (`cache_read × 0.9 × input_rate`, summed across models). Cache writes are deliberately in the denominator — they're paid-for cache that isn't (yet) amortizing, and including them surfaces a low-amortization pattern as a low percentage. The single most informative top-line metric for Claude Code users.
+- **Equation strip** below the financial cards: `$X (counterfactual) − $Y (subs) − $Z (other) = $W (savings)`. Annotates the cards with the underlying arithmetic.
+- **Consumer-apps disclaimer lifted ABOVE the environmental cards** (was buried in fine print below the chart). Honest framing comes BEFORE the kWh number, not after.
+- **Last-scanned timestamp on the dashboard** (next to the chart title), so users don't have to click into Methodology to check data freshness.
+- **Per-option tooltips on the Counting toggle** (Raw / Cost-weighted / Cost (USD)). Hover each for the precise definition.
+- **Family-aware chart colors.** Models in the same family (Opus 4.6 + Opus 4.7) now get adjacent shades of one hue; different families get different hues. Opus = blue shades, Sonnet = green shades, Haiku = amber shades.
+- **Per-series cost-share % in the chart legend**, regardless of view mode. Legend shows `Sonnet 4.6 — 72% of cost` even when the chart is in Raw view, so users see relative cost contribution at a glance.
+
+### Removed
+
+- **Provider dropdown hidden.** "All providers" implied multi-provider data when only Claude Code is ingested today; the consumer-apps disclaimer already states scope. Re-introduce when a second provider lands; the `providerFilter` state is preserved (hard-set to `'all'`) so the diff to revive it is trivial.
+
+### Added (cost-side credibility)
+
+- **`docs/cost-methodology.md`** — short companion to the environmental methodology page. Documents the four load-bearing cost-side assumptions: (1) API list rates only, (2) current pricing applied retroactively to all historical events (not time-anchored — load-bearing call-out), (3) flat-daily subscription pro-rating, (4) cache reads billed at 10% of input.
+- **New "Cost" tab** in the dashboard's Methodology page rendering the above doc. Sits alongside Environmental / Bibliography / Research log / Open questions.
+- **"How is this computed? (4 assumptions)" disclosure** under the financial row. Inline summary of the four assumptions + link to the full doc on GitHub and to the in-app Cost tab. Brand-protection placement: visible on the dashboard, not buried two clicks away.
+
+### Research
+
+- **"Cost-side time-anchoring + Cost Methodology audit trail"** added as an open item in [`request-for-research.md`](docs/request-for-research.md), with a **hard trigger**: must land before the next time Anthropic changes any model's per-token price. Today, `PricingFile::lookup()` ignores `valid_from` and applies the current rate to every historical event. The moment a price changes, every historical counterfactual silently shifts. The lightweight doc + disclosure in v0.1.10 is a stopgap; the time-anchored lookup is the real fix.
+
+### Roadmap
+
+- **`docs/roadmap-granular-attribution.md`** — captured granular-attribution roadmap prompt (per-project / per-thread reporting → commit-attribution Tiers 1/2/3 → forward instrumentation via post-commit hook). Queued explicitly after this meta-review release + the existing Open queue. First action when picked up: Phase 0 investigation (dedup correctness, ingest coverage, project-key resolution, cwd → git toplevel).
+
+### Notably NOT in this release
+
+- **Cost-side time-anchoring itself** — see the open research entry above. v0.1.10 documents the gap; v0.1.x closes it.
+- **Granular attribution** — captured in the roadmap, sequenced after the existing Open queue (PUE / Winget / 6b cost-side / All-view clip).
+
+---
+
 ## v0.1.9 — 2026-05-16
 
 The macOS notarization release. Every macOS binary the release pipeline produces is now **signed with the Developer ID Application cert and notarized by Apple** — first launch on a user's Mac no longer triggers the "cannot verify developer" Gatekeeper block dialog, and the verified-developer fingerprint matches across both apple-silicon and intel builds.
