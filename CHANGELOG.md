@@ -6,6 +6,28 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.8 — 2026-05-16
+
+The macOS notarization release. Every macOS binary the release pipeline produces is now **signed with the Developer ID Application cert and notarized by Apple** — first launch on a user's Mac no longer triggers the "cannot verify developer" Gatekeeper block dialog, and the verified-developer fingerprint matches across both apple-silicon and intel builds.
+
+### Added
+
+- **"Sign + notarize macOS binaries" step** in `.github/workflows/release.yml` `build-local-artifacts` job. Runs only on `apple-darwin` matrix entries. Decodes six Apple/notarization secrets, imports the Developer ID Application cert into a temporary keychain, signs the `tokenscale` binary with `--options runtime --timestamp`, submits to Apple's notarization service via `xcrun notarytool submit --wait`, repacks the tarball with the signed binary, recomputes the `.sha256` sidecar, and patches `dist-manifest.json` so the Homebrew formula publish job picks up the post-notarization checksum.
+- **`RELEASING.md` walkthrough** for retrieving and configuring the six secrets: `APPLE_TEAM_ID`, `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_PRIVATE_KEY`.
+- **CUSTOMIZATIONS section in `dist-workspace.toml`** inventorying every manual edit to the dist-generated release.yml — currently just the notarization step. Re-running `dist generate --mode=ci` will wipe the step; the inventory tells future-me what to re-apply.
+
+### Why this is a manual workflow edit
+
+Cargo-dist 0.31 doesn't have first-class macOS notarization support — [open feature request](https://github.com/axodotdev/cargo-dist/issues/1121). Rather than fork dist or wait, we splice the sign+notarize cycle into the generated workflow as a self-contained step between `dist build` and the artifact upload. When dist gains native support, the manual step gets dropped and the customization inventory becomes empty again.
+
+### What stapling does and does not do
+
+The notarization ticket lives on Apple's servers — `xcrun stapler` can only attach it to `.app` / `.dmg` / `.pkg` bundles, not bare Mach-O binaries. So tokenscale's CLI doesn't carry an embedded ticket. **First-launch on a user's Mac with network access**: Gatekeeper fetches the ticket from Apple, sees "Verified Developer: Robare Pruyn", and launches. **First-launch offline**: Gatekeeper falls back to checking the code signature only, which still works because we sign with `--timestamp`. Subsequent launches don't re-check.
+
+If we ever need stapled binaries (truly offline first-launch for air-gapped environments), the path is to wrap the binary in a signed-and-notarized `.pkg` installer — a separate distribution channel alongside the existing tarballs.
+
+---
+
 ## v0.1.7 — 2026-05-16
 
 The full-water-footprint release. Ships **indirect (off-site, power-plant cooling) water** alongside the existing direct-DC-cooling water — closing the open research item from Sweep #2 and giving users the complete Ren et al. 2024 scope-1 + scope-2 water picture. Opt-in via a new toggle to preserve continuity; existing dashboards default to direct-only.

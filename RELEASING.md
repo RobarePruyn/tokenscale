@@ -44,7 +44,24 @@ The tap name in `dist-workspace.toml` (`tap = "RobarePruyn/homebrew-tokenscale"`
 
 Without this secret, the `publish-homebrew-formula` job fails with a permissions error and the Formula doesn't get pushed (everything else still works — the GitHub Release with binaries still gets created).
 
-### 3. Verify locally before the first release
+### 3. Create the six macOS notarization secrets (optional but recommended)
+
+The release workflow signs and notarizes macOS binaries with Apple so first-launch on a user's Mac doesn't trigger Gatekeeper's "unidentified developer" block. Requires an Apple Developer Program membership (~$99/yr) and six GitHub Actions secrets.
+
+| Secret | What it is | Where it comes from |
+|---|---|---|
+| `APPLE_TEAM_ID` | 10-char alphanumeric team ID | developer.apple.com → Membership Details |
+| `MACOS_CERTIFICATE` | base64-encoded `.p12` of the Developer ID Application cert | Xcode → Settings → Accounts → Manage Certificates → `+ Developer ID Application`; then export from Keychain Access → `base64 -i cert.p12 -o cert.b64` |
+| `MACOS_CERTIFICATE_PASSWORD` | password set when exporting the `.p12` | (you choose during export) |
+| `APP_STORE_CONNECT_KEY_ID` | 10-char Key ID for an App Store Connect API key | appstoreconnect.apple.com → Users and Access → Integrations → Team Keys → `+` → role "Developer" |
+| `APP_STORE_CONNECT_ISSUER_ID` | UUID at the top of the App Store Connect API key page | (same screen) |
+| `APP_STORE_CONNECT_PRIVATE_KEY` | base64-encoded `.p8` private key (one-time download from the same screen) | `base64 -i AuthKey_*.p8 -o key.b64` |
+
+Without these six secrets, the "Sign + notarize macOS binaries" step in the release workflow will fail with a clear error pointing here. The Linux + Windows builds proceed normally; only the macOS build job is affected. If you want to defer notarization, remove (or `if: false`) that step in `.github/workflows/release.yml` — it's a self-contained block annotated with `MANUAL EDIT`.
+
+The signing + notarization step is a manual edit to the dist-generated workflow because cargo-dist 0.31 doesn't have native macOS notarization support ([axodotdev/cargo-dist#1121](https://github.com/axodotdev/cargo-dist/issues/1121)). If you re-run `dist generate --mode=ci` for any reason, the step will be wiped and needs to be re-applied; see the `CUSTOMIZATIONS` block in `dist-workspace.toml` for the inventory.
+
+### 4. Verify locally before the first release
 
 From the repo root:
 
