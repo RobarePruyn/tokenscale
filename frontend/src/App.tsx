@@ -400,16 +400,21 @@ function autoGranularity(daysInWindow: number): Granularity {
 }
 
 /// Render the chart's H2 title for a given (granularity, view-mode)
-/// pair. The cadence word in the title MUST match the bucket size
-/// shown — otherwise the y-axis values look mis-scaled because the
-/// label promises "Daily" but the bars represent a week's or month's
-/// worth of tokens.
+/// pair. The chart y-axis is normalized to a per-day rate (see the
+/// `activeDaysInBucket` divisor in `chartConfig`) so peak heights are
+/// comparable across windows regardless of bucket size. The title
+/// reflects that rate framing and folds the bucket size into a
+/// suffix that signals "this is smoothed over N days per data point."
 function chartTitleForGranularity(granularity: Granularity, viewMode: ViewMode): string {
-  const cadence =
-    granularity === 'month' ? 'Monthly' : granularity === 'week' ? 'Weekly' : 'Daily'
-  if (viewMode === 'cost') return `${cadence} cost (USD, API list)`
-  if (viewMode === 'billable') return `${cadence} cost-weighted tokens`
-  return `${cadence} token usage`
+  const smoothing =
+    granularity === 'month'
+      ? 'monthly average'
+      : granularity === 'week'
+      ? 'weekly average'
+      : 'daily'
+  if (viewMode === 'cost') return `Cost (USD/day, API list) · ${smoothing}`
+  if (viewMode === 'billable') return `Cost-weighted tokens per day · ${smoothing}`
+  return `Token usage per day · ${smoothing}`
 }
 
 function daysBetween(fromDate: string, toDate: string): number {
@@ -467,6 +472,50 @@ function enumerateBuckets(
     }
   }
   return result
+}
+
+/** How many days of the user-requested window fall inside a single bucket.
+ *  Used as the divisor for per-day-rate normalization on the chart.
+ *
+ *  For complete interior buckets this is just the bucket calendar size
+ *  (1 / 7 / 28..31). For the first and last buckets — which may be
+ *  clipped by `windowFrom` / `windowTo` — it's the overlap with the
+ *  window. The clipping matters in practice for the in-progress month
+ *  (e.g. May 15: the May 2026 bucket has 15 days of window, not 31).
+ *  Dividing by 31 there would visually under-state May's true daily
+ *  rate by ~2×.
+ *
+ *  Returns at least 1 so the caller can divide safely.
+ */
+function activeDaysInBucket(
+  bucketIsoDate: string,
+  granularity: Granularity,
+  windowFromIso: string,
+  windowToIso: string,
+): number {
+  const bucketStartMs = Date.parse(`${bucketIsoDate}T00:00:00Z`)
+  if (Number.isNaN(bucketStartMs)) return 1
+
+  // Bucket end is exclusive: bucketStart + N days = day-after-last-day.
+  let bucketEndExclusiveMs: number
+  if (granularity === 'day') {
+    bucketEndExclusiveMs = bucketStartMs + MILLIS_PER_DAY
+  } else if (granularity === 'week') {
+    bucketEndExclusiveMs = bucketStartMs + 7 * MILLIS_PER_DAY
+  } else {
+    const monthEnd = new Date(bucketStartMs)
+    monthEnd.setUTCMonth(monthEnd.getUTCMonth() + 1)
+    bucketEndExclusiveMs = monthEnd.getTime()
+  }
+
+  const windowFromMs = Date.parse(`${windowFromIso}T00:00:00Z`)
+  const windowToExclusiveMs = Date.parse(`${windowToIso}T00:00:00Z`) + MILLIS_PER_DAY
+
+  const effectiveStart = Math.max(bucketStartMs, windowFromMs)
+  const effectiveEnd = Math.min(bucketEndExclusiveMs, windowToExclusiveMs)
+  if (effectiveEnd <= effectiveStart) return 1
+
+  return Math.max(1, Math.round((effectiveEnd - effectiveStart) / MILLIS_PER_DAY))
 }
 
 /** Format a YYYY-MM-DD bucket label for display on the x-axis. The format
@@ -981,6 +1030,12 @@ export default function App() {
     const allBucketDates = enumerateBuckets(fromDate, toDate, data.granularity)
     const dataByBucket = new Map(data.rows.map((row) => [row.date, row]))
 
+    // Rate normalization: divide every cell value by the number of
+    // window-days inside its bucket so a 1-day bucket and a 7-day
+    // bucket of the same activity *rate* render at the same height.
+    // Eliminates the bucket-size-driven peak jumps that made the 1y
+    // and All views read as "more usage" purely because the buckets
+    // got fatter. The stat cards above the chart stay cumulative.
     if (stackBy === 'model') {
       const series = visibleModels.map((modelId, index) => ({
         key: modelId,
@@ -989,15 +1044,17 @@ export default function App() {
       }))
       const rows = allBucketDates.map((bucketDate) => {
         const row = dataByBucket.get(bucketDate)
+        const activeDays = activeDaysInBucket(bucketDate, data.granularity, fromDate, toDate)
         const cells: Record<string, string | number> = { date: bucketDate }
         for (const modelId of visibleModels) {
           const tokens = row?.byModel[modelId]
-          cells[modelId] = tokens
+          const bucketTotal = tokens
             ? sumSelectedTokenFields(
                 tokenFieldsForView(tokens, viewMode, data.pricingByModel[modelId]),
                 visibleTokenTypes,
               )
             : 0
+          cells[modelId] = bucketTotal / activeDays
         }
         return cells
       })
@@ -1013,6 +1070,7 @@ export default function App() {
     }))
     const rows = allBucketDates.map((bucketDate) => {
       const row = dataByBucket.get(bucketDate)
+      const activeDays = activeDaysInBucket(bucketDate, data.granularity, fromDate, toDate)
       const cells: Record<string, string | number> = { date: bucketDate }
       for (const tokenType of tokenTypeKeys) {
         let sum = 0
@@ -1025,7 +1083,7 @@ export default function App() {
             ]
           }
         }
-        cells[tokenType] = sum
+        cells[tokenType] = sum / activeDays
       }
       return cells
     })
@@ -1605,12 +1663,12 @@ export default function App() {
 
           <div>
             <h2 className="text-base font-medium mb-3">
-              {/* Bucket-cadence label mirrors the actual granularity
-                  (auto-picked or user-overridden). Without this, a wide
-                  window auto-picks weekly buckets but the title still
-                  says "Daily" — the y-axis peaks suddenly look ~7×
-                  larger than the user expects and there's no on-screen
-                  cue why. */}
+              {/* Y-axis is a per-day rate (see `activeDaysInBucket` in
+                  `chartConfig`). The granularity suffix ("daily" /
+                  "weekly average" / "monthly average") tells the user
+                  how much each data point is smoothed — bucket size
+                  no longer drives peak height, but it does drive
+                  visible variance. */}
               {chartTitleForGranularity(effectiveGranularity, viewMode)}{' '}
               · {stackBy === 'model' ? 'stacked by model' : 'stacked by token type'}
             </h2>
@@ -3052,9 +3110,13 @@ function ChartByType({
     yAxisScale === 'log' ? [isCostMode ? 0.01 : 1, 'auto'] : ['auto', 'auto']
 
   const yTickFormatter = isCostMode ? formatCompactDollars : formatCompactNumber
+  // Chart values are per-day rates (see `activeDaysInBucket` divisor in
+  // `chartConfig`). Tooltip suffixes "/day" so the hover hint matches
+  // the rate framing of the y-axis.
   const tooltipValueFormatter = (rawValue: unknown): string => {
     if (typeof rawValue !== 'number') return String(rawValue)
-    return isCostMode ? formatExactDollars(rawValue) : rawValue.toLocaleString()
+    if (isCostMode) return `${formatExactDollars(rawValue)}/day`
+    return `${rawValue.toLocaleString(undefined, { maximumFractionDigits: 0 })} tokens/day`
   }
   const yAxisWidth = isCostMode ? 64 : 56
 

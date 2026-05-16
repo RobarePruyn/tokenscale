@@ -2224,7 +2224,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokenscale-cli"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "clap",
@@ -2244,7 +2244,7 @@ dependencies = [
 
 [[package]]
 name = "tokenscale-core"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "csv",
@@ -2255,7 +2255,7 @@ dependencies = [
 
 [[package]]
 name = "tokenscale-ingest-api"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "reqwest",
@@ -2270,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "tokenscale-ingest-cc"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "directories",
@@ -2288,7 +2288,7 @@ dependencies = [
 
 [[package]]
 name = "tokenscale-server"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "anyhow",
  "axum",
@@ -2308,7 +2308,7 @@ dependencies = [
 
 [[package]]
 name = "tokenscale-store"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "hex",

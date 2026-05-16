@@ -6,6 +6,34 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.6 — 2026-05-15
+
+The per-day-rate chart release. The dashboard's main chart now plots a **per-day rate** instead of per-bucket sums, eliminating the bucket-size-driven peak jumps that made the 1y and All views look like usage suddenly inflated 7× / 30× compared to 30d / 90d. The visual discontinuity at every preset transition is gone, and the chart finally communicates intensity-over-time honestly regardless of zoom.
+
+### Changed
+
+- **Chart y-axis is now a per-day rate.** Each bucket's value is divided by the number of window-days it covers (1 for daily, 7 for full weekly buckets, 28–31 for monthly, and partial counts for the first/last bucket when the user's window clips the bucket calendar — e.g. mid-May yields 15 days for the in-progress May bucket, not 31). Cumulative totals in the stat cards (energy, CO₂e, water, counterfactual cost) are unchanged — only the chart shape is normalized.
+- **Chart title reflects the rate semantics**: "Token usage per day · daily" / "Token usage per day · weekly average" / "Token usage per day · monthly average". The cadence suffix tells the user how much each data point is smoothed, since bucket size no longer drives peak height but still drives visible variance.
+- **Tooltip values now carry a `/day` suffix** ("1.2B tokens/day", "$45.67/day"). Removes ambiguity at hover.
+
+### Why this matters
+
+A chart titled "Weekly token usage" with bars that are 7× taller than the daily equivalent was visually lying: peak height read as "intensity" but a 7-day sum is mechanically bigger for the same usage rate. The v0.1.1 fix patched 30d ↔ 90d by keeping them both daily; this release fixes the same problem at every preset transition by changing what the chart actually measures. The full audit:
+
+| view | granularity | bucket | prior peak | per-day rate |
+|---|---|---|---|---|
+| 90d  | daily   | 1 day  | ~1B    | ~1B/day   |
+| 1y   | weekly  | 7 days | ~2.8B  | ~400M/day |
+| All  | monthly | ~30 d  | ~6B    | ~400M/day |
+
+Same data, comparable peaks across all three views.
+
+### Notably NOT in this release
+
+- **Auto-clipping the All-view to first-event date.** The 2022-12-01 lower bound is intentional (ChatGPT launch — "earliest possible LLM usage"). With rate normalization, the empty leading space no longer distorts the y-axis, so the visual cost is much smaller; we keep the honest absolute timeline.
+
+---
+
 ## v0.1.5 — 2026-05-15
 
 The run-it-as-a-service release. No code changes — purely installer- and docs-side polish, but a meaningful UX win: post-install messages now tell every brew / Scoop user exactly how to start the dashboard, and `brew services start tokenscale-cli` works out of the box for set-and-forget background operation.
