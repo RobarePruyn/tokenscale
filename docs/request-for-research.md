@@ -10,27 +10,6 @@ Format: each entry has a status, the question, why it matters, what good answers
 
 ## Open
 
-### Indirect water (power-plant cooling) methodology
-
-**Status**: Open. Phase 2 ships direct water only (data-center cooling).
-
-**Question**: How do we add indirect water (cooling consumed at the power plants generating the electricity our datacenters draw) to the dashboard, separately from direct water?
-
-**Why it matters**: Ren et al. ("Making AI Less 'Thirsty'", Communications of the ACM, 2024) distinguishes **direct water** (DC cooling) from **indirect water** (power-plant cooling). For grid mixes heavy on thermoelectric generation (coal, gas, nuclear), indirect water is often the larger of the two. v0.1 reports direct water only, which understates the total water footprint by a factor that varies dramatically by region.
-
-**What good answers look like**:
-
-- A new field on each `[grid_factors.*]` block — `indirect_water_l_per_kwh` — sourced from Ren et al.'s region-by-fuel-mix figures.
-- A dashboard option to view "direct + indirect" total water, with the breakdown surfaced in tooltip.
-- Honest acknowledgment that indirect water for hydro / wind / solar is essentially zero, so renewable-heavy grids (NWPP for example, with strong hydro) have smaller indirect-water deltas than coal-heavy grids (RFCW).
-
-**Starting points**:
-
-- [Ren et al., "Making AI Less 'Thirsty'"](https://arxiv.org/abs/2304.03271).
-- USGS data on water consumption by power-generation type.
-
----
-
 ### Anthropic tokenizer-change inflation factor verification
 
 **Status**: Open. v0.1 file estimates the factor from third-party analysis; we'd like a primary source.
@@ -133,3 +112,17 @@ Format: each entry has a status, the question, why it matters, what good answers
 `water_uncertainty_range_pct = 50` applied across all AWS regions, reflecting the global-to-regional WUE application gap (AWS publishes no per-region WUE).
 
 **Remaining**: Combining model + grid uncertainty into the dashboard's headline `± X%` cell badge is a deliberate v0.3 follow-on — kept separate in v0.2 so users can see the decomposition before we collapse it. Per-region WUE values from AWS would let us tighten the water band; tracked separately.
+
+### Indirect water (power-plant cooling) methodology
+
+**Status**: Resolved by Sweep #2, 2026-05-15. See [research-log.md](research-log.md).
+
+**Resolution**: Per-subregion `indirect_water_l_per_kwh` ships in `environmental-factors.toml` v0.3:
+- SRVC: 2.39 L/kWh ±35% (Ren et al. 2024 VA direct quote)
+- RFCW: 1.85 L/kWh ±35% (eGRID×Macknick computed)
+- NWPP: 9.50 L/kWh ±60% (Ren et al. 2024 WA direct quote, hydro-dominated)
+- CAMX: 3.20 L/kWh ±50% (eGRID×Macknick computed)
+
+Dashboard adds a "Include indirect water" toggle on the Water KPI. When enabled, displayed water = direct + indirect with quadrature-of-sum uncertainty; tooltip shows the breakdown.
+
+**Remaining**: Hydro attribution methodology is contested (Macknick uses 100% reservoir-evaporation attribution to power generation; literature gives 5×–10× range). Currently using Macknick as-published with widened bands for hydro-heavy regions. A future sweep could refine the hydro coefficient or split reservoir vs run-of-river.

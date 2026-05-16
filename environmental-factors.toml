@@ -27,7 +27,7 @@
 
 schema_version = 1
 file_status = "production"
-file_version = "0.2"
+file_version = "0.3"
 file_published = "2026-05-12"
 methodology = "google-comprehensive-aug-2025"
 methodology_source = "https://arxiv.org/abs/2508.15734"
@@ -433,9 +433,12 @@ co2e_uncertainty_range_pct = 15      # Sweep #1 (2026-05-12): SRVC observed rang
 co2e_state_check_va_kg_per_kwh = 0.245   # cross-reference: VA state = 539.6 lb/MWh = 0.2448 kg/kWh; subregion is canonical
 water_l_per_kwh = 0.15               # ANCHOR: AWS 2024 global WUE; per-region NOT disclosed
 water_uncertainty_range_pct = 50     # AWS publishes global only; per-region real draw can vary substantially with climate. 50% is honest for a global-to-regional gap.
+indirect_water_l_per_kwh = 2.39      # Sweep #2 (2026-05-15): Ren et al. 2024 "Making AI Less Thirsty" Table 1 Virginia EWIF = 2.385 L/kWh. Off-site / power-plant cooling water for the electricity drawn — distinct from on-site DC cooling above.
+indirect_water_uncertainty_range_pct = 35  # Ren's EWIF is derived from eGRID fuel-mix × Macknick 2012 per-fuel coefficients. Low hydro share (1.4%) means the contested hydro-evaporation methodology contributes little to SRVC's value.
 pue = 1.15                           # ANCHOR: AWS 2024 global PUE; per-region NOT disclosed
 source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
 source_url_water = "https://aws.amazon.com/sustainability/data-centers/"
+source_url_indirect_water = "https://arxiv.org/abs/2304.03271"
 source_url_pue = "https://aws.amazon.com/sustainability/data-centers/"
 source_accessed_at = "2026-04-28"
 notes = "us-east-1 hosts the largest share of Anthropic's US inference (per AWS Bedrock cross-region docs). 18 Loudoun County data centers use recycled wastewater for cooling — directly relevant to actual water draw, but not yet quantified in our factor model."
@@ -451,9 +454,12 @@ co2e_uncertainty_range_pct = 20      # Sweep #1 (2026-05-12): RFCW observed rang
 co2e_state_check_oh_kg_per_kwh = 0.485   # cross-reference: OH state = 1068.3 lb/MWh = 0.4845 kg/kWh
 water_l_per_kwh = 0.15               # ANCHOR: AWS 2024 global WUE
 water_uncertainty_range_pct = 50     # Same global-to-regional gap as us-east-1.
+indirect_water_l_per_kwh = 1.85      # Sweep #2 (2026-05-15): RFCW not in Ren et al. table — computed from eGRID2023 fuel mix (25.0% coal / 37.8% gas / 28.4% nuclear / 1.0% hydro) × Macknick 2012 recirculating-tower medians (coal 2.60, NGCC 0.75, nuclear 2.54, hydro 17.0 L/kWh).
+indirect_water_uncertainty_range_pct = 35  # Same as SRVC — low hydro share keeps the hydro-methodology dispute small. Coal dominance does NOT widen the band materially; coal-water coefficient is well-characterized.
 pue = 1.15                           # ANCHOR: AWS 2024 global PUE
 source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
 source_url_water = "https://aws.amazon.com/sustainability/data-centers/"
+source_url_indirect_water = "https://arxiv.org/abs/2304.03271"
 source_url_pue = "https://aws.amazon.com/sustainability/data-centers/"
 source_accessed_at = "2026-04-28"
 notes = "RFCW grid is materially more carbon-intensive than SRVC (us-east-1) due to greater coal share (25% coal vs 10.5% in SRVC, per eGRID2023 resource mix). Material implication: Claude usage routed to us-east-2 has ~54% higher CO2e than us-east-1 for the same energy."
@@ -469,9 +475,12 @@ co2e_uncertainty_range_pct = 20      # Sweep #1 (2026-05-12): NWPP observed rang
 co2e_state_check_or_kg_per_kwh = 0.166   # cross-reference: OR state = 365.0 lb/MWh = 0.1656 kg/kWh — STATE much cleaner than SUBREGION because Oregon-specific is hydro-heavy whereas NWPP includes ID/MT/WY parts
 water_l_per_kwh = 0.15               # ANCHOR: AWS 2024 global WUE
 water_uncertainty_range_pct = 50     # Same global-to-regional gap. Pacific NW datacenters often use cooler ambient air → likely below global average, but unverified.
+indirect_water_l_per_kwh = 9.50      # Sweep #2 (2026-05-15): Ren et al. 2024 Table 1 Washington EWIF = 9.501 L/kWh. Hydro-dominated grid (38.7% hydro in NWPP per eGRID2023) → reservoir evaporation is the load-bearing term. Note: Macknick's hydro median (4,491 gal/MWh = 17 L/kWh) attributes ALL reservoir evaporation to power; this is contested in literature (reservoirs serve multi-purpose: irrigation, drinking water, flood control).
+indirect_water_uncertainty_range_pct = 60  # Higher band reflects the hydro-attribution methodology dispute. Different conventions give 5x-10x range in hydro water consumption; this dominates the regional total.
 pue = 1.15                           # ANCHOR: AWS 2024 global PUE
 source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
 source_url_water = "https://aws.amazon.com/sustainability/data-centers/"
+source_url_indirect_water = "https://arxiv.org/abs/2304.03271"
 source_url_pue = "https://aws.amazon.com/sustainability/data-centers/"
 source_accessed_at = "2026-04-28"
 notes = "Oregon grid (state-level) is significantly cleaner than NWPP subregion average due to Pacific Northwest hydro. Per eGRID convention we use subregion (canonical for grid-interconnection accounting); state value is shown for sanity-check. Umatilla AWS DCs share 96% of cooling water with local farmers, but this re-use is not currently captured in WUE factor."
@@ -485,8 +494,11 @@ egrid_subregion = "CAMX"
 egrid_subregion_co2e_lb_per_mwh = 430.0
 co2e_kg_per_kwh = 0.195
 co2e_uncertainty_range_pct = 20      # Sweep #1 (2026-05-12): CAMX observed range 18.0% across eGRID 2019/2020/2022/2023 (range 430-516 lb/MWh, std dev 7.2%). High renewables share → meaningful day-to-day mix variability.
+indirect_water_l_per_kwh = 3.20      # Sweep #2 (2026-05-15): CAMX not in Ren et al. table — computed from eGRID2023 fuel mix (2.1% coal / 42.9% gas / 8.0% nuclear / 14.1% hydro / 20.1% solar / 3.6% geothermal / 6.6% wind) × Macknick 2012 medians. Hydro share is the dominant term despite gas-heavy generation.
+indirect_water_uncertainty_range_pct = 50  # Significant hydro share (14.1%) carries the methodology dispute; geothermal binary-vs-flash split also contributes uncertainty. 50% reflects both factors.
 notes = "Reference subregion. No AWS Anthropic compute hosted here. Cleanest of WECC subregions due to CA renewables mix."
 source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
+source_url_indirect_water = "https://arxiv.org/abs/2304.03271"
 source_accessed_at = "2026-04-28"
 
 # ----------------------------------------------------------------------------

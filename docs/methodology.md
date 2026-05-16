@@ -113,15 +113,28 @@ Critically: **Anthropic does not publish which AWS region served any given reque
 water_l = (facility_wh / 1000) × water_l_per_kwh
 ```
 
-`water_l_per_kwh` is the **direct WUE** — water consumed at the datacenter for cooling, per kWh of facility energy. v0.1 uses AWS's published global 2024 WUE of **0.15 L/kWh** as a flat default across regions, because (same story as PUE) AWS doesn't publish per-region WUE.
+tokenscale separates water into two distinct components, following Ren et al. 2024 "Making AI Less 'Thirsty'":
 
-If a region's water value is null, the application falls back to `[defaults].fallback_wue_l_per_kwh` (0.15 in v0.1). If even that is null, the water field for affected events comes back as `null` — the dashboard renders that as "—" rather than fabricating a zero.
+**1. Direct water** (`water_l_per_kwh`) — water consumed at the datacenter for cooling, per kWh of facility energy. This is scope-1 in Ren's framing. v0.1 uses AWS's published global 2024 WUE of **0.15 L/kWh** as a flat default across regions, because AWS doesn't publish per-region WUE.
+
+If a region's water value is null, the application falls back to `[defaults].fallback_wue_l_per_kwh` (0.15 in v0.1). If even that is null, the water field comes back as `null` — the dashboard renders that as "—" rather than fabricating a zero.
+
+**2. Indirect water** (`indirect_water_l_per_kwh`) — water consumed at the power plants generating the electricity our datacenter draws. Scope-2 in Ren's framing. For thermoelectric-heavy grids (coal, gas, nuclear), indirect water is typically 10×–60× larger than direct water; for hydro-dominated grids it can be even bigger (reservoir evaporation). Added in Sweep #2 (2026-05-15) using Ren et al. 2024 per-state EWIF values where they apply directly, and fuel-mix-weighted Macknick 2012 NREL per-fuel coefficients otherwise:
+
+| eGRID subregion | Region | Indirect water (L/kWh) | ± |
+|---|---|---|---|
+| SRVC | us-east-1 (Virginia) | 2.39 | 35% |
+| RFCW | us-east-2 (Ohio) | 1.85 | 35% |
+| NWPP | us-west-2 (Oregon/Washington) | 9.50 | 60% |
+| CAMX | reference (California) | 3.20 | 50% |
+
+The dashboard's Water KPI defaults to **direct only** to preserve continuity for existing users; an **"Include indirect water"** checkbox switches it to direct + indirect total with sum-quadrature combined uncertainty. The toggle is the principled affordance — flipping the default would jump existing dashboards 10×–60× without notice.
 
 ### What's NOT in v0.1's water number
 
-**Indirect water** — water consumed by power plants generating the electricity our datacenters draw — is not included in v0.1. For thermoelectric-heavy grids (coal, gas, nuclear), indirect water is often larger than direct water. Adding it is tracked as an open research question; see [`request-for-research.md`](request-for-research.md).
+**Recycled-water credits** are not modeled separately. Some AWS datacenters use recycled wastewater for cooling (e.g., 18 Loudoun County DCs), which arguably shouldn't count the same as fresh-water draw — material to actual water draw but not yet quantified.
 
-Likewise, **recycled-water credits** (some AWS datacenters use recycled wastewater, which arguably shouldn't count the same as fresh-water draw) are not modeled separately. Loudoun County's 18 AWS datacenters reportedly use recycled wastewater for cooling — material to actual water draw but not yet quantified in our factor model.
+**Hydro attribution** for indirect water uses Macknick's 4,491 gal/MWh (17 L/kWh) median, which attributes 100% of reservoir evaporation to power. This is contested in the literature (reservoirs serve multi-purpose use). We widen the uncertainty band for hydro-heavy regions (NWPP ±60%) to reflect this; refining the hydro coefficient is tracked for a future sweep.
 
 ---
 
@@ -190,7 +203,7 @@ Most relevant primary sources for v0.1:
 - [Google Aug 2025 blog post](https://blog.google/inside-google/sustainability/...) — companion to Elsworth et al.; sets the anchor numbers.
 - [EPA eGRID2023 summary tables](https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf) — every CO₂e number in our grid factors.
 - [Jegham et al. 2025 (arXiv:2505.09598)](https://arxiv.org/abs/2505.09598) — peer-reviewed per-long-prompt benchmarks for OpenAI / DeepSeek / Meta / Mistral models.
-- [Ren et al. 2024 (Communications of the ACM)](https://arxiv.org/abs/2304.03271) — water-footprint methodology distinguishing direct and indirect water. v0.1 uses direct only; v0.2 will add indirect.
+- [Ren et al. 2024 (Communications of the ACM)](https://arxiv.org/abs/2304.03271) — water-footprint methodology distinguishing direct and indirect water. Both modeled as of v0.1.7 (Sweep #2); indirect is opt-in via the dashboard's Water KPI toggle.
 - [Couch (Cumulator) Jan 2026 analysis](https://couch.is/cumulator) — derivation source for per-token Anthropic rates.
 
 ---
@@ -210,7 +223,6 @@ A few framing notes to keep in mind when looking at the environmental view:
 
 Things v0.1 does NOT do well, with where to follow up:
 
-- Indirect water (power-plant cooling) per Ren et al.
 - Anthropic tokenizer-change factor verification (currently using a third-party estimate).
 - Non-US AWS region eGRID equivalents (currently us-east-1 / us-east-2 / us-west-2 only).
 - Periodic re-verification that Google's comprehensive methodology remains the right canonical choice.

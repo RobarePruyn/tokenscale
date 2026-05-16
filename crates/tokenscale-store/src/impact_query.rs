@@ -63,9 +63,16 @@ pub struct ImpactByBucketRow {
     /// `co2e_kg_per_kwh`. Otherwise the sum, in grams.
     pub co2e_g: Option<f64>,
 
-    /// `None` when no event had a non-null water factor and the
-    /// fallback WUE was also unset. Otherwise the sum, in liters.
+    /// **Direct** (on-site DC cooling) water in liters. `None` when no
+    /// event had a non-null water factor and the fallback WUE was also
+    /// unset. Otherwise the sum.
     pub water_l: Option<f64>,
+
+    /// **Indirect** (off-site, power-plant cooling) water in liters per
+    /// Ren et al. 2024. `None` when no event in the bucket had a grid
+    /// row with `indirect_water_l_per_kwh` published. No fallback —
+    /// indirect water is fundamentally region-specific.
+    pub indirect_water_l: Option<f64>,
 
     /// Maximum per-event model-factor uncertainty within the bucket, %.
     /// Used as the energy-side `± X%` band (energy / facility_wh have no
@@ -78,9 +85,14 @@ pub struct ImpactByBucketRow {
     /// See [`tokenscale_core::combine_uncertainty_pct`].
     pub co2e_uncertainty_pct: i32,
 
-    /// Combined `± %` for `water_l`. Same combination rule as
-    /// `co2e_uncertainty_pct` but with the grid's water uncertainty.
+    /// Combined `± %` for direct `water_l`. Same combination rule as
+    /// `co2e_uncertainty_pct` but with the grid's direct water
+    /// uncertainty.
     pub water_uncertainty_pct: i32,
+
+    /// Combined `± %` for `indirect_water_l`. Quadrature of model + grid
+    /// indirect-water uncertainty.
+    pub indirect_water_uncertainty_pct: i32,
 
     /// Number of events whose env_factor row was missing entirely
     /// (model isn't in `env_factors` at the event's `occurred_at`).
@@ -222,12 +234,32 @@ pub async fn aggregate_impact_by_bucket(
     builder.push(" THEN 1
                 ELSE 0
             END)                                         AS events_with_water,
+        -- Indirect water (off-site / power-plant cooling) = facility_wh
+        -- / 1000 * gf.indirect_water_l_per_kwh. No fallback — when the
+        -- grid row doesn't publish indirect water, contribution is
+        -- NULL → SUM treats as zero contribution, and we promote
+        -- zero-with-no-non-null to NULL on the Rust side.
+        SUM(
+            (events.input_tokens          * COALESCE(ef.wh_per_mtok_input, 0)
+           + events.output_tokens         * COALESCE(ef.wh_per_mtok_output, 0)
+           + events.cache_read_tokens     * COALESCE(ef.wh_per_mtok_cache_read, 0)
+           + events.cache_write_5m_tokens * COALESCE(ef.wh_per_mtok_cache_write_5m, 0)
+           + events.cache_write_1h_tokens * COALESCE(ef.wh_per_mtok_cache_write_1h, 0)
+            ) / 1000000.0
+            * COALESCE(gf.pue, ");
+    builder.push_bind(factors.fallback_pue);
+    builder.push(")
+            / 1000.0
+            * gf.indirect_water_l_per_kwh
+        )                                                AS indirect_water_l_raw,
+        SUM(CASE WHEN gf.indirect_water_l_per_kwh IS NOT NULL THEN 1 ELSE 0 END) AS events_with_indirect_water,
         COALESCE(MAX(ef.uncertainty_range_pct), 0)             AS max_uncertainty_pct,
         -- Grid uncertainty is region-constant across the bucket (same
         -- configured region for every event), so MAX is just a way to
         -- pull the row value through aggregation.
-        COALESCE(MAX(gf.co2e_uncertainty_range_pct), 0)        AS grid_co2e_uncertainty_pct,
-        COALESCE(MAX(gf.water_uncertainty_range_pct), 0)       AS grid_water_uncertainty_pct,
+        COALESCE(MAX(gf.co2e_uncertainty_range_pct), 0)            AS grid_co2e_uncertainty_pct,
+        COALESCE(MAX(gf.water_uncertainty_range_pct), 0)           AS grid_water_uncertainty_pct,
+        COALESCE(MAX(gf.indirect_water_uncertainty_range_pct), 0)  AS grid_indirect_water_uncertainty_pct,
         SUM(CASE WHEN ef.id IS NULL THEN 1 ELSE 0 END)   AS events_missing_env_factor,
         SUM(CASE WHEN gf.pue IS NULL THEN 1 ELSE 0 END)  AS events_using_fallback_pue,
         SUM(CASE WHEN gf.water_l_per_kwh IS NULL THEN 1 ELSE 0 END) AS events_using_fallback_wue,
@@ -302,9 +334,12 @@ struct RawImpactByBucketRow {
     events_with_co2e: i64,
     water_l_raw: Option<f64>,
     events_with_water: i64,
+    indirect_water_l_raw: Option<f64>,
+    events_with_indirect_water: i64,
     max_uncertainty_pct: i32,
     grid_co2e_uncertainty_pct: i32,
     grid_water_uncertainty_pct: i32,
+    grid_indirect_water_uncertainty_pct: i32,
     events_missing_env_factor: i64,
     events_using_fallback_pue: i64,
     events_using_fallback_wue: i64,
@@ -325,6 +360,11 @@ impl RawImpactByBucketRow {
         } else {
             None
         };
+        let indirect_water_l = if self.events_with_indirect_water > 0 {
+            self.indirect_water_l_raw
+        } else {
+            None
+        };
 
         let co2e_uncertainty_pct = tokenscale_core::combine_uncertainty_pct(
             self.max_uncertainty_pct,
@@ -333,6 +373,10 @@ impl RawImpactByBucketRow {
         let water_uncertainty_pct = tokenscale_core::combine_uncertainty_pct(
             self.max_uncertainty_pct,
             self.grid_water_uncertainty_pct,
+        );
+        let indirect_water_uncertainty_pct = tokenscale_core::combine_uncertainty_pct(
+            self.max_uncertainty_pct,
+            self.grid_indirect_water_uncertainty_pct,
         );
 
         ImpactByBucketRow {
@@ -348,9 +392,11 @@ impl RawImpactByBucketRow {
             facility_wh: self.facility_wh,
             co2e_g,
             water_l,
+            indirect_water_l,
             max_uncertainty_pct: self.max_uncertainty_pct,
             co2e_uncertainty_pct,
             water_uncertainty_pct,
+            indirect_water_uncertainty_pct,
             events_missing_env_factor: self.events_missing_env_factor,
             events_using_fallback_pue: self.events_using_fallback_pue,
             events_using_fallback_wue: self.events_using_fallback_wue,

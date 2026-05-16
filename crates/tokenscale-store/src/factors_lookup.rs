@@ -85,7 +85,8 @@ pub async fn lookup_grid_factors(
             co2e_kg_per_kwh, water_l_per_kwh, pue,
             egrid_subregion, egrid_subregion_full_name,
             source_url, source_accessed_at,
-            co2e_uncertainty_range_pct, water_uncertainty_range_pct
+            co2e_uncertainty_range_pct, water_uncertainty_range_pct,
+            indirect_water_l_per_kwh, indirect_water_uncertainty_range_pct
          FROM grid_factors
          WHERE region = ?
            AND valid_from <= ?
@@ -151,6 +152,8 @@ struct GridFactorRow {
     source_accessed_at: String,
     co2e_uncertainty_range_pct: Option<i32>,
     water_uncertainty_range_pct: Option<i32>,
+    indirect_water_l_per_kwh: Option<f64>,
+    indirect_water_uncertainty_range_pct: Option<i32>,
 }
 
 impl GridFactorRow {
@@ -162,6 +165,8 @@ impl GridFactorRow {
             co2e_uncertainty_range_pct: self.co2e_uncertainty_range_pct,
             water_l_per_kwh: self.water_l_per_kwh,
             water_uncertainty_range_pct: self.water_uncertainty_range_pct,
+            indirect_water_l_per_kwh: self.indirect_water_l_per_kwh,
+            indirect_water_uncertainty_range_pct: self.indirect_water_uncertainty_range_pct,
             pue: self.pue,
             egrid_subregion: self.egrid_subregion,
             egrid_subregion_full_name: self.egrid_subregion_full_name,
@@ -170,6 +175,7 @@ impl GridFactorRow {
             // snapshot for the per-pollutant breakdown.
             source_url_co2e: Some(self.source_url),
             source_url_water: None,
+            source_url_indirect_water: None,
             source_url_pue: None,
             source_accessed_at: Some(self.source_accessed_at),
             notes: None,

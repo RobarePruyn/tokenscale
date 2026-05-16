@@ -6,6 +6,96 @@ Newest entries appear at the top.
 
 ---
 
+## 2026-05-15 — Sweep #2: indirect (off-site / power-plant) water
+
+### Question
+
+`request-for-research.md` flagged that v0.1 reported only **direct** water (on-site DC cooling). For thermoelectric-heavy grids the **indirect** water (cooling at the upstream power plants generating the electricity our datacenter draws) is often the larger of the two. Add a per-region `indirect_water_l_per_kwh` to the factor file and surface it as an opt-in dashboard view.
+
+### Methodology
+
+Adopted Ren et al. 2024 "Making AI Less Thirsty" (Communications of the ACM, [arXiv:2304.03271](https://arxiv.org/abs/2304.03271)) as the canonical framing — they define scope-1 (on-site) vs scope-2 (off-site) water, and publish per-state EWIF (electricity water-intensity factor, L/kWh) figures for US datacenter locations.
+
+For tokenscale's four tracked subregions, two regions map directly to Ren's published state values; for the other two we computed EWIF from eGRID 2023 fuel-mix × Macknick 2012 NREL per-fuel water-consumption coefficients (recirculating-cooling tower medians):
+
+| eGRID subregion | Region | Method | Value (L/kWh) | Uncertainty |
+|---|---|---|---|---|
+| SRVC | us-east-1 (Virginia) | Ren VA direct quote | **2.39** | ±35% |
+| RFCW | us-east-2 (Ohio) | eGRID×Macknick computed | **1.85** | ±35% |
+| NWPP | us-west-2 (Oregon/Washington) | Ren WA direct quote (hydro-dominated) | **9.50** | ±60% |
+| CAMX | reference (California) | eGRID×Macknick computed | **3.20** | ±50% |
+
+### Source corpus (this cycle)
+
+- **Ren et al. 2024 "Making AI Less Thirsty"** — Table 1 per-state EWIF values for US datacenter locations including Virginia (2.385 L/kWh), Washington (9.501 L/kWh), Iowa (3.104), Texas (1.287). US average 3.142 L/kWh.
+- **Macknick et al. 2012, NREL TP-6A20-50900** "A Review of Operational Water Consumption and Withdrawal Factors for Electricity Generating Technologies" — Table 2 non-renewable + Table 1 renewable, recirculating-cooling-tower median values per fuel type:
+  - Nuclear (tower): 672 gal/MWh = **2.54 L/kWh**
+  - Natural Gas Combined Cycle (tower): 198 gal/MWh = **0.75 L/kWh**
+  - Coal generic (tower): 687 gal/MWh = **2.60 L/kWh**
+  - Hydro (aggregated in-stream + reservoir): 4,491 gal/MWh = **17.0 L/kWh** (contested — see "Methodology decisions" below)
+  - Wind: 0; Solar PV: 26 gal/MWh = 0.10 L/kWh
+  - Biomass steam (tower): 553 gal/MWh = 2.09 L/kWh
+  - Geothermal binary (tower): 3,600 gal/MWh = 13.6 L/kWh; flash freshwater 10 gal/MWh = 0.04 L/kWh
+- **eGRID2023 summary tables** Table 2 Subregion Resource Mix — generation percentage by fuel for SRVC, RFCW, NWPP, CAMX:
+  - SRVC: 10.5% coal · 0.1% oil · 39.3% gas · 0.2% other fossil · 39.9% nuclear · 1.4% hydro · 2.1% biomass · 0.5% wind · 6.0% solar
+  - RFCW: 25.0% coal · 0.3% oil · 37.8% gas · 0.7% other fossil · 28.4% nuclear · 1.0% hydro · 0.3% biomass · 5.5% wind · 0.8% solar
+  - NWPP: 16.4% coal · 0.2% oil · 24.8% gas · 0.3% other fossil · 3.1% nuclear · **38.7% hydro** · 1.0% biomass · 11.6% wind · 3.1% solar · 0.7% geothermal
+  - CAMX: 2.1% coal · 0.0% oil · 42.9% gas · 0.7% other fossil · 8.0% nuclear · 14.1% hydro · 2.2% biomass · 6.6% wind · **20.1% solar** · 3.6% geothermal
+
+### Findings — raw computation for RFCW (representative)
+
+EWIF_RFCW = Σ (fuel_share × per_fuel_L_per_kWh)
+= 0.250 × 2.60  (coal)
++ 0.003 × 1.00  (oil)
++ 0.378 × 0.75  (gas)
++ 0.007 × 2.00  (other fossil)
++ 0.284 × 2.54  (nuclear)
++ 0.010 × 17.0  (hydro)
++ 0.003 × 2.09  (biomass)
++ 0.055 × 0     (wind)
++ 0.008 × 0.10  (solar)
+= **1.85 L/kWh**
+
+CAMX computed similarly = 3.20 L/kWh (hydro share dominates despite gas-heavy generation; geothermal binary share also contributes ~0.14).
+
+### Methodology decisions worth recording
+
+1. **Hydro attribution is contested.** Macknick's 4,491 gal/MWh median for hydropower attributes ALL reservoir evaporation to power generation. Reservoirs serve multi-purpose (irrigation, drinking water, flood control, recreation), so 100% power attribution is debatable. Different conventions give 5×–10× range. We use Macknick's number as-published but widen uncertainty bands for hydro-heavy regions (NWPP ±60%, CAMX ±50%) to reflect this. SRVC and RFCW have low hydro share (1-2%) so the methodology dispute contributes little.
+
+2. **Two regions use Ren's published state values directly** (Virginia for SRVC; Washington for NWPP) rather than our fuel-mix-weighted computation. Ren's numbers are peer-reviewed against a slightly different per-fuel coefficient set; using their direct values keeps the headline numbers traceable to a single citable paper. The other two regions compute from Macknick because Ren doesn't publish Ohio or California EWIF.
+
+3. **No fallback for indirect water.** Unlike `water_l_per_kwh` (which falls back to `defaults.fallback_wue_l_per_kwh` when the grid row is null), indirect water is fundamentally region-specific. A global default would be misleading — the regional grid mix is the whole point. When a future grid_factors row doesn't publish indirect water, the dashboard shows "indirect water not available for this region" rather than falling back.
+
+4. **Default UI behavior: indirect water OFF.** Flipping default ON would jump SRVC water from 0.057L to ~1L on existing dashboards — a 17× change with no user prompt. We ship the data, expose a toggle, and let users opt in. Future release may flip the default once users have had a chance to understand the magnitude.
+
+### What changed in `environmental-factors.toml`
+
+- **`file_version` bumped 0.2 → 0.3.**
+- Each `[grid_factors.*]` block gained `indirect_water_l_per_kwh` and `indirect_water_uncertainty_range_pct` fields, plus a `source_url_indirect_water = "https://arxiv.org/abs/2304.03271"` pointer.
+- Schema is back-compat — `schema_version` stays at 1; the two new fields are nullable.
+
+### What this changes for users
+
+The dashboard's Water KPI gains a checkbox: **"Include indirect water (off-site power-plant cooling, per Ren et al. 2024)"**. When checked:
+- The displayed value becomes direct + indirect (a ~17× jump for SRVC, ~13× for RFCW, ~64× for NWPP, ~22× for CAMX-served regions).
+- The ± band combines model and BOTH grid water uncertainties via quadrature of the sum.
+- Tooltip shows the breakdown ("direct X L + indirect Y L per Ren et al. 2024").
+- The Sources panel grows a "Indirect water: 2.39 L/kWh ± 35%" row alongside the existing direct-water row.
+
+Per-event compute carries indirect water through the database aggregate path — same time-anchoring as every other factor row.
+
+### Resolved from `request-for-research.md`
+
+- "Indirect water (power-plant cooling) methodology" moved from Open → Resolved.
+
+### Carry-forward
+
+- **Per-region WUE values from AWS** would tighten the *direct* water band (currently ±50%). Tracked separately.
+- **Hydro attribution methodology** could be refined with a less-contested coefficient (e.g., 10-20% of reservoir evaporation attributed to power generation, per recent literature). Currently using Macknick as-published.
+- **Geothermal binary-vs-flash mix per region** — California is mostly flash (low water); my current 4 L/kWh estimate for CAMX geothermal might be too high. Future sweep should refine.
+
+---
+
 ## 2026-05-12 — Sweep #1: grid-factor uncertainty bands
 
 ### Question

@@ -83,10 +83,18 @@ pub struct EnvironmentalImpact {
     /// "unavailable," distinct from a computed near-zero.
     pub co2e_g: Option<f64>,
 
-    /// Water draw in liters. `None` when neither the grid row's
+    /// **Direct** (on-site, DC cooling) water in liters — scope-1 water
+    /// in Ren et al.'s framing. `None` when neither the grid row's
     /// `water_l_per_kwh` nor the file's `defaults.fallback_wue_l_per_kwh`
     /// is set.
     pub water_l: Option<f64>,
+
+    /// **Indirect** (off-site, power-plant cooling) water in liters —
+    /// scope-2 water in Ren et al. 2024 framing. `None` when the grid
+    /// row doesn't publish `indirect_water_l_per_kwh` (no fallback
+    /// available because indirect water is fundamentally per-region;
+    /// applying a global default would be misleading).
+    pub indirect_water_l: Option<f64>,
 
     /// Uncertainty on `facility_wh` in percent. Currently inherits the
     /// model factor's `uncertainty_range_pct` only — PUE uncertainty is
@@ -98,9 +106,14 @@ pub struct EnvironmentalImpact {
     /// one is non-zero. See [`combine_uncertainty_pct`].
     pub co2e_uncertainty_pct: i32,
 
-    /// Uncertainty on `water_l`, in percent. Same combination rule as
-    /// `co2e_uncertainty_pct` but with the grid's water uncertainty.
+    /// Uncertainty on direct `water_l`, in percent. Same combination
+    /// rule as `co2e_uncertainty_pct` but with the grid's direct water
+    /// uncertainty.
     pub water_uncertainty_pct: i32,
+
+    /// Uncertainty on `indirect_water_l`, in percent. Quadrature of
+    /// model uncertainty + grid `indirect_water_uncertainty_range_pct`.
+    pub indirect_water_uncertainty_pct: i32,
 
     pub factors_used: FactorsProvenance,
 }
@@ -158,6 +171,12 @@ pub struct FactorsProvenance {
     /// Honest uncertainty band on the grid row's `water_l_per_kwh`, %.
     /// Same zero-means-not-published convention.
     pub grid_water_uncertainty_pct: i32,
+
+    /// Honest uncertainty band on the grid row's
+    /// `indirect_water_l_per_kwh` (off-site / power-plant cooling), %.
+    /// Zero when the grid row doesn't publish indirect water at all
+    /// (legacy factor-file rows pre-Sweep #2).
+    pub grid_indirect_water_uncertainty_pct: i32,
 
     pub schema_version: i64,
 
@@ -220,6 +239,16 @@ pub fn compute_impact(inputs: &ImpactInputs<'_>) -> EnvironmentalImpact {
         },
     };
 
+    // Indirect water (off-site / power-plant cooling). Distinct from
+    // direct: applies the regional EWIF (electricity-water-intensity
+    // factor) to facility energy. No fallback path — indirect water is
+    // fundamentally region-specific; a global default would be
+    // misleading. When the grid row doesn't publish it, we return None.
+    let indirect_water_litres = inputs
+        .grid_factors
+        .indirect_water_l_per_kwh
+        .map(|grid_ewif| (facility_wh / 1000.0) * grid_ewif);
+
     let model_uncertainty_pct = inputs.model_factors.uncertainty_range_pct.unwrap_or(0);
     let grid_co2e_uncertainty_pct = inputs
         .grid_factors
@@ -229,12 +258,17 @@ pub fn compute_impact(inputs: &ImpactInputs<'_>) -> EnvironmentalImpact {
         .grid_factors
         .water_uncertainty_range_pct
         .unwrap_or(0);
+    let grid_indirect_water_uncertainty_pct = inputs
+        .grid_factors
+        .indirect_water_uncertainty_range_pct
+        .unwrap_or(0);
 
     EnvironmentalImpact {
         energy_wh,
         facility_wh,
         co2e_g,
         water_l: water_litres,
+        indirect_water_l: indirect_water_litres,
         // facility_wh inherits model uncertainty only — PUE has no
         // separately-tracked uncertainty band yet, so it folds in here.
         energy_uncertainty_pct: model_uncertainty_pct,
@@ -245,6 +279,10 @@ pub fn compute_impact(inputs: &ImpactInputs<'_>) -> EnvironmentalImpact {
         water_uncertainty_pct: combine_uncertainty_pct(
             model_uncertainty_pct,
             grid_water_uncertainty_pct,
+        ),
+        indirect_water_uncertainty_pct: combine_uncertainty_pct(
+            model_uncertainty_pct,
+            grid_indirect_water_uncertainty_pct,
         ),
         factors_used: FactorsProvenance {
             provider: inputs.provider.to_owned(),
@@ -263,6 +301,7 @@ pub fn compute_impact(inputs: &ImpactInputs<'_>) -> EnvironmentalImpact {
             grid_factor_egrid_subregion: inputs.grid_factors.egrid_subregion.clone(),
             grid_co2e_uncertainty_pct,
             grid_water_uncertainty_pct,
+            grid_indirect_water_uncertainty_pct,
             schema_version: inputs.schema_version,
             used_fallback_pue: pue_was_fallback,
             used_fallback_wue: water_was_fallback,
@@ -329,11 +368,14 @@ mod tests {
             co2e_uncertainty_range_pct: None,
             water_l_per_kwh: Some(0.15),
             water_uncertainty_range_pct: None,
+            indirect_water_l_per_kwh: None,
+            indirect_water_uncertainty_range_pct: None,
             pue: Some(1.15),
             egrid_subregion: Some("SRVC".to_owned()),
             egrid_subregion_full_name: Some("SERC Virginia/Carolina".to_owned()),
             source_url_co2e: Some("https://www.epa.gov/egrid".to_owned()),
             source_url_water: None,
+            source_url_indirect_water: None,
             source_url_pue: None,
             source_accessed_at: Some("2026-04-28".to_owned()),
             notes: None,

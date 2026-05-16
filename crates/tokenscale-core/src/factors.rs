@@ -161,7 +161,9 @@ pub struct GridFactors {
     #[serde(default)]
     pub co2e_uncertainty_range_pct: Option<i32>,
 
-    /// Liters of water per kWh.
+    /// Liters of water per kWh — on-site DC cooling (scope-1 in
+    /// Ren et al.'s framing). Bounded by the WUE the datacenter
+    /// operator publishes for its own facility.
     #[serde(default)]
     pub water_l_per_kwh: Option<f64>,
 
@@ -172,6 +174,25 @@ pub struct GridFactors {
     /// fleetwide average, especially in arid regions vs. wet ones.
     #[serde(default)]
     pub water_uncertainty_range_pct: Option<i32>,
+
+    /// **Indirect** (off-site, power-plant cooling) water per kWh of
+    /// electricity drawn — scope-2 water in Ren et al. 2024 "Making AI
+    /// Less Thirsty". This is the water consumed at the generating
+    /// plants whose electricity the datacenter pulls, derived from the
+    /// regional fuel-mix × per-fuel water coefficients (Macknick 2012).
+    /// For thermoelectric-heavy grids it's typically 10×–60× larger than
+    /// the on-site WUE; for renewable-heavy grids it's much smaller.
+    /// Surfaces in the dashboard via the "Include indirect water" toggle.
+    #[serde(default)]
+    pub indirect_water_l_per_kwh: Option<f64>,
+
+    /// Honest ± band on `indirect_water_l_per_kwh`. The hydro-attribution
+    /// methodology dominates this for hydro-heavy regions (Macknick's
+    /// reservoir-evaporation figures are contested 5×–10×); thermoelectric
+    /// coefficients are well-characterized, so coal/gas/nuclear-dominated
+    /// grids carry a smaller band.
+    #[serde(default)]
+    pub indirect_water_uncertainty_range_pct: Option<i32>,
 
     /// Power Usage Effectiveness — facility energy / IT energy. Multiplier
     /// applied AFTER per-token energy to get total facility energy.
@@ -190,6 +211,8 @@ pub struct GridFactors {
     pub source_url_co2e: Option<String>,
     #[serde(default)]
     pub source_url_water: Option<String>,
+    #[serde(default)]
+    pub source_url_indirect_water: Option<String>,
     #[serde(default)]
     pub source_url_pue: Option<String>,
 

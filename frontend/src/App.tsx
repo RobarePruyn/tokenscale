@@ -54,12 +54,17 @@ type ModelImpact = {
   energy_wh: number
   facility_wh: number
   co2eG: number | null
+  // Direct (on-site / DC cooling) water — scope-1 in Ren et al. framing.
   waterL: number | null
+  // Indirect (off-site / power-plant cooling) water — scope-2 per Ren
+  // et al. 2024. `null` when the region doesn't publish an EWIF.
+  indirectWaterL: number | null
   // Energy-side ± band (model-factor uncertainty only; PUE folds in).
   maxUncertaintyPct: number
   // Combined ± bands for CO₂e and water — model + grid via quadrature.
   co2eUncertaintyPct: number
   waterUncertaintyPct: number
+  indirectWaterUncertaintyPct: number
   eventsMissingEnvFactor: number
   eventsUsingFallbackPue: number
   eventsUsingFallbackWue: number
@@ -198,10 +203,13 @@ type GridFactorEntry = {
   co2e_uncertainty_range_pct: number | null
   water_l_per_kwh: number | null
   water_uncertainty_range_pct: number | null
+  indirect_water_l_per_kwh: number | null
+  indirect_water_uncertainty_range_pct: number | null
   pue: number | null
   egrid_subregion: string | null
   egrid_subregion_full_name: string | null
   source_url_co2e: string | null
+  source_url_indirect_water: string | null
   source_accessed_at: string | null
   notes: string | null
 }
@@ -814,6 +822,13 @@ export default function App() {
   const [chartType, setChartType] = useState<ChartType>('area')
   const [yAxisScale, setYAxisScale] = useState<YAxisScale>('linear')
 
+  // Toggle for direct vs direct+indirect water in the Water KPI.
+  // Default OFF for backwards-compat — flipping to ON jumps the
+  // reported water 10×-60× for thermoelectric-heavy regions (e.g. SRVC
+  // 0.15 L/kWh direct → 2.54 L/kWh total). v0.1.7 ships the data; users
+  // opt in via this toggle to see the full Ren et al. picture.
+  const [includeIndirectWater, setIncludeIndirectWater] = useState<boolean>(false)
+
   // Effective bucket size — auto = pick from window length, else honor
   // the user's explicit choice. Server gets a concrete day/week/month.
   const effectiveGranularity: Granularity =
@@ -1204,13 +1219,16 @@ export default function App() {
     let facilityWh = 0
     let co2eG = 0
     let waterL = 0
+    let indirectWaterL = 0
     let energyUncertaintyPct = 0
     let co2eUncertaintyPct = 0
     let waterUncertaintyPct = 0
+    let indirectWaterUncertaintyPct = 0
     let eventsMissingFactor = 0
     let eventsCount = 0
     let anyCo2 = false
     let anyWater = false
+    let anyIndirectWater = false
     for (const row of data.rows) {
       for (const modelId of visibleModels) {
         const cell = row.byModel[modelId]
@@ -1226,6 +1244,10 @@ export default function App() {
           waterL += impact.waterL
           anyWater = true
         }
+        if (impact.indirectWaterL !== null) {
+          indirectWaterL += impact.indirectWaterL
+          anyIndirectWater = true
+        }
         if (impact.maxUncertaintyPct > energyUncertaintyPct) {
           energyUncertaintyPct = impact.maxUncertaintyPct
         }
@@ -1234,6 +1256,9 @@ export default function App() {
         }
         if (impact.waterUncertaintyPct > waterUncertaintyPct) {
           waterUncertaintyPct = impact.waterUncertaintyPct
+        }
+        if (impact.indirectWaterUncertaintyPct > indirectWaterUncertaintyPct) {
+          indirectWaterUncertaintyPct = impact.indirectWaterUncertaintyPct
         }
         eventsMissingFactor += impact.eventsMissingEnvFactor
         eventsCount += impact.eventsCount
@@ -1244,9 +1269,11 @@ export default function App() {
       facilityWh,
       co2eG: anyCo2 ? co2eG : null,
       waterL: anyWater ? waterL : null,
+      indirectWaterL: anyIndirectWater ? indirectWaterL : null,
       energyUncertaintyPct,
       co2eUncertaintyPct,
       waterUncertaintyPct,
+      indirectWaterUncertaintyPct,
       eventsMissingFactor,
       eventsCount,
     }
@@ -1649,6 +1676,8 @@ export default function App() {
               modelsWithoutFactors={
                 dailyState.status === 'ok' ? dailyState.data.modelsWithoutFactors : []
               }
+              includeIndirectWater={includeIndirectWater}
+              onToggleIndirectWater={setIncludeIndirectWater}
             />
           )}
 
@@ -1869,18 +1898,43 @@ type EnvironmentalStatRowProps = {
     facilityWh: number
     co2eG: number | null
     waterL: number | null
+    indirectWaterL: number | null
     energyUncertaintyPct: number
     co2eUncertaintyPct: number
     waterUncertaintyPct: number
+    indirectWaterUncertaintyPct: number
     eventsMissingFactor: number
     eventsCount: number
   }
   modelsWithoutFactors: string[]
+  includeIndirectWater: boolean
+  onToggleIndirectWater: (next: boolean) => void
+}
+
+/** Combine fractional uncertainties for a sum A + B of two independent
+ *  values. The σ of (A+B) is sqrt(σ_A² + σ_B²) in absolute terms;
+ *  fractional becomes sqrt((A·u_A)² + (B·u_B)²) / (A+B). For our use:
+ *  direct water and indirect water are independent (different physical
+ *  systems — DC cooling vs power-plant cooling), so quadrature of the
+ *  absolute σ is the right combination rule.
+ */
+function combineSumUncertaintyPct(
+  valueA: number, uncertaintyPctA: number,
+  valueB: number, uncertaintyPctB: number,
+): number {
+  const total = valueA + valueB
+  if (total <= 0) return Math.max(uncertaintyPctA, uncertaintyPctB)
+  const absA = (valueA * uncertaintyPctA) / 100
+  const absB = (valueB * uncertaintyPctB) / 100
+  const sigmaSum = Math.sqrt(absA * absA + absB * absB)
+  return Math.round((sigmaSum / total) * 100)
 }
 
 function EnvironmentalStatRow({
   impact,
   modelsWithoutFactors,
+  includeIndirectWater,
+  onToggleIndirectWater,
 }: EnvironmentalStatRowProps) {
   const suffix = (pct: number) => (pct > 0 ? ` ± ${pct}%` : '')
   const energyValue = `${formatEnergy(impact.facilityWh)}${suffix(impact.energyUncertaintyPct)}`
@@ -1888,10 +1942,32 @@ function EnvironmentalStatRow({
     impact.co2eG === null
       ? '—'
       : `${formatCo2(impact.co2eG)}${suffix(impact.co2eUncertaintyPct)}`
-  const waterValue =
-    impact.waterL === null
-      ? '—'
-      : `${formatWater(impact.waterL)}${suffix(impact.waterUncertaintyPct)}`
+
+  // Direct-only vs direct+indirect water. When the toggle is on AND the
+  // region publishes an indirect EWIF, fold both into the displayed
+  // value with sum-uncertainty quadrature (independent: different
+  // physical systems — DC cooling vs power-plant cooling).
+  const hasIndirect = impact.indirectWaterL !== null
+  const showCombined = includeIndirectWater && hasIndirect
+  let waterValue: string
+  let waterTooltipExtra = ''
+  if (impact.waterL === null && impact.indirectWaterL === null) {
+    waterValue = '—'
+  } else if (showCombined) {
+    const total = (impact.waterL ?? 0) + (impact.indirectWaterL ?? 0)
+    const combinedPct = combineSumUncertaintyPct(
+      impact.waterL ?? 0,
+      impact.waterUncertaintyPct,
+      impact.indirectWaterL ?? 0,
+      impact.indirectWaterUncertaintyPct,
+    )
+    waterValue = `${formatWater(total)}${suffix(combinedPct)}`
+    waterTooltipExtra = ` Breakdown: direct ${formatWater(impact.waterL ?? 0)} (DC cooling) + indirect ${formatWater(impact.indirectWaterL ?? 0)} (power-plant cooling per Ren et al. 2024).`
+  } else if (impact.waterL !== null) {
+    waterValue = `${formatWater(impact.waterL)}${suffix(impact.waterUncertaintyPct)}`
+  } else {
+    waterValue = '—'
+  }
 
   return (
     <div className="space-y-2">
@@ -1908,11 +1984,33 @@ function EnvironmentalStatRow({
           muted={impact.co2eG === null}
         />
         <StatCard
-          label="Water"
+          label={showCombined ? 'Water (direct + indirect)' : 'Water (direct only)'}
           value={waterValue}
-          helpText="Direct datacenter water (cooling) using the configured region's WUE, falling back to the file's defaults.fallback_wue_l_per_kwh when absent. ± band combines model and grid water uncertainty via quadrature. Indirect (power-plant) water is a future enhancement."
-          muted={impact.waterL === null}
+          helpText={
+            (showCombined
+              ? 'Direct DC cooling water plus indirect (off-site, power-plant cooling) water per Ren et al. 2024 "Making AI Less Thirsty". Indirect water comes from the regional fuel mix × Macknick 2012 per-fuel coefficients. ± band combines model and both grid water uncertainties via quadrature.'
+              : 'Direct datacenter water (cooling) only, using the configured region\'s WUE. Toggle "Include indirect water" below to add scope-2 power-plant cooling per Ren et al.') +
+            waterTooltipExtra
+          }
+          muted={impact.waterL === null && !showCombined}
         />
+      </div>
+      <div className="flex items-center gap-2 text-xs text-slate-600">
+        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={includeIndirectWater}
+            onChange={(e) => onToggleIndirectWater(e.target.checked)}
+            disabled={!hasIndirect}
+            className="h-3.5 w-3.5"
+          />
+          <span>
+            Include indirect water (off-site power-plant cooling, per Ren et al. 2024)
+            {!hasIndirect && (
+              <span className="text-slate-400"> — not available for the configured region</span>
+            )}
+          </span>
+        </label>
       </div>
       {modelsWithoutFactors.length > 0 && (
         <div className="text-xs text-slate-500">
@@ -2107,13 +2205,26 @@ function FactorProvenancePanel({
                     )}
                     {configuredRegion.water_l_per_kwh !== null && (
                       <span className="mr-3">
-                        Water:{' '}
+                        Direct water:{' '}
                         <span className="font-mono">
                           {configuredRegion.water_l_per_kwh} L/kWh
                         </span>
                         {configuredRegion.water_uncertainty_range_pct !== null && (
                           <span className="text-slate-400">
                             {' '}± {configuredRegion.water_uncertainty_range_pct}%
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    {configuredRegion.indirect_water_l_per_kwh !== null && (
+                      <span className="mr-3">
+                        Indirect water:{' '}
+                        <span className="font-mono">
+                          {configuredRegion.indirect_water_l_per_kwh} L/kWh
+                        </span>
+                        {configuredRegion.indirect_water_uncertainty_range_pct !== null && (
+                          <span className="text-slate-400">
+                            {' '}± {configuredRegion.indirect_water_uncertainty_range_pct}%
                           </span>
                         )}
                       </span>

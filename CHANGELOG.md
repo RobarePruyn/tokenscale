@@ -6,6 +6,44 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.7 — 2026-05-16
+
+The full-water-footprint release. Ships **indirect (off-site, power-plant cooling) water** alongside the existing direct-DC-cooling water — closing the open research item from Sweep #2 and giving users the complete Ren et al. 2024 scope-1 + scope-2 water picture. Opt-in via a new toggle to preserve continuity; existing dashboards default to direct-only.
+
+### Added
+
+- **`indirect_water_l_per_kwh`** field per `[grid_factors.*]` block in `environmental-factors.toml` v0.3, with matching `indirect_water_uncertainty_range_pct`. Per-subregion values:
+  - SRVC (us-east-1): **2.39 L/kWh** ±35% — direct quote from Ren et al. 2024 Table 1 Virginia row
+  - RFCW (us-east-2): **1.85 L/kWh** ±35% — computed from eGRID 2023 fuel mix × Macknick 2012 recirculating-tower coefficients
+  - NWPP (us-west-2): **9.50 L/kWh** ±60% — direct quote from Ren et al. 2024 Washington row (hydro-dominated; wider band reflects reservoir-evaporation methodology dispute)
+  - CAMX (reference): **3.20 L/kWh** ±50% — computed via fuel mix × Macknick
+- **"Include indirect water" toggle** on the dashboard's Water KPI. Defaults OFF; when checked, the Water stat card switches to "Water (direct + indirect)" and shows the combined total with sum-quadrature uncertainty. Tooltip surfaces the breakdown ("direct X L + indirect Y L per Ren et al. 2024").
+- **Indirect water row in the FactorProvenancePanel** alongside the existing direct-water row, with its own ± band and source link.
+- **`combineSumUncertaintyPct` helper** for fractional-uncertainty-of-a-sum math. Direct and indirect water are independent (different physical systems — DC cooling vs power-plant cooling), so quadrature of absolute σ is the right combination rule.
+- **Migration `20260516000001_grid_factor_indirect_water.sql`** — additive `indirect_water_l_per_kwh` and `indirect_water_uncertainty_range_pct` columns on `grid_factors`. Promotes Sweep #2's per-region values from in-memory snapshot into the schema so per-event compute can carry them through the aggregate path natively.
+
+### Changed
+
+- **`GridFactors` struct, `FactorsProvenance`, and `EnvironmentalImpact`** in `tokenscale-core` gain indirect-water fields. `ModelImpact` payload (`/api/v1/usage/daily`) carries `indirectWaterL` and `indirectWaterUncertaintyPct` alongside the existing `waterL` / `waterUncertaintyPct`.
+- **`aggregate_impact_by_bucket` SQL** projects `indirect_water_l_raw` and `grid_indirect_water_uncertainty_pct` per (bucket, model) cell. Same time-anchoring as every other grid factor.
+- **`/api/v1/factors/active`** `GridFactorEntry` gains `indirect_water_l_per_kwh`, `indirect_water_uncertainty_range_pct`, and `source_url_indirect_water` so the provenance panel can render the new row.
+
+### Research
+
+- **Sweep #2: indirect water** logged in [`docs/research-log.md`](docs/research-log.md) with full methodology, source corpus (Ren et al. 2024, Macknick 2012 NREL, eGRID 2023 fuel-mix tables), and the per-region computation showing why hydro-heavy NWPP carries the widest band. "Indirect water (power-plant cooling) methodology" moved Open → Resolved in [`docs/request-for-research.md`](docs/request-for-research.md).
+- Methodology page section "Water — direct vs indirect" rewritten to describe both scopes, the toggle UX, and the unresolved hydro-attribution dispute.
+
+### Why default to OFF
+
+For SRVC, turning on indirect water jumps reported water from 0.057 L to ~1 L per typical session (a ~17× change). For NWPP it's ~64×. Flipping the default would re-baseline every existing dashboard overnight; opt-in lets users discover the magnitude on their terms and read the methodology before committing. The toggle copy and tooltip educate. A future release may flip the default once users have had a chance to internalize the numbers.
+
+### Notably NOT in this release
+
+- **Hydro attribution refinement.** Macknick's 100%-to-power attribution is contested; literature gives 5×–10× range. We use as-published with widened bands for hydro-heavy regions. A future sweep could refine.
+- **Recycled-water credits.** Some AWS datacenters (e.g., Loudoun County) use recycled wastewater; not yet modeled separately from fresh-water draw.
+
+---
+
 ## v0.1.6 — 2026-05-15
 
 The per-day-rate chart release. The dashboard's main chart now plots a **per-day rate** instead of per-bucket sums, eliminating the bucket-size-driven peak jumps that made the 1y and All views look like usage suddenly inflated 7× / 30× compared to 30d / 90d. The visual discontinuity at every preset transition is gone, and the chart finally communicates intensity-over-time honestly regardless of zoom.

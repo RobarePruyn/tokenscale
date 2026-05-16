@@ -148,10 +148,15 @@ pub struct ModelImpact {
     /// "—" rather than 0 g.
     #[serde(rename = "co2eG")]
     pub co2e_g: Option<f64>,
-    /// Liters of water. `null` when no event had a usable grid water
-    /// factor and no fallback was configured.
+    /// **Direct** (on-site DC cooling) water in liters. `null` when no
+    /// event had a usable grid water factor and no fallback was configured.
     #[serde(rename = "waterL")]
     pub water_l: Option<f64>,
+    /// **Indirect** (off-site, power-plant cooling) water in liters per
+    /// Ren et al. 2024. `null` when the configured region's grid row
+    /// doesn't publish an indirect-water factor.
+    #[serde(rename = "indirectWaterL")]
+    pub indirect_water_l: Option<f64>,
     /// Energy-side `± %` band (model-factor uncertainty only — PUE has
     /// no separately-tracked band yet, so it folds in here).
     #[serde(rename = "maxUncertaintyPct")]
@@ -160,9 +165,13 @@ pub struct ModelImpact {
     /// CO₂e uncertainty bands. See `tokenscale_core::combine_uncertainty_pct`.
     #[serde(rename = "co2eUncertaintyPct")]
     pub co2e_uncertainty_pct: i32,
-    /// Combined `± %` for `water_l` — quadrature of model + grid water.
+    /// Combined `± %` for direct `water_l` — quadrature of model + grid water.
     #[serde(rename = "waterUncertaintyPct")]
     pub water_uncertainty_pct: i32,
+    /// Combined `± %` for `indirect_water_l` — quadrature of model + grid
+    /// indirect-water uncertainty.
+    #[serde(rename = "indirectWaterUncertaintyPct")]
+    pub indirect_water_uncertainty_pct: i32,
     /// Number of events whose env_factor row was missing entirely. The
     /// dashboard surfaces this as "X events without factor data".
     #[serde(rename = "eventsMissingEnvFactor")]
@@ -347,9 +356,11 @@ pub async fn daily_handler(
                 facility_wh: row.facility_wh,
                 co2e_g: row.co2e_g,
                 water_l: row.water_l,
+                indirect_water_l: row.indirect_water_l,
                 max_uncertainty_pct: row.max_uncertainty_pct,
                 co2e_uncertainty_pct: row.co2e_uncertainty_pct,
                 water_uncertainty_pct: row.water_uncertainty_pct,
+                indirect_water_uncertainty_pct: row.indirect_water_uncertainty_pct,
                 events_missing_env_factor: row.events_missing_env_factor,
                 events_using_fallback_pue: row.events_using_fallback_pue,
                 events_using_fallback_wue: row.events_using_fallback_wue,

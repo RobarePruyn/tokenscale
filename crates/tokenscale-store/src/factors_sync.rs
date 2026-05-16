@@ -105,8 +105,9 @@ pub async fn sync_environmental_factors(
                 region, valid_from, valid_to, co2e_kg_per_kwh, water_l_per_kwh,
                 pue, egrid_subregion, egrid_subregion_full_name,
                 source_url, source_accessed_at,
-                co2e_uncertainty_range_pct, water_uncertainty_range_pct
-             ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                co2e_uncertainty_range_pct, water_uncertainty_range_pct,
+                indirect_water_l_per_kwh, indirect_water_uncertainty_range_pct
+             ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(region_id)
         .bind(valid_from)
@@ -119,6 +120,8 @@ pub async fn sync_environmental_factors(
         .bind(grid.source_accessed_at.as_deref().unwrap_or(valid_from))
         .bind(grid.co2e_uncertainty_range_pct)
         .bind(grid.water_uncertainty_range_pct)
+        .bind(grid.indirect_water_l_per_kwh)
+        .bind(grid.indirect_water_uncertainty_range_pct)
         .execute(&mut *transaction)
         .await?;
         summary.grid_factor_rows += 1;

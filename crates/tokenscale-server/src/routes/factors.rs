@@ -73,10 +73,15 @@ pub struct GridFactorEntry {
     pub co2e_uncertainty_range_pct: Option<i32>,
     pub water_l_per_kwh: Option<f64>,
     pub water_uncertainty_range_pct: Option<i32>,
+    /// Off-site / power-plant cooling water per kWh per Ren et al. 2024.
+    /// `None` for legacy factor-file rows pre-Sweep #2 (2026-05-15).
+    pub indirect_water_l_per_kwh: Option<f64>,
+    pub indirect_water_uncertainty_range_pct: Option<i32>,
     pub pue: Option<f64>,
     pub egrid_subregion: Option<String>,
     pub egrid_subregion_full_name: Option<String>,
     pub source_url_co2e: Option<String>,
+    pub source_url_indirect_water: Option<String>,
     pub source_accessed_at: Option<String>,
     pub notes: Option<String>,
 }
@@ -118,10 +123,13 @@ pub async fn active_handler(
             co2e_uncertainty_range_pct: grid.co2e_uncertainty_range_pct,
             water_l_per_kwh: grid.water_l_per_kwh,
             water_uncertainty_range_pct: grid.water_uncertainty_range_pct,
+            indirect_water_l_per_kwh: grid.indirect_water_l_per_kwh,
+            indirect_water_uncertainty_range_pct: grid.indirect_water_uncertainty_range_pct,
             pue: grid.pue,
             egrid_subregion: grid.egrid_subregion.clone(),
             egrid_subregion_full_name: grid.egrid_subregion_full_name.clone(),
             source_url_co2e: grid.source_url_co2e.clone(),
+            source_url_indirect_water: grid.source_url_indirect_water.clone(),
             source_accessed_at: grid.source_accessed_at.clone(),
             notes: grid.notes.clone(),
         });
