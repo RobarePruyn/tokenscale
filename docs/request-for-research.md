@@ -96,6 +96,19 @@ Format: each entry has a status, the question, why it matters, what good answers
 - [`crates/tokenscale-store/src/impact_query.rs`](../crates/tokenscale-store/src/impact_query.rs) — the SQL aggregate path uses correlated subqueries on `valid_from` for env factors. Pricing would need an analogous structure.
 - Server-side pricing was originally loaded once at startup from the embedded `pricing.toml`. The promotion is: TOML → DB tables (analogous to `env_factors` / `grid_factors`) → per-event lookup at compute time.
 
+#### Effective-date guidance for the v0.1.11 corrections
+
+When time-anchoring is implemented, the rates corrected in v0.1.11 (see [`cost-methodology.md`](cost-methodology.md)'s 2026-05-18 correction log) must be dated to each model's **actual launch date**, NOT the v0.1.11 release date. $5/$25 was the real Anthropic API price for the entire life of Opus 4.6 and 4.7; stamping it `valid_from = "2026-05-18"` would make a future re-derivation conclude those models had no published price before that date — a smaller version of the same seed-value bug v0.1.11 just closed.
+
+Specifically, when 6b lands:
+
+- `claude-opus-4-7`: $5/$25 valid from its actual launch (check Anthropic's release notes — likely early 2026).
+- `claude-opus-4-6`: $5/$25 valid from its actual launch (Sep 2025 per the docs Bedrock IDs).
+- `claude-haiku-4-5`: $1.00/$5.00 valid from its actual launch (Oct 2025 per the Bedrock ID `claude-haiku-4-5-20251001`).
+- `claude-sonnet-4-6`: $3/$15 valid from its actual launch (no rate change, but the row's `valid_from` should match the model's release date for consistency).
+
+This is **the** point where the seed-bug pattern can quietly re-enter the codebase — a contributor who reads 6b's "promote `valid_from` to drive lookup" instruction and stamps every row with today's date would technically pass the gate but would still be undisclosed-retroactively-wrong for any future cross-reference. Do not let that happen.
+
 #### Companion item: pricing-rate-card divergence detection
 
 The hard trigger above ("must land before the next Anthropic price change") is documented but has no detection mechanism. A documented trigger with no detector depends on a human noticing — exactly the failure mode the trigger exists to prevent. Anthropic could change Opus or Sonnet per-token pricing and the historical net-value numbers would drift silently in the gap before the next maintainer-initiated pricing review.

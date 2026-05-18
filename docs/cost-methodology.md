@@ -61,6 +61,40 @@ UTC. All `date(occurred_at)` extraction in the SQL aggregation uses UTC YYYY-MM-
 
 ---
 
+## Corrections log
+
+This section dates every correction applied to the cost factor file (`pricing.toml`). It is the cost-side analog to `docs/research-log.md`. Append-only; never rewrite or delete an entry.
+
+### 2026-05-18 — Opus 4.7 / 4.6 + Haiku 4.5 rate corrections
+
+**What was wrong**: `pricing.toml` carried wrong API rates for three of four tracked models since v0.1.0:
+
+| Model | Wrong rate (v0.1.0 – v0.1.10) | Correct rate | Effect on dashboard |
+|---|---|---|---|
+| `claude-opus-4-7` | $15 / $75 input/output per MTok | **$5 / $25** | Opus-attributed counterfactual cost dropped ~3× |
+| `claude-opus-4-6` | $15 / $75 | **$5 / $25** | Opus-attributed counterfactual cost dropped ~3× |
+| `claude-haiku-4-5` | $0.80 / $4.00 | **$1.00 / $5.00** | Haiku-attributed cost rose ~25% |
+| `claude-sonnet-4-6` | $3 / $15 | $3 / $15 (no change) | — |
+
+Cache-read rates (stored as absolute USD/MTok) recomputed alongside the input rates: Opus 4.7/4.6 → $0.50 (10% of $5); Haiku 4.5 → $0.10 (10% of $1).
+
+**Root cause**: Each row in `pricing.toml` had a `notes` field marking it as a seed value (`"Seed value — pricing assumed unchanged from Opus 4 family. Verify."`) and the file's `file_status = "needs_review"`. Neither marker had teeth — the only enforcement was a soft `warn!` log line at startup that the server ignored. The "Opus 4 family pricing is stable" assumption baked into the seed comments was wrong from the 4.5 generation onward — Anthropic dropped Opus pricing from $15/$75 to $5/$25 starting with Opus 4.5. tokenscale's Phase 1 seed values were never re-verified before shipping.
+
+**Effect on historical net-value figures**: because `PricingFile::lookup()` does not consult `valid_from` (the cost-side time-anchoring gap — see [request-for-research.md](request-for-research.md)'s 6b entry), the corrected rates apply retroactively to every event in history. Users with Opus-dominated usage will see their **counterfactual API cost drop by roughly 3×** on upgrade to v0.1.11, and "Estimated savings vs raw API rates" will drop proportionally. This is a data correction, not a methodology change.
+
+**Effective-date question (deferred to 6b)**: $5/$25 was the real Anthropic price for the entire life of Opus 4.6 and 4.7; stamping it `valid_from = "2026-05-18"` (the v0.1.11 release date) when 6b time-anchoring lands would make a future re-derivation conclude those models had no published price before May 2026 — a smaller version of the seed-value bug. When 6b implements time-anchoring, the corrected rates must be dated to each model's actual launch. The 6b RFR entry carries this note.
+
+**Defensive changes shipped alongside the fix**:
+
+- `pricing.toml` `file_status` flipped to `"production"`.
+- `PricingFile::has_seed_markers()` + `EnvironmentalFactorsFile::has_seed_markers()` added in `tokenscale-core`. Both scan every row's `notes` field for phrase-level markers (`seed value`, `unverified`, `needs_review`, `assumed unchanged`) that uniquely identify the bug pattern without false-tripping on legitimate methodology prose like `"medium response assumed at 1,500-2,000 tokens"`.
+- CLI startup (`command_serve`) `bail!`s when either gate fails. The v0.1.0–v0.1.10 mechanism was a `warn!` log line; v0.1.11 makes it a hard error. The server refuses to start with unverified data.
+- Unit tests in `crates/tokenscale-core/src/pricing.rs` (`the_real_repo_pricing_file_passes_production_gate`, `has_seed_markers_detects_each_phrase`) pin the gate against the live `pricing.toml` and against the literal buggy phrasing — `cargo test` would fail before the binary builds if either condition reappeared.
+
+**Discoverable in-app**: the dashboard's "How is this computed? (4 assumptions)" disclosure links here; users who notice their headline dropped can trace the correction in three clicks.
+
+---
+
 ## Where to follow up
 
 - Cost methodology asymmetry: tracked in [`request-for-research.md`](request-for-research.md) as "Cost-side time-anchoring + audit trail."

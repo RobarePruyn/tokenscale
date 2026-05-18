@@ -207,12 +207,30 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
         .with_context(|| format!("opening database at {}", database_path.display()))?;
 
     let pricing = load_pricing(&config)?;
+    // Hard gate: pricing must be production-verified and no row may
+    // still carry a seed / assumption marker. v0.1.0–v0.1.10 shipped
+    // wrong Opus + Haiku rates because `file_status = "needs_review"`
+    // only emitted a warning and could be ignored. v0.1.11 makes the
+    // gate refuse to start. See docs/cost-methodology.md and the
+    // `has_seed_markers` doc comment for the marker list.
     if pricing.is_review_pending() {
-        warn!(
-            file_status = %pricing.file_status,
-            "pricing.toml has not been reviewed against current Anthropic prices — \
-             the dashboard's billable view is approximate. Set file_status = \"production\" \
-             after verifying values."
+        anyhow::bail!(
+            "pricing.toml file_status = {:?} (not \"production\"). Refusing to start with \
+             unverified pricing — the dashboard's billable / Cost (USD) / counterfactual / \
+             net-value views would be wrong. After verifying every model row against \
+             https://platform.claude.com/docs/en/about-claude/pricing, set \
+             file_status = \"production\" in pricing.toml.",
+            pricing.file_status,
+        );
+    }
+    if pricing.has_seed_markers() {
+        anyhow::bail!(
+            "pricing.toml contains a row whose `notes` field still has a seed / assumption \
+             marker (one of: \"seed\", \"assumed\", \"verify\", \"needs_review\", \
+             \"unverified\"). This is the v0.1.0–v0.1.10 failure mode — the file shipped \
+             with verified-looking file_status but unverified per-row data. Verify each \
+             flagged row against Anthropic's pricing page, then rewrite or remove the \
+             notes field before starting."
         );
     }
     let pricing = Arc::new(pricing);
@@ -226,10 +244,18 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
         "loaded environmental-factors.toml"
     );
     if factors.is_placeholder() {
-        warn!(
-            "environmental-factors.toml is a placeholder — every numeric value is null. The \
-             environmental-impact view ships in Phase 2 and will light up once Cowork research's \
-             deliverable 3 lands real values."
+        anyhow::bail!(
+            "environmental-factors.toml is a placeholder — every numeric value is null. \
+             The environmental-impact view requires real factor data. Run the factor sweep \
+             (see docs/research-cadence.md) and ship a production factor file before \
+             starting the server."
+        );
+    }
+    if factors.has_seed_markers() {
+        anyhow::bail!(
+            "environmental-factors.toml contains a row whose `notes` field still has a seed \
+             / assumption marker. Same gate as pricing.toml — verify each flagged row \
+             against its cited source, then rewrite or remove the notes field before starting."
         );
     }
     let sync_summary = sync_environmental_factors(&database, &factors)
@@ -265,8 +291,18 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
         scan_interval_seconds = config.ingest.scan_interval_seconds,
         "starting tokenscale server"
     );
+    // Dismissal state for in-app release notices lives alongside config.toml.
+    let dismissed_notices_path = config_path
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("dismissed-notices.toml");
+    let dismissal_store = Arc::new(tokenscale_server::notices::DismissalStore::new(
+        dismissed_notices_path,
+    ));
+
     let serve_result = serve(
-        AppState::new(database, pricing, factors, inference_region),
+        AppState::new(database, pricing, factors, inference_region, dismissal_store),
         bind_address,
     )
     .await;

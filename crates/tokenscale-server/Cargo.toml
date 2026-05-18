@@ -26,6 +26,8 @@ thiserror.workspace        = true
 anyhow.workspace           = true
 rust-embed.workspace       = true
 mime_guess                 = "2"
+toml.workspace             = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+tempfile = "3"

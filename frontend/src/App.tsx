@@ -214,6 +214,17 @@ type GridFactorEntry = {
   notes: string | null
 }
 
+/** One server-sent release notice. The server has already filtered out
+ *  notices that are past their expiry date or already dismissed; the
+ *  frontend just renders whatever's in the array. */
+type ReleaseNotice = {
+  id: string
+  title: string
+  body: string
+  linkUrl: string
+  linkLabel: string
+}
+
 type ActiveFactorsResponse = {
   models: ModelFactorEntry[]
   regions: GridFactorEntry[]
@@ -918,6 +929,31 @@ export default function App() {
   const [billingChargesState, setBillingChargesState] = useState<FetchState<BillingChargesResponse>>({
     status: 'idle',
   })
+  // Release notices — e.g. the v0.1.11 pricing-correction explainer.
+  // Server has already filtered by expiry + dismissal; we just render
+  // whatever it returns. Optimistic dismiss: drop from local state
+  // immediately on click, then POST. If the POST fails the notice
+  // re-appears next session, which is fine.
+  const [releaseNotices, setReleaseNotices] = useState<ReleaseNotice[]>([])
+  useEffect(() => {
+    fetch('/api/v1/notices')
+      .then((r) => (r.ok ? r.json() : { notices: [] }))
+      .then((data: { notices?: ReleaseNotice[] }) => {
+        setReleaseNotices(data.notices ?? [])
+      })
+      .catch(() => {
+        /* silent — notices are best-effort */
+      })
+  }, [])
+  const dismissNotice = (id: string) => {
+    setReleaseNotices((prev) => prev.filter((n) => n.id !== id))
+    fetch(`/api/v1/notices/${encodeURIComponent(id)}/dismiss`, {
+      method: 'POST',
+    }).catch(() => {
+      /* silent; local state is already updated */
+    })
+  }
+
   const [activeFactorsState, setActiveFactorsState] = useState<FetchState<ActiveFactorsResponse>>({
     status: 'idle',
   })
@@ -1517,6 +1553,18 @@ export default function App() {
           </nav>
         </div>
       </header>
+
+      {/* Release notices — server-filtered (expiry + dismissal). Sits
+          ABOVE the environmental / pricing banners because release
+          notices are transient release-event explainers, whereas the
+          banners below are persistent file-metadata indicators. */}
+      {releaseNotices.map((notice) => (
+        <ReleaseNoticeBanner
+          key={notice.id}
+          notice={notice}
+          onDismiss={() => dismissNotice(notice.id)}
+        />
+      ))}
 
       {environmentalReady && environmentalHealth && (
         <div className="border-b border-emerald-200 bg-emerald-50 text-emerald-900 text-xs px-6 py-2">
@@ -2570,6 +2618,51 @@ type StatCardProps = {
   helpText: string
   muted?: boolean
   emphasize?: boolean
+}
+
+// ---------------------------------------------------------------------------
+// ReleaseNoticeBanner — amber strip rendering one release-event notice
+// (e.g. the v0.1.11 pricing-correction explainer). Server delivers
+// already-filtered active notices; this just renders + dismisses them.
+// Visual treatment mirrors the existing v0.1.0 pricing-review banner so
+// users recognize the affordance.
+// ---------------------------------------------------------------------------
+
+type ReleaseNoticeBannerProps = {
+  notice: ReleaseNotice
+  onDismiss: () => void
+}
+
+function ReleaseNoticeBanner({ notice, onDismiss }: ReleaseNoticeBannerProps) {
+  return (
+    <div className="border-b border-amber-200 bg-amber-50 text-amber-900 text-xs px-6 py-3 flex gap-3 items-start">
+      <div className="flex-1 leading-relaxed">
+        <span className="font-medium">{notice.title}.</span>{' '}
+        {notice.body}
+        {notice.linkUrl && notice.linkLabel && (
+          <>
+            {' '}
+            <a
+              className="underline hover:text-amber-700"
+              href={notice.linkUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {notice.linkLabel}
+            </a>
+            .
+          </>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="px-2 py-1 bg-amber-100 hover:bg-amber-200 rounded text-amber-900 whitespace-nowrap font-medium"
+      >
+        Got it
+      </button>
+    </div>
+  )
 }
 
 function StatCard({ label, value, helpText, muted, emphasize }: StatCardProps) {

@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version      = "0.1.10"
+version      = "0.1.11"
 edition      = "2021"
 # 1.82 (Oct 2024) is the floor — we use `Option::is_none_or` and other
 # stabilizations from that release. See docs/decisions.md.
@@ -33,7 +33,7 @@ description  = "Self-hostable Anthropic usage and environmental-impact dashboard
 # ----------------------------------------------------------------------------
 [workspace.dependencies]
 # --- Async runtime ---
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "signal", "time", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "signal", "time", "io-util", "sync"] }
 
 # --- Error handling ---
 # `thiserror` for library crates; `anyhow` for the CLI entrypoint and one-off contexts.

@@ -18,6 +18,7 @@
 
 mod embed;
 mod error;
+pub mod notices;
 mod routes;
 mod state;
 
@@ -71,6 +72,11 @@ pub fn build_router(state: AppState) -> axum::Router {
         .route(
             "/api/v1/factors/active",
             get(routes::factors::active_handler),
+        )
+        .route("/api/v1/notices", get(routes::notices::list_handler))
+        .route(
+            "/api/v1/notices/{notice_id}/dismiss",
+            axum::routing::post(routes::notices::dismiss_handler),
         )
         .fallback(embed::static_handler)
         .layer(TraceLayer::new_for_http())
@@ -143,9 +149,29 @@ fallback_pue = 1.15
         Arc::new(EnvironmentalFactorsFile::parse(TEST_FACTORS_TOML).unwrap())
     }
 
+    /// Throwaway dismissal store backed by a unique tempfile path —
+    /// tests don't exercise notice persistence, so the path just has to
+    /// be unique-per-call (the load fails-soft on missing files).
+    fn test_dismissal_store() -> Arc<crate::notices::DismissalStore> {
+        let tmp = std::env::temp_dir().join(format!(
+            "tokenscale-test-dismissed-{}.toml",
+            uuid_like_suffix()
+        ));
+        Arc::new(crate::notices::DismissalStore::new(tmp))
+    }
+
+    fn uuid_like_suffix() -> String {
+        // Just a unique-enough suffix for parallel tests; doesn't need
+        // to be a real UUID.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!("{}-{}", std::process::id(), n)
+    }
+
     async fn build_test_app() -> axum::Router {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()))
+        build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()))
     }
 
     #[tokio::test]
@@ -254,7 +280,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -328,7 +354,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -351,7 +377,7 @@ fallback_pue = 1.15
     #[tokio::test]
     async fn subscriptions_create_list_delete_roundtrip() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
 
         // Empty list initially.
         let response = app
@@ -440,7 +466,7 @@ fallback_pue = 1.15
     #[tokio::test]
     async fn subscriptions_update_replaces_fields() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
 
         // Create.
         let response = app
@@ -516,7 +542,7 @@ fallback_pue = 1.15
     #[tokio::test]
     async fn subscriptions_create_rejects_bad_inputs() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
 
         let bad_cases = [
             // Empty plan name
@@ -587,7 +613,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -641,7 +667,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
 
         // Filter to alpha only.
         let response = app
@@ -710,7 +736,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -816,6 +842,7 @@ fallback_wue_l_per_kwh = 0.15
             test_pricing(),
             factors,
             "us-east-1".to_owned(),
+            test_dismissal_store(),
         ));
         let response = app
             .oneshot(
@@ -888,6 +915,7 @@ fallback_wue_l_per_kwh = 0.15
             test_pricing(),
             factors,
             "us-east-1".to_owned(),
+            test_dismissal_store(),
         ));
         let response = app
             .oneshot(
@@ -919,6 +947,7 @@ fallback_wue_l_per_kwh = 0.15
             test_pricing(),
             factors,
             "us-east-1".to_owned(),
+            test_dismissal_store(),
         ));
         let response = app
             .oneshot(
@@ -967,6 +996,7 @@ fallback_wue_l_per_kwh = 0.15
             test_pricing(),
             test_factors(),
             "us-east-1".to_owned(),
+            test_dismissal_store(),
         ));
 
         let csv = "\

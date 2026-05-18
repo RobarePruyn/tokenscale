@@ -297,6 +297,38 @@ impl EnvironmentalFactorsFile {
         self.file_status != "production"
     }
 
+    /// `true` if any model or grid row's `notes` field still carries a seed
+    /// / assumption marker. Mirrors `PricingFile::has_seed_markers` — phrase
+    /// list, not bare-word substrings, so legitimate methodology prose
+    /// ("medium response assumed at 1,500-2,000 tokens") doesn't false-trip.
+    /// See `PricingFile::has_seed_markers` for the rationale and phrase list.
+    #[must_use]
+    pub fn has_seed_markers(&self) -> bool {
+        const MARKERS: &[&str] = &["seed value", "unverified", "needs_review", "assumed unchanged"];
+        let contains_marker = |notes: &Option<String>| -> bool {
+            notes
+                .as_ref()
+                .map(|n| {
+                    let lower = n.to_lowercase();
+                    MARKERS.iter().any(|m| lower.contains(m))
+                })
+                .unwrap_or(false)
+        };
+        for provider in self.providers.values() {
+            for model in provider.models.values() {
+                if contains_marker(&model.notes) {
+                    return true;
+                }
+            }
+        }
+        for grid in self.grid_factors.values() {
+            if contains_marker(&grid.notes) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Most recent access date across grid factors. Each model also has
     /// a `valid_from` but that's more of a "this row is valid since X"
     /// version — `source_accessed_at` is the "I checked the source on

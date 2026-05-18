@@ -126,6 +126,38 @@ impl PricingFile {
         self.file_status != "production"
     }
 
+    /// `true` if any row's `notes` field still carries a seed / assumption
+    /// marker. Companion to `is_review_pending` — the v0.1.0–v0.1.10 bug
+    /// shipped because `file_status` was the only gate, and a row's
+    /// `notes = "Seed value — pricing assumed..."` text was never checked
+    /// against anything. Now the startup gate refuses both conditions.
+    ///
+    /// Match is case-insensitive substring against PHRASE-level markers,
+    /// not bare words, to avoid false-positives on legitimate methodology
+    /// prose. (e.g. an env-factors row that disclosed "Medium response
+    /// **assumed** at 1,500-2,000 tokens" is honest disclosure, not a
+    /// seed-value bug.) The phrase list is the actual bug pattern:
+    /// - `"seed value"` — the literal text the buggy rows carried.
+    /// - `"unverified"` — common shorthand for "needs review."
+    /// - `"needs_review"` — the file_status string repeated in a note.
+    /// - `"assumed unchanged"` — the specific cascading-assumption phrase
+    ///   that produced the Opus seed bug.
+    #[must_use]
+    pub fn has_seed_markers(&self) -> bool {
+        const MARKERS: &[&str] = &["seed value", "unverified", "needs_review", "assumed unchanged"];
+        for provider in self.providers.values() {
+            for model in provider.models.values() {
+                if let Some(notes) = &model.notes {
+                    let lower = notes.to_lowercase();
+                    if MARKERS.iter().any(|m| lower.contains(m)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// The most recent `source_accessed_at` across all priced models in
     /// the file. `None` for an empty file. ISO dates sort lexically so
     /// `max()` returns the most recent. Used by the dashboard to surface
@@ -235,6 +267,88 @@ display_name = "Anthropic"
         // works on day one.
         let anthropic = parsed.providers.get("anthropic").expect("anthropic block");
         assert!(!anthropic.models.is_empty());
+    }
+
+    /// Pins the production gate against the real `pricing.toml`. If
+    /// someone reintroduces `file_status = "needs_review"` or pastes a
+    /// row with a seed-marker note, this test fails before the binary
+    /// builds — same shape of fence as the startup `anyhow::bail!` but
+    /// caught at `cargo test` time.
+    #[test]
+    fn the_real_repo_pricing_file_passes_production_gate() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("pricing.toml");
+        let parsed = PricingFile::load_from_path(&path).unwrap();
+        assert!(
+            !parsed.is_review_pending(),
+            "pricing.toml file_status = {:?} — must be \"production\". This is the v0.1.0–v0.1.10 \
+             bug guard. See docs/cost-methodology.md.",
+            parsed.file_status,
+        );
+        assert!(
+            !parsed.has_seed_markers(),
+            "pricing.toml has a row whose `notes` carries a seed/assumption marker. Verify \
+             the row's rates against Anthropic's pricing page and rewrite/remove the notes field."
+        );
+    }
+
+    #[test]
+    fn has_seed_markers_detects_each_phrase() {
+        let tmpl = |notes: &str| {
+            format!(
+                r#"
+schema_version = 1
+file_status = "production"
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+[providers.anthropic.models."claude-opus-4-7"]
+display_name = "Claude Opus 4.7"
+valid_from = "2026-04-28"
+input_usd_per_mtok = 5.00
+output_usd_per_mtok = 25.00
+cache_read_usd_per_mtok = 0.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at = "2026-05-18"
+notes = "{notes}"
+"#
+            )
+        };
+        // Each phrase should trip the gate. Case-insensitive.
+        for marker in &["Seed value", "unverified", "needs_review", "assumed unchanged"] {
+            let toml = tmpl(&format!("This row has a {marker} marker."));
+            let parsed = PricingFile::parse(&toml).unwrap();
+            assert!(
+                parsed.has_seed_markers(),
+                "phrase {:?} should be detected",
+                marker
+            );
+        }
+        // The actual v0.1.0–v0.1.10 buggy phrasing — the bug guard, end-to-end:
+        let buggy = tmpl("Seed value — pricing assumed unchanged from Opus 4 family. Verify.");
+        assert!(
+            PricingFile::parse(&buggy).unwrap().has_seed_markers(),
+            "the literal v0.1.0–v0.1.10 buggy notes text must trip the gate"
+        );
+        // Legitimate methodology prose using "assumed" or "verify" as bare
+        // words must NOT trip the gate (the env-factors file has rows like
+        // "Medium response assumed at 1,500-2,000 tokens" that are honest
+        // disclosure, not seed bugs).
+        let legit_assumed = tmpl("Medium response assumed at 1,500-2,000 tokens per Jegham v6.");
+        assert!(
+            !PricingFile::parse(&legit_assumed).unwrap().has_seed_markers(),
+            "bare \"assumed\" in methodology prose must NOT trip the gate"
+        );
+        let legit_verify = tmpl("Verified against Anthropic docs 2026-05-18.");
+        assert!(
+            !PricingFile::parse(&legit_verify).unwrap().has_seed_markers(),
+            "bare \"verified\" in clean-state notes must NOT trip the gate"
+        );
     }
 
     #[test]

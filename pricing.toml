@@ -11,21 +11,29 @@
 #      have cost at API rates" — answering the value-of-subscription question.
 #
 # ============================================================================
-# THIS FILE NEEDS REVIEW BEFORE PRODUCTION USE.
-#
-# The Phase 1 seed values below are sourced from public Anthropic
-# documentation as known to the project at scaffold time. Anthropic adjusts
-# pricing periodically; before relying on the dashboard's billable view or
-# any Phase 2 cost figure, verify each model's rates against:
+# PRODUCTION rates. Every row below was verified against Anthropic's published
+# pricing on 2026-05-18 at:
 #
 #     https://platform.claude.com/docs/en/about-claude/pricing
+#     https://platform.claude.com/docs/en/about-claude/models/overview
 #
-# When you have verified, set `file_status = "production"` below to silence
-# the review banner the dashboard surfaces.
+# v0.1.11 corrected three rows that had carried wrong seed values since v0.1.0:
+# Opus 4.7 (15/75 → 5/25), Opus 4.6 (15/75 → 5/25), Haiku 4.5 (0.80/4.00 →
+# 1.00/5.00). Root cause was an "Opus pricing assumed unchanged from Opus 4
+# family" assumption that was wrong from the 4.5 generation onward. See
+# docs/cost-methodology.md for the dated correction entry.
+#
+# DO NOT seed new rows with assumed values cascaded from another model. Every
+# row gets verified against Anthropic's published rate card or it does not
+# land here. The startup gate (PricingFile::has_seed_markers + is_review_pending)
+# refuses to serve when this rule is violated.
+#
+# Re-verify all rows against Anthropic's pricing pages quarterly, OR whenever
+# the drift-detector workflow (when v0.1.x adds it) reports divergence.
 # ============================================================================
 
 schema_version = 1
-file_status    = "needs_review"   # set to "production" after verification
+file_status    = "production"
 
 # ----------------------------------------------------------------------------
 # [providers.<provider>.models.<model-id>]
@@ -50,34 +58,32 @@ file_status    = "needs_review"   # set to "production" after verification
 display_name = "Anthropic"
 
 # ---- Opus models ----
-# Anthropic's Opus tier — flagship coding/reasoning models. Pricing has been
-# stable across the Opus 4 family per the most recent vendor docs known to
-# this project; if Anthropic introduces a new tier or per-version pricing,
-# split into separate blocks.
+# Anthropic dropped Opus pricing in the 4.5 generation from $15/$75 (Opus 4
+# and 4.1) to $5/$25 (4.5, 4.6, 4.7). Per-model rates from now on — no
+# cascading from family-level assumptions; every row gets verified against
+# Anthropic's pricing page.
 
 [providers.anthropic.models."claude-opus-4-7"]
 display_name              = "Claude Opus 4.7"
 valid_from                = "2026-04-28"
-input_usd_per_mtok        = 15.00
-output_usd_per_mtok       = 75.00
-cache_read_usd_per_mtok   = 1.50
+input_usd_per_mtok        = 5.00
+output_usd_per_mtok       = 25.00
+cache_read_usd_per_mtok   = 0.50
 cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
-source_accessed_at        = "2026-04-28"
-notes                     = "Seed value — pricing assumed unchanged from Opus 4 family. Verify."
+source_accessed_at        = "2026-05-18"
 
 [providers.anthropic.models."claude-opus-4-6"]
 display_name              = "Claude Opus 4.6"
 valid_from                = "2026-04-28"
-input_usd_per_mtok        = 15.00
-output_usd_per_mtok       = 75.00
-cache_read_usd_per_mtok   = 1.50
+input_usd_per_mtok        = 5.00
+output_usd_per_mtok       = 25.00
+cache_read_usd_per_mtok   = 0.50
 cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
-source_accessed_at        = "2026-04-28"
-notes                     = "Seed value — Opus 4 family pricing. Verify."
+source_accessed_at        = "2026-05-18"
 
 # ---- Sonnet models ----
 
@@ -90,19 +96,17 @@ cache_read_usd_per_mtok   = 0.30
 cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
-source_accessed_at        = "2026-04-28"
-notes                     = "Seed value — Sonnet 4 family pricing. Verify."
+source_accessed_at        = "2026-05-18"
 
 # ---- Haiku models ----
 
 [providers.anthropic.models."claude-haiku-4-5"]
 display_name              = "Claude Haiku 4.5"
 valid_from                = "2026-04-28"
-input_usd_per_mtok        = 0.80
-output_usd_per_mtok       = 4.00
-cache_read_usd_per_mtok   = 0.08
+input_usd_per_mtok        = 1.00
+output_usd_per_mtok       = 5.00
+cache_read_usd_per_mtok   = 0.10
 cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
-source_accessed_at        = "2026-04-28"
-notes                     = "Seed value — Haiku family pricing. Verify."
+source_accessed_at        = "2026-05-18"

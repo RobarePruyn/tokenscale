@@ -6,6 +6,46 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.11 — 2026-05-18
+
+The pricing-correctness release. **Three of four model rows in `pricing.toml` carried wrong API rates from v0.1.0 through v0.1.10** — Opus 4.7 and 4.6 were 3× overstated, Haiku 4.5 was ~20% understated. Root cause was a seed comment ("pricing assumed unchanged from Opus 4 family") plus a `file_status = "needs_review"` that was never flipped. v0.1.11 corrects the rates, removes the bug pattern, and adds a production-gate that refuses to start with unverified data so this class of bug cannot ship again.
+
+> **This is a data correction, not a methodology change.** Historical Opus-attributed counterfactual cost and "Estimated savings vs raw API rates" figures **drop by roughly 3× on upgrade**. Haiku-attributed cost rises ~20%. Sonnet figures are unchanged. The full dated correction entry lives in [`docs/cost-methodology.md`](docs/cost-methodology.md)'s new "Corrections log" section.
+
+### Changed (the actual fix)
+
+- **`pricing.toml`** — Opus 4.7 and 4.6 corrected from $15/$75 to **$5/$25** input/output per MTok. Haiku 4.5 corrected from $0.80/$4.00 to **$1.00/$5.00**. Sonnet 4.6 unchanged ($3/$15). Cache-read rates (stored as absolute USD/MTok) recomputed alongside: Opus → $0.50, Haiku → $0.10. Cache-write multipliers (stored as multipliers of input) unchanged. Every row's seed-marker `notes` field removed. The file's header comment block rewritten from "needs review" to "production rates verified 2026-05-18." `file_status` flipped to `"production"`.
+
+### Added (defensive infrastructure so this can't happen again)
+
+- **`PricingFile::has_seed_markers()`** in `tokenscale-core`. Scans every row's `notes` for phrase-level markers (`"seed value"`, `"unverified"`, `"needs_review"`, `"assumed unchanged"`) that uniquely identify the v0.1.0–v0.1.10 bug pattern. Phrase-level not word-level — `"medium response assumed at 1,500-2,000 tokens"` in legitimate methodology prose does NOT trip the gate.
+- **`EnvironmentalFactorsFile::has_seed_markers()`** — same gate for env factors. Symmetric enforcement.
+- **CLI startup gate** (`command_serve`) — replaces the existing `warn!` log lines with `anyhow::bail!`. The server refuses to start if either file has `file_status != "production"` OR `has_seed_markers() == true`. v0.1.0–v0.1.10 was a soft warning; v0.1.11 is a hard error. No bypass flag — flip `file_status` in your local fork if you need to dev against unverified data.
+- **Unit tests** pinning the production gate against the real repo `pricing.toml` (`the_real_repo_pricing_file_passes_production_gate`) and against the literal v0.1.0–v0.1.10 buggy notes phrasing (`has_seed_markers_detects_each_phrase`). `cargo test` fails before the binary builds if either condition reappears in the repo.
+
+### Audit trail
+
+- **`docs/cost-methodology.md`** — new "Corrections log" section dating this correction. Append-only, parallel to `docs/research-log.md` on the environmental side. Carries: what was wrong, the corrected rates, root cause, effect on historical figures, deferral of the effective-date question to 6b, and a list of the defensive changes shipped alongside.
+- **`docs/request-for-research.md`** 6b entry gains an "Effective-date guidance for the v0.1.11 corrections" subsection. When time-anchoring lands, the corrected rates must be dated to each model's actual launch (Opus 4.7 early 2026, Opus 4.6 Sep 2025, Haiku 4.5 Oct 2025), NOT to v0.1.11's release date. Calling out the failure mode where a future contributor stamps every row with today's date and recreates the same bug at a smaller scale.
+
+### Added (in-app notice)
+
+- **`/api/v1/notices` + `/api/v1/notices/{id}/dismiss`** endpoints. Server-side notice catalog (compile-time constants in `crates/tokenscale-server/src/notices.rs`) with active-filter logic (not-dismissed AND not-past-expiry). Persistent dismissal state in `<config-dir>/dismissed-notices.toml`.
+- **`ReleaseNoticeBanner`** in the frontend — amber strip rendering server-active notices at the top of the dashboard, above the existing environmental + pricing banners. Optimistic dismiss (banner disappears on click immediately; POST to record dismissal happens in the background).
+- **First notice: `pricing-correction-v0.1.11`** with the wording you signed off on, 90-day expiry (active 2026-05-18 → 2026-08-16), linking to the cost-methodology corrections log. Always-show (any user on v0.1.11 sees it once), simplified render condition decoupled from the v0.1.0 pricing-review banner's dismissal state.
+
+### NOT in this release (deferred to v0.1.12)
+
+- **Drift detector** — nightly CI workflow that compares `pricing.toml` against Anthropic's published rate card. The detector's first finding (this bug) made it clear that the correctness fix should ship first as its own coherent release. v0.1.12 will land the detector with the three additions you specified: cache-rate coverage via input-multiple validation, parser pinned to base-rate columns (not Fast Mode / Batch / US 1.1x multiplier), and source URL targeting Anthropic's dedicated pricing page.
+
+### Sequencing
+
+- **v0.1.11** (this release): correction + audit trail + production gate + in-app notice.
+- **v0.1.12**: drift detector.
+- **v0.1.13**: 6b cost-side time-anchoring (the core fix that makes pricing changes audited and historical numbers stable).
+
+---
+
 ## v0.1.10 — 2026-05-16
 
 The dashboard-credibility release. Folds in the full meta-review pass against the dashboard UX and the cost-side methodology gap. No methodology numbers change; every value visible to the user becomes more honestly *displayed* (precision matched to uncertainty, brackets making the band the primary cue, framing that doesn't oversell) and the cost side gets its first proper paper trail.

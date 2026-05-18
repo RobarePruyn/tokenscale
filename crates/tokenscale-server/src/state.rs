@@ -9,6 +9,8 @@ use std::sync::Arc;
 use tokenscale_core::{EnvironmentalFactorsFile, PricingFile};
 use tokenscale_store::Database;
 
+use crate::notices::DismissalStore;
+
 #[derive(Clone)]
 pub struct AppState {
     pub database: Database,
@@ -28,6 +30,9 @@ pub struct AppState {
     /// disclose which region served any given request, so this is a declared
     /// user assumption — surfaced in the dashboard's environmental banner.
     pub inference_region: String,
+    /// Persisted dismissal state for in-app release notices (e.g. the
+    /// v0.1.11 pricing-correction notice). See `notices` module.
+    pub dismissal_store: Arc<DismissalStore>,
 }
 
 impl AppState {
@@ -37,12 +42,14 @@ impl AppState {
         pricing: Arc<PricingFile>,
         factors: Arc<EnvironmentalFactorsFile>,
         inference_region: String,
+        dismissal_store: Arc<DismissalStore>,
     ) -> Self {
         Self {
             database,
             pricing,
             factors,
             inference_region,
+            dismissal_store,
         }
     }
 }
