@@ -1,0 +1,141 @@
+# Nightly check: has Anthropic changed any tracked model's per-token
+# price out from under pricing.toml? The companion to v0.1.12's
+# task 5 design — see docs/cost-methodology.md "Drift detector" for
+# the runbook + design decisions.
+#
+# Exit codes from the detector (deliberate three-way split):
+#   0 — clean, workflow stays green.
+#   1 — real drift detected, workflow opens a GH Issue and FAILS
+#       (red X on main, email to maintainer).
+#   2 — parse failure (Anthropic page may have restructured). Workflow
+#       prints the warning but stays GREEN — false-positive risk on
+#       drift alerts is too high to fail the build on parse uncertainty.
+#       A separate "detector degraded" alert path is the right home if
+#       this persists; for V1 the workflow-run logs are sufficient.
+#   3 — network failure. Same green-with-warning posture as 2.
+
+name: pricing-drift-check
+
+on:
+  schedule:
+    # 02:00 UTC daily. Off-peak for Anthropic's CDN and well after a
+    # human-authored midnight pricing change would have propagated.
+    - cron: "0 2 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  # Need contents:read for the checkout and issues:write to open a
+  # "pricing-divergence" issue on drift. Nothing else.
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Unit tests for the parser
+        # If the parser tests fail, the drift check that follows would
+        # make policy decisions on parser logic we know is broken.
+        # Stop here.
+        run: python3 .github/scripts/tests/test_pricing_drift_check.py
+
+      - name: Run drift check
+        id: drift
+        # Capture stdout AND propagate the exit code via $?. Don't use
+        # `continue-on-error: true` because exit-1 needs to fail the
+        # job; only exit-2/3 should stay green.
+        run: |
+          set +e
+          python3 .github/scripts/pricing_drift_check.py > drift-output.txt 2>&1
+          rc=$?
+          set -e
+          cat drift-output.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          # Exit 0 → success. Exit 1 → fall through to "open issue" step.
+          # Exit 2/3 → warn-only, mark job as success.
+          if [ "$rc" = "0" ] || [ "$rc" = "2" ] || [ "$rc" = "3" ]; then
+            exit 0
+          fi
+          # rc == 1: leave the failing state for the next step to read,
+          # but we still need to NOT fail the bash step yet (the issue
+          # opener needs to run first). Convert to a marker file.
+          echo "drift-detected" > drift-marker.txt
+
+      - name: Open pricing-divergence issue if drift detected
+        if: ${{ steps.drift.outputs.rc == '1' }}
+        run: |
+          # `gh issue list --search` deduplicates: if a pricing-divergence
+          # issue is already open for the current drift state, don't
+          # open another one. Match on the title prefix.
+          today=$(date -u +%Y-%m-%d)
+          title="pricing-divergence: pricing.toml drifted from Anthropic's published rates"
+          # Check for an existing open issue with this exact title.
+          existing=$(gh issue list \
+            --state open \
+            --label pricing-divergence \
+            --json title,number \
+            --jq ".[] | select(.title == \"$title\") | .number" \
+            | head -1)
+          if [ -n "$existing" ]; then
+            echo "Existing pricing-divergence issue #$existing — appending today's run."
+            gh issue comment "$existing" --body "$(cat <<EOF
+          ## Drift still present as of $today
+
+          \`\`\`
+          $(cat drift-output.txt)
+          \`\`\`
+
+          Source: [\`pricing_drift_check.py\` workflow run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
+          EOF
+          )"
+          else
+            echo "Opening new pricing-divergence issue."
+            gh issue create \
+              --title "$title" \
+              --label pricing-divergence \
+              --body "$(cat <<EOF
+          ## Drift detected $today
+
+          The nightly pricing-drift-check detector compared \`pricing.toml\` against
+          Anthropic's published rate card at <https://platform.claude.com/docs/en/about-claude/pricing>
+          and found one or more rows out of sync.
+
+          \`\`\`
+          $(cat drift-output.txt)
+          \`\`\`
+
+          ## Runbook
+
+          1. **Re-verify against the source.** Open the URL above and confirm the
+             rates the detector reports as upstream values. Anthropic occasionally
+             restructures the page; if rates *look* right but the detector still
+             flags drift, this is a parser issue, not a pricing issue — see
+             docs/cost-methodology.md → Drift detector.
+          2. **Update \`pricing.toml\`.** Correct each flagged row. Cache-read rates
+             are stored as absolute USD/MTok; cache-write multipliers are stored as
+             multipliers (1.25x, 2x). The startup gate
+             (\`PricingFile::has_seed_markers\`) will reject any row with seed/assumption
+             markers in its \`notes\` field.
+          3. **Re-capture \`pricing-rate-card.snapshot.json\`** from the live page,
+             updating \`captured_at\` to today.
+          4. **Add a dated correction entry** to \`docs/cost-methodology.md\` →
+             Corrections log. This is the audit trail; never rewrite past entries.
+          5. **Tag a new release** so the corrected \`pricing.toml\` ships to users.
+          6. Close this issue once the new release lands and the next nightly
+             detector run reports clean.
+
+          Source: [workflow run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
+          EOF
+          )"
+          fi
+          # Now fail the workflow so the red X is visible.
+          exit 1

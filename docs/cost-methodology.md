@@ -95,6 +95,77 @@ Cache-read rates (stored as absolute USD/MTok) recomputed alongside the input ra
 
 ---
 
+## Drift detector
+
+The companion to the cost-side time-anchoring item on the [open research queue](request-for-research.md). The time-anchoring fix (6b) closes the gap that lets a pricing change retroactively rewrite historical numbers; the **drift detector** is the alarm that tells the maintainer the moment any tracked rate has shifted away from what Anthropic publishes. Both ship together: the detector raises the alarm, the time-anchoring fix makes historical numbers stable. Until 6b lands, the detector at least guarantees no silent drift.
+
+### Source URL
+
+`https://platform.claude.com/docs/en/about-claude/pricing` — Anthropic's dedicated developer reference page for API pricing. This URL was deliberately picked over alternatives:
+
+- **`claude.com/pricing#api`**: marketing landing page. Subscription tiers + a link to the reference page, but no per-model rate table.
+- **`platform.claude.com/docs/en/about-claude/models/overview`**: the model comparison page. Has a pricing column but as informational metadata, not as the canonical rate-card source.
+- **`platform.claude.com/docs/en/about-claude/pricing`**: the canonical reference. Includes the full `Model pricing` table plus separate sections for Prompt caching, Fast Mode, Batch, Data Residency.
+
+### What the detector validates
+
+1. **Per-model base rates**. `input_usd_per_mtok` and `output_usd_per_mtok` in `pricing.toml` must match the `Base Input Tokens` and `Output Tokens` columns of Anthropic's `Model pricing` table.
+2. **Per-model cache rates**. `cache_read_usd_per_mtok` (stored as absolute USD/MTok in `pricing.toml`) must match the `Cache Hits & Refreshes` column. Cache writes are stored as multipliers (`cache_write_5m_multiplier = 1.25`, `cache_write_1h_multiplier = 2.0`); the detector verifies that `input × multiplier` matches Anthropic's `5m Cache Writes` and `1h Cache Writes` columns.
+3. **Cache multipliers themselves**. Anthropic's prose says cache_read = 0.1x base input, cache_write_5m = 1.25x, cache_write_1h = 2x. If Anthropic ever changes those constants, the detector catches it.
+4. **Internal consistency**. For every row, `cache_read_usd_per_mtok` must equal `input_usd_per_mtok × 0.1`. This catches the case where a maintainer updates the input rate but forgets to recompute the absolute cache_read value.
+
+### Parser pinning — what the detector deliberately ignores
+
+Anthropic's pricing page contains multiple price tables. The parser pins to the **base / global-routing** rates and explicitly ignores:
+
+- **Fast Mode** (under `### Fast mode pricing`) — `$30 / $150` for Opus, 6× standard. A naive parser that locked onto the first `$X / MTok` near a model name would silently flag every Opus row as drifted.
+- **Batch processing** (under `### Batch processing`) — 50% off, `$2.50 / $12.50` for Opus 4.7.
+- **Data Residency** (under `### Data residency pricing`) — 1.1× multiplier for US-only inference.
+- **Cloud platform pricing** (Bedrock / Vertex AI) — partner-operated; different pricing structure entirely.
+
+Pinning is enforced via slicing: the parser only reads the content between `Model pricing` and `Cloud platform pricing`. The fixture-based test suite (`.github/scripts/tests/test_pricing_drift_check.py`) includes Fast Mode, Batch, and Data Residency sections in the test fixture and asserts that none of their numbers contaminate the result.
+
+### Where it runs
+
+**GitHub Actions cron, nightly at 02:00 UTC.** Never at `tokenscale serve` startup. The dashboard is local-first; reaching out to Anthropic's web property on every user start would be both a privacy surface (the user's IP hits Anthropic) and a slow-start cost. Detection lives entirely in CI; users find out about drift through release notes once the maintainer publishes a fix.
+
+### Failure modes
+
+Three-way exit-code split (deliberate, locked in at design time, do not collapse):
+
+| Exit code | Meaning | Workflow response |
+|---|---|---|
+| **0** | Clean. Rates match across all tracked models. | Workflow green. |
+| **1** | Real drift detected. `pricing.toml` and Anthropic's published rates disagree. | Workflow opens a `pricing-divergence`-labelled GH Issue with the diff inline, then **fails the workflow** (red X on main, email to maintainer). De-duplicates against an existing open issue. |
+| **2** | Parse failure. The detector ran but couldn't extract rates — Anthropic likely restructured the page. | Workflow stays **green** with a console warning. Failing on parse-uncertainty would generate false-positive drift alerts every time Anthropic adjusted page copy. The right response is to update the detector's parser. |
+| **3** | Network failure. Couldn't fetch the page at all. | Workflow stays **green** with a warning. Retry tomorrow. |
+
+### Snapshot fallback
+
+`pricing-rate-card.snapshot.json` at the repo root is a checked-in record of Anthropic's rates as of the last manual capture. Two roles:
+
+1. **Staleness check**: if the snapshot is older than 90 days, the detector emits a warning on every run reminding the maintainer to re-verify. 90 days aligns with the quarterly research-sweep cadence.
+2. **Offline-fallback (future)**: not used in V1, but the file shape is stable enough that a future variant could compare `pricing.toml` against the snapshot when the live fetch fails, for at-least-internal-consistency detection without network.
+
+To re-capture: open the source URL, copy the rates into the snapshot file, update `captured_at` to today's date, commit. The detector will pick up the new date on the next nightly run.
+
+### Runbook — what to do when the workflow opens a `pricing-divergence` issue
+
+1. **Re-verify against the source.** Open `https://platform.claude.com/docs/en/about-claude/pricing` and confirm the rates the detector reports as upstream are what Anthropic actually publishes. If the page looks unchanged but the detector still flags drift, this is a parser issue — exit 2 territory — and the fix is to update `.github/scripts/pricing_drift_check.py`, not `pricing.toml`.
+2. **Update `pricing.toml`.** Correct each flagged row. Cache-read rates are absolute; cache-write multipliers stay at 1.25 / 2.0 unless Anthropic announced a change to those constants.
+3. **Re-capture `pricing-rate-card.snapshot.json`** from the live page, updating `captured_at` to today.
+4. **Add a dated correction entry to the [Corrections log](#corrections-log)** above. Append-only — this is the audit trail.
+5. **Tag a new release** so the corrected file ships to users. Pricing changes are user-visible (counterfactual cost shifts), so the release notes should call out the magnitude of the change.
+6. **Close the issue** once the new release lands and the next nightly detector run reports clean.
+
+### What the detector deliberately does NOT do (V1 scope)
+
+- **Auto-bump `pricing.toml` file_status to `needs_review`.** Would brick every running tokenscale instance the moment Anthropic touched a price; brittle. Manual maintainer action stays in the loop.
+- **Surface drift on the user-facing dashboard.** That's part of the 6b time-anchoring workstream (the dashboard already has the cost-methodology panel; drift surface can be added there once it can also describe which historical events are affected). V1 keeps drift detection between maintainer and CI.
+- **Detect new models.** The detector iterates `TRACKED_MODELS` only — a constant in the script. New-model alerting is a v2 enhancement: useful, but a separate problem from "did existing rates drift."
+
+---
+
 ## Where to follow up
 
 - Cost methodology asymmetry: tracked in [`request-for-research.md`](request-for-research.md) as "Cost-side time-anchoring + audit trail."

@@ -51,7 +51,7 @@ pub const NOTICES: &[Notice] = &[Notice {
     expires_at: "2026-08-16", // ~90 days from 2026-05-18 release
     title: "Pricing correction in v0.1.11",
     body: "Three model rows in pricing.toml carried wrong API rates from v0.1.0 through v0.1.10. \
-           Opus 4.7 and 4.6 were about 3x overstated, Haiku 4.5 about 20% understated. v0.1.11 \
+           Opus 4.7 and 4.6 were about 3x overstated, Haiku 4.5 about 25% understated. v0.1.11 \
            corrects them. If your historical \"Counterfactual API cost\" or \"Estimated savings \
            vs raw API rates\" figures look smaller than they did last week, this is why: the old \
            numbers were inflated, not the new ones deflated.",

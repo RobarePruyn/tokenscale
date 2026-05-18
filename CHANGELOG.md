@@ -6,11 +6,45 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.12 — 2026-05-18
+
+The drift-detector release. Ships the nightly CI check that compares `pricing.toml` against Anthropic's published rate card and opens a GitHub Issue when they diverge. Closes the "documented trigger with no detection mechanism" gap from v0.1.11: the next time Anthropic changes any Opus / Sonnet / Haiku per-token price, the detector flags it within 24 hours instead of letting historical numbers silently drift until a maintainer manually re-checks.
+
+Also corrects the Haiku-percentage text in the v0.1.11 in-app notice from "about 20% understated" to **"about 25% understated"** — Haiku went $0.80 → $1.00 input and $4.00 → $5.00 output, both 25% increases. Users who upgraded to v0.1.11 in the brief window before v0.1.12 will see the corrected text on upgrade.
+
+### Added
+
+- **`.github/workflows/pricing-drift-check.yml`** — nightly cron (02:00 UTC) + `workflow_dispatch` for manual runs. Runs parser unit tests first, then the live check. On drift: opens a `pricing-divergence`-labelled GH Issue with the diff inline and fails the workflow.
+- **`.github/scripts/pricing_drift_check.py`** — Python (stdlib only) detector. Fetches `https://platform.claude.com/docs/en/about-claude/pricing`, normalizes HTML, slices to the `Model pricing` section, validates per-row base + cache rates against `pricing.toml`, validates cache multipliers against Anthropic's prose, and runs an internal-consistency check that `cache_read_usd_per_mtok == input_usd_per_mtok × 0.1`. Three-way exit code split: 0 clean, 1 real drift, 2 parse failure (warn-only), 3 network failure (warn-only).
+- **`.github/scripts/tests/test_pricing_drift_check.py`** — 17 unit tests covering parser pinning. Explicit test cases prove the parser does NOT contaminate from Fast Mode (`$30 / $150` for Opus), Batch (`$2.50 / $12.50` for Opus), or Data Residency (1.1×) — the three highest-risk false-positive sources on Anthropic's page.
+- **`pricing-rate-card.snapshot.json`** — repo-root checked-in fixture. Captured 2026-05-18 against the source URL. The detector warns when this file is older than 90 days, prompting a maintainer re-capture. Future variant can use it as an offline-fallback when the live fetch fails.
+- **`docs/cost-methodology.md` → "Drift detector" section** — full design rationale, exit-code semantics, runbook for handling `pricing-divergence` issues, explicit list of what's deliberately out of V1 scope (no auto-bump of `file_status`, no dashboard surface, no new-model detection).
+
+### Changed
+
+- **In-app notice text and CHANGELOG v0.1.11 entry** — `"about 20% understated"` → `"about 25% understated"` for Haiku. Three locations: `crates/tokenscale-server/src/notices.rs` (the live notice constant); `CHANGELOG.md` v0.1.11 header paragraph; `CHANGELOG.md` v0.1.11 effect-summary line. The cost-methodology corrections-log table already said 25%, no change needed there.
+
+### Design decisions worth re-stating (all locked in v0.1.11 task 5 sign-off)
+
+- **Source URL**: `https://platform.claude.com/docs/en/about-claude/pricing`. Pinned to the dedicated developer reference page, not the marketing landing page (`claude.com/pricing#api`) and not the model overview (`models/overview`).
+- **Where it runs**: CI nightly cron only. Never `tokenscale serve` startup — local-first architecture, no privacy surface to Anthropic's web property on every user start.
+- **Failure response**: drift opens a GH Issue + fails workflow (red X). Parse / network failures stay green-with-warning so a page restructure doesn't generate false-positive drift alerts.
+- **No auto-bump** of `pricing.toml` `file_status` on drift. Auto-bumping would brick every running instance the moment Anthropic touched a price.
+- **Cache validation**: `cache_read_usd_per_mtok` (absolute in `pricing.toml`) compared directly against Anthropic's column. Cache writes (multipliers) checked via `input × multiplier == Anthropic's absolute column`.
+- **Parser pinned to base rates** — the load-bearing guard against the Fast Mode false-positive. The fixture-based tests prove the pinning works.
+
+### Sequencing remaining
+
+- **v0.1.13**: 6b cost-side time-anchoring. Promotes `valid_from` on `pricing.toml` rows to actually drive per-event lookup; mirrors the environmental-factor path. The structural fix the detector is the alarm for.
+- Then: PUE uncertainty band, Winget manifest, granular-attribution roadmap Phase 0.
+
+---
+
 ## v0.1.11 — 2026-05-18
 
-The pricing-correctness release. **Three of four model rows in `pricing.toml` carried wrong API rates from v0.1.0 through v0.1.10** — Opus 4.7 and 4.6 were 3× overstated, Haiku 4.5 was ~20% understated. Root cause was a seed comment ("pricing assumed unchanged from Opus 4 family") plus a `file_status = "needs_review"` that was never flipped. v0.1.11 corrects the rates, removes the bug pattern, and adds a production-gate that refuses to start with unverified data so this class of bug cannot ship again.
+The pricing-correctness release. **Three of four model rows in `pricing.toml` carried wrong API rates from v0.1.0 through v0.1.10** — Opus 4.7 and 4.6 were 3× overstated, Haiku 4.5 was ~25% understated. Root cause was a seed comment ("pricing assumed unchanged from Opus 4 family") plus a `file_status = "needs_review"` that was never flipped. v0.1.11 corrects the rates, removes the bug pattern, and adds a production-gate that refuses to start with unverified data so this class of bug cannot ship again.
 
-> **This is a data correction, not a methodology change.** Historical Opus-attributed counterfactual cost and "Estimated savings vs raw API rates" figures **drop by roughly 3× on upgrade**. Haiku-attributed cost rises ~20%. Sonnet figures are unchanged. The full dated correction entry lives in [`docs/cost-methodology.md`](docs/cost-methodology.md)'s new "Corrections log" section.
+> **This is a data correction, not a methodology change.** Historical Opus-attributed counterfactual cost and "Estimated savings vs raw API rates" figures **drop by roughly 3× on upgrade**. Haiku-attributed cost rises ~25%. Sonnet figures are unchanged. The full dated correction entry lives in [`docs/cost-methodology.md`](docs/cost-methodology.md)'s new "Corrections log" section.
 
 ### Changed (the actual fix)
 
