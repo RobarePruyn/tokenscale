@@ -3,7 +3,9 @@
 # task 5 design — see docs/cost-methodology.md "Drift detector" for
 # the runbook + design decisions.
 #
-# Exit codes from the detector (deliberate three-way split):
+# Exit codes from the detector — 0 success plus three failure modes
+# (the three failure modes are split deliberately so this workflow can
+# react differently to "drift detected" vs. "detector is degraded"):
 #   0 — clean, workflow stays green.
 #   1 — real drift detected, workflow opens a GH Issue and FAILS
 #       (red X on main, email to maintainer).

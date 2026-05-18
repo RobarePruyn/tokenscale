@@ -7,7 +7,9 @@ Runs nightly under .github/workflows/pricing-drift-check.yml. See
 docs/cost-methodology.md "Drift detector" for the user-facing
 documentation.
 
-Exit codes (deliberate three-way split):
+Exit codes — 0 success plus three failure modes (the failure modes
+are split deliberately so the wrapping workflow can react differently
+to drift vs. detector-degradation):
   0 — pricing.toml matches Anthropic's published rates AND internal
       consistency checks pass. No action needed.
   1 — real drift detected. Workflow fails (red X on main). The wrapping

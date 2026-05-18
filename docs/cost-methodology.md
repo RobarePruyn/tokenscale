@@ -111,8 +111,17 @@ The companion to the cost-side time-anchoring item on the [open research queue](
 
 1. **Per-model base rates**. `input_usd_per_mtok` and `output_usd_per_mtok` in `pricing.toml` must match the `Base Input Tokens` and `Output Tokens` columns of Anthropic's `Model pricing` table.
 2. **Per-model cache rates**. `cache_read_usd_per_mtok` (stored as absolute USD/MTok in `pricing.toml`) must match the `Cache Hits & Refreshes` column. Cache writes are stored as multipliers (`cache_write_5m_multiplier = 1.25`, `cache_write_1h_multiplier = 2.0`); the detector verifies that `input × multiplier` matches Anthropic's `5m Cache Writes` and `1h Cache Writes` columns.
-3. **Cache multipliers themselves**. Anthropic's prose says cache_read = 0.1x base input, cache_write_5m = 1.25x, cache_write_1h = 2x. If Anthropic ever changes those constants, the detector catches it.
-4. **Internal consistency**. For every row, `cache_read_usd_per_mtok` must equal `input_usd_per_mtok × 0.1`. This catches the case where a maintainer updates the input rate but forgets to recompute the absolute cache_read value.
+3. **Cache multipliers themselves**. Anthropic's prose says cache_read = 0.1x base input, cache_write_5m = 1.25x, cache_write_1h = 2x. If Anthropic ever changes those constants, the detector catches it via the `EXPECTED_CACHE_MULTIPLIERS` comparison.
+4. **Internal consistency** (cache_read only). For every row, `cache_read_usd_per_mtok` must equal `input_usd_per_mtok × 0.1`. This catches the case where a maintainer updates the input rate but forgets to recompute the absolute cache_read value.
+
+#### Why there's no equivalent "internal consistency" check for cache writes
+
+`cache_write_5m_multiplier` and `cache_write_1h_multiplier` are stored as **multipliers** (1.25, 2.0) — primary values, not derived from `input_usd_per_mtok`. There's nothing for them to fall out of sync with internally; an assertion like `cache_write_5m_multiplier == 1.25` would just be comparing a constant to itself. The genuine drift risks for write rates are caught two other ways:
+
+- **Wrong multiplier in `pricing.toml`** (e.g. someone types `1.5` by mistake): caught by check #2 — `input × multiplier` will no longer equal Anthropic's `5m Cache Writes` column.
+- **Anthropic changes the multiplier convention** (e.g. 1.25x → 1.5x globally): caught by check #3 — `EXPECTED_CACHE_MULTIPLIERS` no longer matches Anthropic's prose, and check #2 also fires for every row.
+
+A future reader looking for a gap here should not find one. The asymmetry between `cache_read` (one internal check) and the cache writes (no internal check) is a consequence of their different storage formats, not an oversight.
 
 ### Parser pinning — what the detector deliberately ignores
 
@@ -131,7 +140,7 @@ Pinning is enforced via slicing: the parser only reads the content between `Mode
 
 ### Failure modes
 
-Three-way exit-code split (deliberate, locked in at design time, do not collapse):
+Exit codes — `0` success plus three deliberately-split failure modes. The split exists so the wrapping workflow can react differently to drift vs. detector-degradation; collapsing it into a single non-zero would lose that signal.
 
 | Exit code | Meaning | Workflow response |
 |---|---|---|
