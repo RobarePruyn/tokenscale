@@ -39,17 +39,60 @@ const EMBEDDED_PRICING_TOML: &str = include_str!("../../../pricing.toml");
 
 /// In-memory representation of `pricing.toml`. Cheap to clone and pass
 /// around as `Arc<PricingFile>`.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// **Multi-row support (v0.1.13)**: each `(provider, model)` key maps to
+/// a `Vec<ModelPricing>` ordered by `valid_from` ascending. Time-anchored
+/// lookup walks descending to find the latest row whose `valid_from` is
+/// at-or-before the caller's `as_of_date`. Mirrors the env-side pattern
+/// in `lookup_environmental_factors`.
+///
+/// TOML supports both the single-table form (legacy, one row per model):
+///
+/// ```toml
+/// [providers.anthropic.models."claude-opus-4-7"]
+/// valid_from = "2026-01-15"
+/// input_usd_per_mtok = 5.00
+/// # ...
+/// ```
+///
+/// and the array-of-tables form (multi-row, for models with historical
+/// price changes):
+///
+/// ```toml
+/// [[providers.anthropic.models."claude-opus-4-7"]]
+/// valid_from = "2026-01-15"
+/// input_usd_per_mtok = 5.00
+///
+/// [[providers.anthropic.models."claude-opus-4-7"]]
+/// valid_from = "2027-XX-XX"
+/// input_usd_per_mtok = X.XX
+/// ```
+///
+/// Both forms normalize to `Vec<ModelPricing>` at parse time. Legacy
+/// single-row pricing files from v0.1.12 and earlier continue to load
+/// without modification — the additive support is fully back-compat.
+#[derive(Debug, Clone)]
 pub struct PricingFile {
     pub schema_version: i64,
 
     /// Maintainer-set marker — `"production"` once values have been
     /// verified, otherwise (e.g.) `"needs_review"` or `"placeholder"`.
     /// Surfaced in the dashboard's banner.
-    #[serde(default = "default_file_status")]
     pub file_status: String,
 
-    #[serde(default)]
+    /// Human-readable file version — e.g. `"1.0"`. Mirrors the env-side
+    /// `EnvironmentalFactorsFile::file_version`. Surfaced through
+    /// `/api/v1/health` so the dashboard can show "pricing v1.0" next
+    /// to the env factor version. `None` for files that pre-date the
+    /// v0.1.13 introduction of this field.
+    pub file_version: Option<String>,
+
+    /// ISO `YYYY-MM-DD` of when the maintainer published this version of
+    /// the file. Independent of per-row `valid_from` — the file may be
+    /// republished without rows changing their validity windows.
+    /// Surfaced through `/api/v1/health` for the dashboard's banner.
+    pub file_published: Option<String>,
+
     pub providers: BTreeMap<String, ProviderPricing>,
 }
 
@@ -57,11 +100,49 @@ fn default_file_status() -> String {
     "production".to_owned()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct ProviderPricing {
     pub display_name: String,
+    pub models: BTreeMap<String, Vec<ModelPricing>>,
+}
+
+// ---------------------------------------------------------------------------
+// On-disk TOML deserialization shapes. Public types above are the runtime
+// normalized form; these private types match what `pricing.toml` actually
+// looks like on disk and route through serde's `untagged` enum so the
+// loader accepts either single-table or array-of-tables for any given
+// model row.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct PricingFileToml {
+    schema_version: i64,
+    #[serde(default = "default_file_status")]
+    file_status: String,
     #[serde(default)]
-    pub models: BTreeMap<String, ModelPricing>,
+    file_version: Option<String>,
+    #[serde(default)]
+    file_published: Option<String>,
+    #[serde(default)]
+    providers: BTreeMap<String, ProviderPricingToml>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderPricingToml {
+    display_name: String,
+    #[serde(default)]
+    models: BTreeMap<String, ModelPricingEntry>,
+}
+
+/// Each model entry is either a single `ModelPricing` (legacy single-row
+/// form) or a `Vec<ModelPricing>` (multi-row form). serde's `untagged`
+/// tries `Single` first; if the on-disk shape is an array of tables, the
+/// fallback to `Multi` succeeds.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ModelPricingEntry {
+    Single(Box<ModelPricing>),
+    Multi(Vec<ModelPricing>),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,6 +157,14 @@ pub struct ModelPricing {
     pub cache_write_1h_multiplier: f64,
     pub source_url: String,
     pub source_accessed_at: String,
+    /// Provenance for `valid_from`: the URL or citation that backs the
+    /// launch-date claim, so future maintainers can re-verify. v0.1.13
+    /// introduced this alongside multi-row time-anchored entries — every
+    /// new row should populate it. Older rows that pre-date v0.1.13's
+    /// time-anchoring (and the lazy v0.1.0 `valid_from = "2026-04-28"`
+    /// rows) carry `None`; the audit subcommand flags those.
+    #[serde(default)]
+    pub launch_date_source: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
 }
@@ -97,10 +186,10 @@ impl PricingFile {
     /// Parse from a TOML string. Useful for tests and for tools that want
     /// to validate a file without touching disk.
     pub fn parse(raw_toml: &str) -> Result<Self> {
-        let parsed: Self = toml::from_str(raw_toml)?;
-        if !SUPPORTED_SCHEMA_RANGE.contains(&parsed.schema_version) {
+        let toml_form: PricingFileToml = toml::from_str(raw_toml)?;
+        if !SUPPORTED_SCHEMA_RANGE.contains(&toml_form.schema_version) {
             return Err(CoreError::UnsupportedSchemaVersion {
-                found: parsed.schema_version,
+                found: toml_form.schema_version,
                 supported: format!(
                     "{}..={}",
                     SUPPORTED_SCHEMA_RANGE.start(),
@@ -108,15 +197,79 @@ impl PricingFile {
                 ),
             });
         }
-        Ok(parsed)
+
+        // Normalize the on-disk shape (single-table OR array-of-tables per
+        // model entry) into the runtime shape (Vec<ModelPricing> per model,
+        // sorted by valid_from ascending). Sorting at parse time means the
+        // lookup walk is just `iter().rev()` — no per-call sort.
+        let mut providers: BTreeMap<String, ProviderPricing> = BTreeMap::new();
+        for (provider_id, provider_toml) in toml_form.providers {
+            let mut models: BTreeMap<String, Vec<ModelPricing>> = BTreeMap::new();
+            for (model_id, entry) in provider_toml.models {
+                let mut rows = match entry {
+                    ModelPricingEntry::Single(boxed) => vec![*boxed],
+                    ModelPricingEntry::Multi(rows) => rows,
+                };
+                rows.sort_by(|a, b| a.valid_from.cmp(&b.valid_from));
+                models.insert(model_id, rows);
+            }
+            providers.insert(
+                provider_id,
+                ProviderPricing {
+                    display_name: provider_toml.display_name,
+                    models,
+                },
+            );
+        }
+
+        Ok(PricingFile {
+            schema_version: toml_form.schema_version,
+            file_status: toml_form.file_status,
+            file_version: toml_form.file_version,
+            file_published: toml_form.file_published,
+            providers,
+        })
     }
 
-    /// Fast lookup by `(provider, model)`. Returns `None` for any model not
-    /// in the file — the dashboard treats this as "billable view unavailable
-    /// for this model" rather than failing the whole response.
+    /// Time-anchored lookup mirroring `lookup_environmental_factors` on the
+    /// env side. Returns the row whose `valid_from <= as_of_date` is latest,
+    /// or `None` if no row qualifies (e.g. the event predates the model's
+    /// launch — see D4 in `docs/roadmap-cost-time-anchoring.md`).
+    ///
+    /// `as_of_date` should be ISO `YYYY-MM-DD`. The comparison is lexical,
+    /// matching the env-side convention.
     #[must_use]
-    pub fn lookup(&self, provider: &str, model: &str) -> Option<&ModelPricing> {
-        self.providers.get(provider)?.models.get(model)
+    pub fn lookup(
+        &self,
+        provider: &str,
+        model: &str,
+        as_of_date: &str,
+    ) -> Option<&ModelPricing> {
+        let rows = self.providers.get(provider)?.models.get(model)?;
+        // Rows are sorted ascending by valid_from at parse time, so walking
+        // in reverse yields the latest qualifying row first.
+        rows.iter()
+            .rev()
+            .find(|p| p.valid_from.as_str() <= as_of_date)
+    }
+
+    /// Total count of priced model rows across all providers — used by the
+    /// `/api/v1/health` endpoint. A model with multiple `valid_from` rows
+    /// counts once per row, mirroring `env_factors`'s per-row counting.
+    #[must_use]
+    pub fn model_row_count(&self) -> usize {
+        self.providers
+            .values()
+            .map(|p| p.models.values().map(Vec::len).sum::<usize>())
+            .sum()
+    }
+
+    /// Count of distinct `(provider, model)` keys — used wherever the
+    /// dashboard wants "how many models the file covers" regardless of
+    /// version history. Distinct from `model_row_count`.
+    #[must_use]
+    pub fn distinct_model_count(&self) -> usize {
+        self.providers.values().map(|p| p.models.len()).sum()
     }
 
     /// `true` if the maintainer has not yet reviewed the seed values. The
@@ -146,11 +299,13 @@ impl PricingFile {
     pub fn has_seed_markers(&self) -> bool {
         const MARKERS: &[&str] = &["seed value", "unverified", "needs_review", "assumed unchanged"];
         for provider in self.providers.values() {
-            for model in provider.models.values() {
-                if let Some(notes) = &model.notes {
-                    let lower = notes.to_lowercase();
-                    if MARKERS.iter().any(|m| lower.contains(m)) {
-                        return true;
+            for rows in provider.models.values() {
+                for model in rows {
+                    if let Some(notes) = &model.notes {
+                        let lower = notes.to_lowercase();
+                        if MARKERS.iter().any(|m| lower.contains(m)) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -167,7 +322,7 @@ impl PricingFile {
     pub fn most_recent_accessed_at(&self) -> Option<&str> {
         self.providers
             .values()
-            .flat_map(|provider| provider.models.values())
+            .flat_map(|provider| provider.models.values().flat_map(|rows| rows.iter()))
             .map(|model| model.source_accessed_at.as_str())
             .max()
     }
@@ -196,14 +351,173 @@ source_url = "https://example.test/pricing"
 source_accessed_at = "2026-04-28"
 "#;
 
+    /// Sentinel "any future date" used to mean "give me the latest row" —
+    /// for lookups that don't care about historical anchoring (e.g. the
+    /// /api/v1/factors/active provenance endpoint).
+    const ANY_FUTURE_DATE: &str = "9999-12-31";
+
     #[test]
-    fn valid_file_loads() {
+    fn valid_file_loads_single_row_form() {
         let parsed = PricingFile::parse(VALID_PRICING_TOML).unwrap();
         assert_eq!(parsed.schema_version, 1);
         assert!(!parsed.is_review_pending());
-        let opus = parsed.lookup("anthropic", "claude-opus-4-7").unwrap();
+        let opus = parsed
+            .lookup("anthropic", "claude-opus-4-7", ANY_FUTURE_DATE)
+            .unwrap();
         assert!((opus.input_usd_per_mtok - 15.00).abs() < f64::EPSILON);
         assert!((opus.cache_write_5m_multiplier - 1.25).abs() < f64::EPSILON);
+        // Single-row TOML normalizes to a one-element Vec.
+        assert_eq!(
+            parsed.providers["anthropic"].models["claude-opus-4-7"].len(),
+            1
+        );
+    }
+
+    /// The D7 back-compat claim: v0.1.12's single-row `pricing.toml` form
+    /// (`[providers.<p>.models.<m>]`) still parses under v0.1.13's loader.
+    /// This is the regression guard for downgrade-after-upgrade and for
+    /// users who haven't yet migrated their pricing file to multi-row.
+    #[test]
+    fn back_compat_v0_1_12_single_row_form_still_parses() {
+        // Exact shape v0.1.12 shipped, modulo the rates which were the
+        // bug we're past now. Verifies the *loader*, not the contents.
+        let v0_1_12_form = r#"
+schema_version = 1
+file_status = "production"
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+[providers.anthropic.models."claude-opus-4-7"]
+display_name              = "Claude Opus 4.7"
+valid_from                = "2026-04-28"
+input_usd_per_mtok        = 5.00
+output_usd_per_mtok       = 25.00
+cache_read_usd_per_mtok   = 0.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-05-18"
+"#;
+        let parsed = PricingFile::parse(v0_1_12_form).unwrap();
+        let opus = parsed
+            .lookup("anthropic", "claude-opus-4-7", ANY_FUTURE_DATE)
+            .unwrap();
+        assert!((opus.input_usd_per_mtok - 5.00).abs() < f64::EPSILON);
+    }
+
+    /// The v0.1.13 multi-row form: same model, multiple rows ordered by
+    /// `valid_from`. Lookup must walk descending and pick the latest row
+    /// whose `valid_from <= as_of_date`.
+    #[test]
+    fn multi_row_array_of_tables_form_parses() {
+        let multi_row = r#"
+schema_version = 1
+file_status = "production"
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+[[providers.anthropic.models."claude-opus-4-7"]]
+display_name              = "Claude Opus 4.7"
+valid_from                = "2026-01-15"
+input_usd_per_mtok        = 5.00
+output_usd_per_mtok       = 25.00
+cache_read_usd_per_mtok   = 0.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-05-18"
+
+[[providers.anthropic.models."claude-opus-4-7"]]
+display_name              = "Claude Opus 4.7"
+valid_from                = "2027-06-01"
+input_usd_per_mtok        = 7.00
+output_usd_per_mtok       = 35.00
+cache_read_usd_per_mtok   = 0.70
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2027-06-01"
+"#;
+        let parsed = PricingFile::parse(multi_row).unwrap();
+        assert_eq!(
+            parsed.providers["anthropic"].models["claude-opus-4-7"].len(),
+            2,
+            "multi-row TOML should normalize to a Vec of length 2"
+        );
+
+        // Event in February 2026 → first row.
+        let early = parsed
+            .lookup("anthropic", "claude-opus-4-7", "2026-02-10")
+            .unwrap();
+        assert!((early.input_usd_per_mtok - 5.00).abs() < f64::EPSILON);
+
+        // Event in July 2027 → second row.
+        let later = parsed
+            .lookup("anthropic", "claude-opus-4-7", "2027-07-15")
+            .unwrap();
+        assert!((later.input_usd_per_mtok - 7.00).abs() < f64::EPSILON);
+    }
+
+    /// Boundary semantics: env-side uses `valid_from <= occurred_at`.
+    /// Pricing must match. An event AT exactly the `valid_from` timestamp
+    /// gets the new row; an event one day before gets the previous row.
+    #[test]
+    fn lookup_boundary_includes_the_valid_from_date() {
+        let multi_row = r#"
+schema_version = 1
+file_status = "production"
+[providers.anthropic]
+display_name = "Anthropic"
+[[providers.anthropic.models."claude-opus-4-7"]]
+display_name = "Claude Opus 4.7"
+valid_from = "2026-01-15"
+input_usd_per_mtok = 5.00
+output_usd_per_mtok = 25.00
+cache_read_usd_per_mtok = 0.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url = "https://example"
+source_accessed_at = "2026-05-18"
+[[providers.anthropic.models."claude-opus-4-7"]]
+display_name = "Claude Opus 4.7"
+valid_from = "2027-06-01"
+input_usd_per_mtok = 7.00
+output_usd_per_mtok = 35.00
+cache_read_usd_per_mtok = 0.70
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url = "https://example"
+source_accessed_at = "2027-06-01"
+"#;
+        let parsed = PricingFile::parse(multi_row).unwrap();
+        // Day before the boundary → old row.
+        let before = parsed
+            .lookup("anthropic", "claude-opus-4-7", "2027-05-31")
+            .unwrap();
+        assert!((before.input_usd_per_mtok - 5.00).abs() < f64::EPSILON);
+        // Exactly on the boundary → new row.
+        let on = parsed
+            .lookup("anthropic", "claude-opus-4-7", "2027-06-01")
+            .unwrap();
+        assert!((on.input_usd_per_mtok - 7.00).abs() < f64::EPSILON);
+        // Day after → still new row.
+        let after = parsed
+            .lookup("anthropic", "claude-opus-4-7", "2027-06-02")
+            .unwrap();
+        assert!((after.input_usd_per_mtok - 7.00).abs() < f64::EPSILON);
+    }
+
+    /// D4: a pre-launch event returns None. The dashboard renders these
+    /// as "—" rather than fabricating a fallback rate.
+    #[test]
+    fn pre_launch_event_returns_none() {
+        let parsed = PricingFile::parse(VALID_PRICING_TOML).unwrap();
+        // VALID_PRICING_TOML has Opus valid_from = 2026-04-28. An event
+        // dated before that should not match.
+        let pre_launch = parsed.lookup("anthropic", "claude-opus-4-7", "2026-01-01");
+        assert!(pre_launch.is_none());
     }
 
     #[test]
@@ -223,8 +537,12 @@ display_name = "Anthropic"
     #[test]
     fn lookup_returns_none_for_unknown_model() {
         let parsed = PricingFile::parse(VALID_PRICING_TOML).unwrap();
-        assert!(parsed.lookup("anthropic", "claude-future-9-9").is_none());
-        assert!(parsed.lookup("openai", "gpt-99").is_none());
+        assert!(parsed
+            .lookup("anthropic", "claude-future-9-9", ANY_FUTURE_DATE)
+            .is_none());
+        assert!(parsed
+            .lookup("openai", "gpt-99", ANY_FUTURE_DATE)
+            .is_none());
     }
 
     #[test]

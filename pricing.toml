@@ -23,6 +23,17 @@
 # family" assumption that was wrong from the 4.5 generation onward. See
 # docs/cost-methodology.md for the dated correction entry.
 #
+# v0.1.13 introduces multi-row format (array-of-tables per model) and
+# time-anchored `valid_from` dates. Each model now lives as
+# `[[providers.<provider>.models."<id>"]]` so a future rate correction
+# adds an additional row rather than overwriting history. Per-row
+# `launch_date_source` carries the URL or rationale backing the date —
+# sourced dates (Opus 4.7, Haiku 4.5) and conservative-estimate dates
+# (Opus 4.6, Sonnet 4.6) are distinguished in the field text so a future
+# reader can tell them apart from the file alone. See
+# docs/roadmap-cost-time-anchoring.md for the design and
+# docs/cost-methodology.md for the v0.1.13 corrections-log entry.
+#
 # DO NOT seed new rows with assumed values cascaded from another model. Every
 # row gets verified against Anthropic's published rate card or it does not
 # land here. The startup gate (PricingFile::has_seed_markers + is_review_pending)
@@ -34,11 +45,17 @@
 
 schema_version = 1
 file_status    = "production"
+file_version   = "1.0"
+file_published = "2026-05-18"
 
 # ----------------------------------------------------------------------------
-# [providers.<provider>.models.<model-id>]
+# [[providers.<provider>.models.<model-id>]]   — array-of-tables form
 # ----------------------------------------------------------------------------
-# Each model block carries:
+# Each model entry is an array; v0.1.13 ships one row per model. Future
+# rate corrections add a NEW row with a later `valid_from` rather than
+# overwriting the existing one — that's the time-anchoring guarantee.
+#
+# Each row carries:
 #   * `input_usd_per_mtok`        — fresh input tokens, USD per million.
 #   * `output_usd_per_mtok`       — output tokens, USD per million.
 #   * `cache_read_usd_per_mtok`   — replayed cached input tokens (typically
@@ -47,10 +64,15 @@ file_status    = "production"
 #                                    a multiplier on the input price (typically 1.25x).
 #   * `cache_write_1h_multiplier` — 1-hour prompt-cache write tokens, as
 #                                    a multiplier on the input price (typically 2.0x).
-#   * `valid_from`                 — ISO date these prices became effective for
-#                                    this build's records. NOT necessarily the
-#                                    date Anthropic announced them.
-#   * `source_url` / `source_accessed_at` — provenance.
+#   * `valid_from`                 — ISO date these prices became effective
+#                                    (the model's launch date or the date
+#                                    Anthropic published a rate change).
+#   * `launch_date_source`         — URL or rationale backing the date.
+#                                    Sourced rows cite primary then secondary
+#                                    URLs; conservative-estimate rows say so
+#                                    explicitly per D3 in the time-anchoring
+#                                    roadmap.
+#   * `source_url` / `source_accessed_at` — rate-card provenance.
 #
 # ----------------------------------------------------------------------------
 
@@ -63,9 +85,9 @@ display_name = "Anthropic"
 # cascading from family-level assumptions; every row gets verified against
 # Anthropic's pricing page.
 
-[providers.anthropic.models."claude-opus-4-7"]
+[[providers.anthropic.models."claude-opus-4-7"]]
 display_name              = "Claude Opus 4.7"
-valid_from                = "2026-04-28"
+valid_from                = "2026-04-16"
 input_usd_per_mtok        = 5.00
 output_usd_per_mtok       = 25.00
 cache_read_usd_per_mtok   = 0.50
@@ -73,10 +95,11 @@ cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
 source_accessed_at        = "2026-05-18"
+launch_date_source        = "https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7 (Anthropic, first-party); https://github.blog/changelog/2026-04-16-claude-opus-4-7-is-generally-available/ (dated GA confirmation). Sourced — exact date, D3 conservative-dating rule does not apply."
 
-[providers.anthropic.models."claude-opus-4-6"]
+[[providers.anthropic.models."claude-opus-4-6"]]
 display_name              = "Claude Opus 4.6"
-valid_from                = "2026-04-28"
+valid_from                = "2025-09-01"
 input_usd_per_mtok        = 5.00
 output_usd_per_mtok       = 25.00
 cache_read_usd_per_mtok   = 0.50
@@ -84,12 +107,13 @@ cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
 source_accessed_at        = "2026-05-18"
+launch_date_source        = "Conservative estimate, not exact. ~Sep 2025 per Bedrock ID convention `anthropic.claude-opus-4-6-v1`; start-of-month per D3 conservative-dating rule (bias earlier than best guess, never later). Replace with first-party Anthropic source if/when one becomes available."
 
 # ---- Sonnet models ----
 
-[providers.anthropic.models."claude-sonnet-4-6"]
+[[providers.anthropic.models."claude-sonnet-4-6"]]
 display_name              = "Claude Sonnet 4.6"
-valid_from                = "2026-04-28"
+valid_from                = "2025-09-01"
 input_usd_per_mtok        = 3.00
 output_usd_per_mtok       = 15.00
 cache_read_usd_per_mtok   = 0.30
@@ -97,12 +121,13 @@ cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
 source_accessed_at        = "2026-05-18"
+launch_date_source        = "Conservative estimate, not exact. ~Sep 2025 per docs/roadmap-cost-time-anchoring.md §3; start-of-month per D3 conservative-dating rule (bias earlier than best guess, never later). Replace with first-party Anthropic source if/when one becomes available."
 
 # ---- Haiku models ----
 
-[providers.anthropic.models."claude-haiku-4-5"]
+[[providers.anthropic.models."claude-haiku-4-5"]]
 display_name              = "Claude Haiku 4.5"
-valid_from                = "2026-04-28"
+valid_from                = "2025-10-01"
 input_usd_per_mtok        = 1.00
 output_usd_per_mtok       = 5.00
 cache_read_usd_per_mtok   = 0.10
@@ -110,3 +135,4 @@ cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
 source_accessed_at        = "2026-05-18"
+launch_date_source        = "Bedrock model ID `claude-haiku-4-5-20251001` encodes the launch date. Exact — D3 conservative-dating rule does not apply."

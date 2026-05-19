@@ -116,7 +116,12 @@ display_name = "Anthropic"
 
 [providers.anthropic.models."claude-opus-4-7"]
 display_name = "Claude Opus 4.7"
-valid_from = "2026-04-28"
+# Set valid_from to pre-date the test events (which use 2026-04-21).
+# Under v0.1.13's time-anchored lookup, an event whose date is before
+# the pricing row's valid_from no-longer-matches — D4 behavior. The
+# test fixture date must be coherent with the event dates the tests
+# emit, or the regression tests below false-fail with "no pricing".
+valid_from = "2026-01-01"
 input_usd_per_mtok = 15.00
 output_usd_per_mtok = 75.00
 cache_read_usd_per_mtok = 1.50

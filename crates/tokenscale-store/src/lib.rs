@@ -16,6 +16,7 @@
 //! documented in `docs/decisions.md`. The graduation to query! macros is a
 //! follow-up commit once the schema stabilizes.
 
+mod audit;
 mod billing;
 mod database;
 mod error;
@@ -24,9 +25,12 @@ mod factors_lookup;
 mod factors_sync;
 mod files;
 mod impact_query;
+mod pricing_lookup;
+mod pricing_sync;
 mod queries;
 mod subscriptions;
 
+pub use audit::{audit_pricing_launch_dates, PricingLaunchDateAuditRow};
 pub use billing::{
     delete_billing_charges_by_source, insert_billing_charges, list_billing_charges_in_window,
     sum_billing_charges_in_window, BillingChargeInsertSummary, BillingChargeRow,
@@ -36,6 +40,8 @@ pub use error::{Result, StoreError};
 pub use events::{count_events, insert_events, list_source_kinds, InsertSummary};
 pub use factors_lookup::{lookup_environmental_factors, lookup_grid_factors};
 pub use factors_sync::{sync_environmental_factors, FactorsSyncSummary};
+pub use pricing_lookup::lookup_pricing;
+pub use pricing_sync::{sync_pricing, PricingSyncSummary};
 pub use impact_query::{aggregate_impact_by_bucket, ImpactByBucketRow, ImpactQueryFactors};
 pub use files::{
     clear_file_state_for_source, delete_events_for_source, get_file_state, most_recent_scan_at,

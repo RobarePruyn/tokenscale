@@ -65,6 +65,18 @@ type ModelImpact = {
   co2eUncertaintyPct: number
   waterUncertaintyPct: number
   indirectWaterUncertaintyPct: number
+  // Per-token-type costs (USD) for this bucket-row, pre-computed in
+  // SQL with per-event time-anchoring (v0.1.13). The five sum to
+  // costUsdTotal; segments stack identically to the token-count view.
+  costUsdInput: number
+  costUsdOutput: number
+  costUsdCacheRead: number
+  costUsdCacheWrite5m: number
+  costUsdCacheWrite1h: number
+  // Total cost (USD) — null when every event in the bucket lacked
+  // a matching pricing.valid_from row (pre-launch events).
+  costUsdTotal: number | null
+  eventsMissingPricing: number
   eventsMissingEnvFactor: number
   eventsUsingFallbackPue: number
   eventsUsingFallbackWue: number
@@ -93,10 +105,6 @@ type DailyUsageRow = {
 
 type Granularity = 'day' | 'week' | 'month'
 
-type ModelPricingForResponse = {
-  input_usd_per_mtok: number
-}
-
 type DailyUsageResponse = {
   rows: DailyUsageRow[]
   models: string[]
@@ -108,9 +116,9 @@ type DailyUsageResponse = {
   /** Configured AWS region the impact figures are attributed to. */
   configuredRegion: string
   granularity: Granularity
-  /** Per-model `input_usd_per_mtok` so the frontend can convert `billable`
-   *  values to USD on the fly. Models without a pricing entry are absent. */
-  pricingByModel: Record<string, ModelPricingForResponse>
+  // v0.1.13: `pricingByModel` was removed. Cost (USD) values now arrive
+  // per-bucket-row inside `ModelTokens.impact.costUsd*`, computed in
+  // SQL with per-event time-anchoring (D6 in cost-time-anchoring roadmap).
 }
 
 type ProjectsResponse = {
@@ -129,6 +137,12 @@ type HealthResponse = {
   pricing: {
     schema_version: number
     file_status: string
+    /** Maintainer-set version of pricing.toml — e.g. `"1.0"`. v0.1.13
+     *  introduced this on the pricing side along with multi-row
+     *  time-anchored entries; older files leave it `null`. */
+    file_version: string | null
+    /** ISO date the pricing file was published. Pairs with file_version. */
+    file_published: string | null
     model_count: number
     needs_review: boolean
     /** Most recent `source_accessed_at` across loaded models. The
@@ -788,17 +802,19 @@ function formatRelativeTime(isoTimestamp: string | null): string {
 function tokenFieldsForView(
   modelTokens: ModelTokens,
   viewMode: ViewMode,
-  modelPricing: ModelPricingForResponse | undefined,
 ): BillableBreakdown {
-  if (viewMode === 'cost' && modelTokens.billable && modelPricing) {
-    // billable_value × $/MTok ÷ 1e6 = $ for that token type
-    const dollarsPerBillableUnit = modelPricing.input_usd_per_mtok / 1_000_000
+  if (viewMode === 'cost') {
+    // v0.1.13: per-token-type costs are pre-computed in SQL with
+    // per-event time-anchored pricing. We just read them through.
+    // A pre-launch cell (costUsdTotal === null) still has all-zero
+    // per-type costs because the SQL COALESCEs missing rates to 0;
+    // the cell stacks as zero, matching the dashboard's "—" rendering.
     return {
-      input: modelTokens.billable.input * dollarsPerBillableUnit,
-      output: modelTokens.billable.output * dollarsPerBillableUnit,
-      cache_read: modelTokens.billable.cache_read * dollarsPerBillableUnit,
-      cache_write_5m: modelTokens.billable.cache_write_5m * dollarsPerBillableUnit,
-      cache_write_1h: modelTokens.billable.cache_write_1h * dollarsPerBillableUnit,
+      input: modelTokens.impact.costUsdInput,
+      output: modelTokens.impact.costUsdOutput,
+      cache_read: modelTokens.impact.costUsdCacheRead,
+      cache_write_5m: modelTokens.impact.costUsdCacheWrite5m,
+      cache_write_1h: modelTokens.impact.costUsdCacheWrite1h,
     }
   }
   if (viewMode === 'billable' && modelTokens.billable) {
@@ -1153,26 +1169,18 @@ export default function App() {
     const dataByBucket = new Map(data.rows.map((row) => [row.date, row]))
 
     // Per-model cost share — used to annotate the legend with
-    // "(72% of cost)" regardless of view mode. Computed against raw
-    // input rates (no discounts) using the existing billable fields,
-    // matching how the counterfactual cost is computed. `null` for
-    // any model whose pricing is missing — legend just omits the
-    // share % in that case rather than misrepresenting.
+    // "(72% of cost)" regardless of view mode. v0.1.13: read the
+    // pre-computed per-bucket-row `impact.costUsdTotal` (per-event
+    // time-anchored). Cells with no matching pricing row (null total)
+    // are skipped — legend just omits the share % rather than
+    // misrepresenting.
     const perModelCost = new Map<string, number>()
     let totalCostForShares = 0
     for (const row of data.rows) {
       for (const modelId of visibleModels) {
         const tokens = row.byModel[modelId]
-        const pricing = data.pricingByModel[modelId]
-        if (!tokens || !tokens.billable || !pricing) continue
-        const ratePerBillable = pricing.input_usd_per_mtok / 1_000_000
-        const billableTotal =
-          tokens.billable.input +
-          tokens.billable.output +
-          tokens.billable.cache_read +
-          tokens.billable.cache_write_5m +
-          tokens.billable.cache_write_1h
-        const cost = billableTotal * ratePerBillable
+        if (!tokens || tokens.impact.costUsdTotal === null) continue
+        const cost = tokens.impact.costUsdTotal
         perModelCost.set(modelId, (perModelCost.get(modelId) ?? 0) + cost)
         totalCostForShares += cost
       }
@@ -1216,7 +1224,7 @@ export default function App() {
           const tokens = row?.byModel[modelId]
           const bucketTotal = tokens
             ? sumSelectedTokenFields(
-                tokenFieldsForView(tokens, viewMode, data.pricingByModel[modelId]),
+                tokenFieldsForView(tokens, viewMode),
                 visibleTokenTypes,
               )
             : 0
@@ -1247,7 +1255,7 @@ export default function App() {
           for (const modelId of visibleModels) {
             const tokens = row.byModel[modelId]
             if (!tokens) continue
-            sum += tokenFieldsForView(tokens, viewMode, data.pricingByModel[modelId])[
+            sum += tokenFieldsForView(tokens, viewMode)[
               tokenType as keyof BillableBreakdown
             ]
           }
@@ -1259,10 +1267,12 @@ export default function App() {
     return { rows, series, hiddenInPricedView }
   }, [dailyState, selectedModels, selectedTokenTypes, stackBy, viewMode, fromDate, toDate])
 
-  // Counterfactual cost = "what these tokens would have cost on the API at
-  // list rates" — sum of `billable.X × input_price ÷ 1e6` across the chart's
-  // currently visible cells. Reflects the user's full filter set so the
-  // headline number always matches what's drawn.
+  // Counterfactual cost = "what these tokens cost on the API at list
+  // rates" — v0.1.13 reads pre-computed per-token-type costs from
+  // `tokens.impact.costUsd*`, summed across visible cells and gated
+  // by visibleTokenTypes. Per-event time-anchored rates make this
+  // correct across mid-window rate changes; v0.1.12's window-wide
+  // single rate would have averaged them out.
   const counterfactualCostUsd = useMemo(() => {
     if (dailyState.status !== 'ok') return null
     const data = dailyState.data
@@ -1274,19 +1284,15 @@ export default function App() {
     for (const row of data.rows) {
       for (const modelId of visibleModels) {
         const tokens = row.byModel[modelId]
-        const pricing = data.pricingByModel[modelId]
-        if (!tokens || !tokens.billable || !pricing) continue
-        const dollarsPerBillableUnit = pricing.input_usd_per_mtok / 1_000_000
-        if (visibleTokenTypes.has('input'))
-          total += tokens.billable.input * dollarsPerBillableUnit
-        if (visibleTokenTypes.has('output'))
-          total += tokens.billable.output * dollarsPerBillableUnit
+        if (!tokens || tokens.impact.costUsdTotal === null) continue
+        if (visibleTokenTypes.has('input')) total += tokens.impact.costUsdInput
+        if (visibleTokenTypes.has('output')) total += tokens.impact.costUsdOutput
         if (visibleTokenTypes.has('cache_read'))
-          total += tokens.billable.cache_read * dollarsPerBillableUnit
+          total += tokens.impact.costUsdCacheRead
         if (visibleTokenTypes.has('cache_write_5m'))
-          total += tokens.billable.cache_write_5m * dollarsPerBillableUnit
+          total += tokens.impact.costUsdCacheWrite5m
         if (visibleTokenTypes.has('cache_write_1h'))
-          total += tokens.billable.cache_write_1h * dollarsPerBillableUnit
+          total += tokens.impact.costUsdCacheWrite1h
       }
     }
     return total
@@ -1298,9 +1304,17 @@ export default function App() {
   // Denominator includes cache_write_* because those are paid-for cache
   // entries that aren't (yet) amortizing — a high write/read ratio
   // means the cache isn't paying off, and the bare percentage hides
-  // that. Dollar savings = cache_read × 0.9 × input_rate, because
-  // cache_read is billed at 10% of the input rate, so the gap is what
-  // the user paid LESS than they would have without the cache discount.
+  // that.
+  //
+  // Dollar savings: v0.1.13 derives this from the pre-computed per-type
+  // costs. The effective input rate for each cell is
+  // `costUsdInput / input_tokens`; alternative cost for the cell's
+  // cache_read tokens would have been `effective_input_rate ×
+  // cache_read_tokens`. Savings = alternative cost − what was actually
+  // paid at cache-read rate. We accumulate the four sums (input cost,
+  // input tokens, cache_read cost, cache_read tokens) across visible
+  // cells and compute the savings once — correct even when the input
+  // rate varies across the window via per-event time-anchoring.
   const cacheStats = useMemo(() => {
     if (dailyState.status !== 'ok') return null
     const data = dailyState.data
@@ -1309,7 +1323,8 @@ export default function App() {
     let cacheReadSum = 0
     let cacheWrite5mSum = 0
     let cacheWrite1hSum = 0
-    let dollarSavings = 0
+    let inputCostSum = 0
+    let cacheReadCostSum = 0
     let anyPricing = false
     let anyData = false
     for (const row of data.rows) {
@@ -1321,21 +1336,24 @@ export default function App() {
         cacheReadSum += tokens.cache_read
         cacheWrite5mSum += tokens.cache_write_5m
         cacheWrite1hSum += tokens.cache_write_1h
-        const pricing = data.pricingByModel[modelId]
-        if (pricing) {
+        if (tokens.impact.costUsdTotal !== null) {
           anyPricing = true
-          dollarSavings +=
-            (tokens.cache_read * 0.9 * pricing.input_usd_per_mtok) / 1_000_000
+          inputCostSum += tokens.impact.costUsdInput
+          cacheReadCostSum += tokens.impact.costUsdCacheRead
         }
       }
     }
     const denominator = inputSum + cacheReadSum + cacheWrite5mSum + cacheWrite1hSum
     if (!anyData || denominator === 0) return null
+    const dollarSavings =
+      anyPricing && inputSum > 0
+        ? (inputCostSum / inputSum) * cacheReadSum - cacheReadCostSum
+        : null
     return {
       cacheReadFraction: cacheReadSum / denominator,
       cacheReadTokens: cacheReadSum,
       totalInputishTokens: denominator,
-      dollarSavings: anyPricing ? dollarSavings : null,
+      dollarSavings,
     }
   }, [dailyState, selectedModels])
 

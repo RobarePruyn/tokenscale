@@ -65,6 +65,36 @@ UTC. All `date(occurred_at)` extraction in the SQL aggregation uses UTC YYYY-MM-
 
 This section dates every correction applied to the cost factor file (`pricing.toml`). It is the cost-side analog to `docs/research-log.md`. Append-only; never rewrite or delete an entry.
 
+### 2026-05-18 — v0.1.13: time-anchoring backfill + multi-row schema
+
+**What changed**: `pricing.toml` rewritten in multi-row form (array-of-tables per model) with each row's `valid_from` rewritten from the v0.1.0 placeholder `2026-04-28` to the model's actual launch date. Adds a `launch_date_source` field per row carrying the URL or rationale backing the date. Also adds top-level `file_version = "1.0"` and `file_published = "2026-05-18"`.
+
+**No rate change**: every model's input / output / cache-read rate and the two cache-write multipliers are unchanged from v0.1.12. This release moves the time-dimension, not the dollar values. Historical cost figures in the dashboard do not shift retroactively — every event that was priced in v0.1.12 (which was "always, with the single window-wide rate") still resolves to the same dollar amount in v0.1.13, because every event in this user-base's history falls on or after its model's true launch date.
+
+**Per-model dates and provenance**:
+
+| Model | v0.1.13 `valid_from` | `launch_date_source` | Classification |
+|---|---|---|---|
+| `claude-opus-4-7` | `2026-04-16` | `whats-new-claude-4-7` (Anthropic, first-party) + dated GA confirmation on `github.blog/changelog` | **Sourced — exact.** D3 conservative-dating rule does not apply. |
+| `claude-opus-4-6` | `2025-09-01` | Bedrock ID `anthropic.claude-opus-4-6-v1` (~Sep 2025) + D3 conservative-date rule | **Conservative estimate.** Start-of-month per D3 (bias earlier than best guess, never later). Replace with first-party source if/when one becomes available. |
+| `claude-sonnet-4-6` | `2025-09-01` | Roadmap doc §3 "~Sep 2025" + D3 conservative-date rule | **Conservative estimate.** Same D3 treatment as Opus 4.6. |
+| `claude-haiku-4-5` | `2025-10-01` | Bedrock model ID `claude-haiku-4-5-20251001` encodes the date | **Sourced — exact** from Bedrock ID convention. |
+
+**Why the gap between Opus 4.7's launch date (2026-04-16) and the v0.1.0 placeholder (2026-04-28) matters**: the placeholder was set to tokenscale's own v0.1.0 ship date — convenient but a lie about Anthropic's history. A future re-derivation reading the rewritten file would have concluded those models had no published price before late April 2026, a smaller version of the v0.1.0–v0.1.10 seed-value bug. Backfilling to real launch dates closes that gap.
+
+**Why two rows carry conservative-estimate provenance**: Anthropic doesn't always publish exact launch dates and we couldn't source Opus 4.6 / Sonnet 4.6 dates to a first-party announcement before v0.1.13's cutoff. Per D3 in `docs/roadmap-cost-time-anchoring.md`, conservative dating biases each guess earlier than the best estimate — an over-early `valid_from` produces only zero or near-zero pre-launch "errors" (events can't actually predate their model), whereas an over-late one silently drops real events from the cost view. Both rows' `launch_date_source` field labels them as estimates so a future maintainer can replace them with a stronger source without misreading the file's current confidence level.
+
+**Pre-release gate**: `tokenscale audit pricing-launch-dates` (a new v0.1.13 CLI subcommand) reports per-(provider, model) pre-launch counts against the on-disk `pricing.toml`. v0.1.13 ran the gate against the maintainer's production DB (21,133 events across four real models + one `<synthetic>` admin-API aggregate). Result: **exactly zero** pre-launch events for the four priced models. The 56 `<synthetic>` events are correctly bucketed as "unpriced model" (no pricing row exists for the admin-API aggregate pseudo-model), excluded from the gate per design.
+
+**Defensive infrastructure shipped alongside**:
+
+- `pricing.toml`'s schema gained `launch_date_source: Option<String>` on `ModelPricing` and top-level `file_version` / `file_published` (mirroring the env side).
+- `crates/tokenscale-store/src/audit.rs` runs the per-event time-anchored audit as a one-shot SQL query.
+- `crates/tokenscale-cli/src/main.rs` exposes `tokenscale audit pricing-launch-dates` — non-zero exit when any priced model has pre-launch events. Designed to slot into CI release gates.
+- DB-side time-anchored pricing arrives via the per-event correlated subquery in `aggregate_impact_by_bucket` (Phase C). The frontend-visible `pricingByModel` window-wide dict is removed in v0.1.13 — see CHANGELOG → API changes.
+
+---
+
 ### 2026-05-18 — Opus 4.7 / 4.6 + Haiku 4.5 rate corrections
 
 **What was wrong**: `pricing.toml` carried wrong API rates for three of four tracked models since v0.1.0:

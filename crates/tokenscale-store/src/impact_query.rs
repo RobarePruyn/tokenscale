@@ -94,6 +94,30 @@ pub struct ImpactByBucketRow {
     /// indirect-water uncertainty.
     pub indirect_water_uncertainty_pct: i32,
 
+    /// **Per-token-type costs (USD)** for this bucket, each pre-computed
+    /// in SQL with per-event time-anchored pricing (v0.1.13). Unpriced
+    /// events contribute 0 to each sum (COALESCE in the JOIN); the
+    /// `events_missing_pricing` counter and `cost_usd_total` Option
+    /// together encode "is this cell's dollar value meaningful?".
+    pub cost_usd_input: f64,
+    pub cost_usd_output: f64,
+    pub cost_usd_cache_read: f64,
+    pub cost_usd_cache_write_5m: f64,
+    pub cost_usd_cache_write_1h: f64,
+
+    /// Total cost = sum of the five per-token-type costs above.
+    /// `None` when **no** event in the bucket had a matching pricing row
+    /// (e.g. unknown model, or every event predates the model's launch).
+    /// The dashboard renders this as "—" rather than `$0` — same
+    /// missingness convention as `co2e_g` and `water_l`.
+    pub cost_usd_total: Option<f64>,
+
+    /// Number of events in the bucket with NO matching pricing row.
+    /// Per D4, pre-launch events return None from `lookup_pricing`; this
+    /// counter is how the dashboard surfaces "X events lacked pricing
+    /// at their occurred_at."
+    pub events_missing_pricing: i64,
+
     /// Number of events whose env_factor row was missing entirely
     /// (model isn't in `env_factors` at the event's `occurred_at`).
     /// The dashboard's "models without factors" footer counts these.
@@ -260,6 +284,28 @@ pub async fn aggregate_impact_by_bucket(
         COALESCE(MAX(gf.co2e_uncertainty_range_pct), 0)            AS grid_co2e_uncertainty_pct,
         COALESCE(MAX(gf.water_uncertainty_range_pct), 0)           AS grid_water_uncertainty_pct,
         COALESCE(MAX(gf.indirect_water_uncertainty_range_pct), 0)  AS grid_indirect_water_uncertainty_pct,
+        -- Phase C cost-computation. Each token-type cost is
+        -- `tokens × rate / 1e6`, with cache-write rates derived as
+        -- `input × multiplier`. COALESCE(rate, 0) lets the bucket-level
+        -- SUM treat unpriced events as zero contribution; the
+        -- `events_missing_pricing` counter tracks the count so cook()
+        -- can promote the all-missing case back to None. We sum each
+        -- token type separately so the stack-by-token-type Cost (USD)
+        -- view can render its segments without re-deriving the math —
+        -- the total is just the Rust-side sum of the five.
+        SUM(events.input_tokens * COALESCE(pr.input_usd_per_mtok, 0) / 1000000.0)
+                                                         AS cost_usd_input,
+        SUM(events.output_tokens * COALESCE(pr.output_usd_per_mtok, 0) / 1000000.0)
+                                                         AS cost_usd_output,
+        SUM(events.cache_read_tokens * COALESCE(pr.cache_read_usd_per_mtok, 0) / 1000000.0)
+                                                         AS cost_usd_cache_read,
+        SUM(events.cache_write_5m_tokens * COALESCE(pr.cache_write_5m_multiplier, 0)
+                                         * COALESCE(pr.input_usd_per_mtok, 0) / 1000000.0)
+                                                         AS cost_usd_cache_write_5m,
+        SUM(events.cache_write_1h_tokens * COALESCE(pr.cache_write_1h_multiplier, 0)
+                                         * COALESCE(pr.input_usd_per_mtok, 0) / 1000000.0)
+                                                         AS cost_usd_cache_write_1h,
+        SUM(CASE WHEN pr.id IS NULL THEN 1 ELSE 0 END)   AS events_missing_pricing,
         SUM(CASE WHEN ef.id IS NULL THEN 1 ELSE 0 END)   AS events_missing_env_factor,
         SUM(CASE WHEN gf.pue IS NULL THEN 1 ELSE 0 END)  AS events_using_fallback_pue,
         SUM(CASE WHEN gf.water_l_per_kwh IS NULL THEN 1 ELSE 0 END) AS events_using_fallback_wue,
@@ -271,6 +317,21 @@ pub async fn aggregate_impact_by_bucket(
              AND ef.model = events.model
              AND ef.valid_from = (
                  SELECT MAX(valid_from) FROM env_factors
+                  WHERE provider = sources.provider
+                    AND model = events.model
+                    AND valid_from <= date(events.occurred_at)
+             )
+       -- Phase C: per-event time-anchored pricing join, same shape as
+       -- env_factors above. The correlated subquery picks the row whose
+       -- valid_from is the latest date ≤ event.occurred_at. Pre-launch
+       -- events (no qualifying row) fall through as NULL, the
+       -- COALESCE in the cost SUM treats them as zero contribution,
+       -- and the events_missing_pricing counter tracks the count.
+       LEFT JOIN pricing pr
+              ON pr.provider = sources.provider
+             AND pr.model = events.model
+             AND pr.valid_from = (
+                 SELECT MAX(valid_from) FROM pricing
                   WHERE provider = sources.provider
                     AND model = events.model
                     AND valid_from <= date(events.occurred_at)
@@ -336,6 +397,12 @@ struct RawImpactByBucketRow {
     events_with_water: i64,
     indirect_water_l_raw: Option<f64>,
     events_with_indirect_water: i64,
+    cost_usd_input: f64,
+    cost_usd_output: f64,
+    cost_usd_cache_read: f64,
+    cost_usd_cache_write_5m: f64,
+    cost_usd_cache_write_1h: f64,
+    events_missing_pricing: i64,
     max_uncertainty_pct: i32,
     grid_co2e_uncertainty_pct: i32,
     grid_water_uncertainty_pct: i32,
@@ -362,6 +429,25 @@ impl RawImpactByBucketRow {
         };
         let indirect_water_l = if self.events_with_indirect_water > 0 {
             self.indirect_water_l_raw
+        } else {
+            None
+        };
+
+        // Cost is `None` only when EVERY event in the cell missed
+        // pricing — e.g. the whole bucket is pre-launch, or the model
+        // has no pricing row at all. If even one event hit a row, the
+        // sum is meaningful (the other events contributed $0 to that
+        // sum via COALESCE in the SQL). Same shape as water_l above.
+        // Total is just the sum of the five per-type SUMs; doing the
+        // addition in Rust avoids a sixth redundant SUM in SQL.
+        let cost_usd_total = if self.events_missing_pricing < self.events_count {
+            Some(
+                self.cost_usd_input
+                    + self.cost_usd_output
+                    + self.cost_usd_cache_read
+                    + self.cost_usd_cache_write_5m
+                    + self.cost_usd_cache_write_1h,
+            )
         } else {
             None
         };
@@ -397,6 +483,13 @@ impl RawImpactByBucketRow {
             co2e_uncertainty_pct,
             water_uncertainty_pct,
             indirect_water_uncertainty_pct,
+            cost_usd_input: self.cost_usd_input,
+            cost_usd_output: self.cost_usd_output,
+            cost_usd_cache_read: self.cost_usd_cache_read,
+            cost_usd_cache_write_5m: self.cost_usd_cache_write_5m,
+            cost_usd_cache_write_1h: self.cost_usd_cache_write_1h,
+            cost_usd_total,
+            events_missing_pricing: self.events_missing_pricing,
             events_missing_env_factor: self.events_missing_env_factor,
             events_using_fallback_pue: self.events_using_fallback_pue,
             events_using_fallback_wue: self.events_using_fallback_wue,
@@ -522,6 +615,116 @@ egrid_subregion_full_name = "SERC Virginia/Carolina"
         assert_eq!(row.events_using_fallback_pue, 0);
         assert_eq!(row.events_using_fallback_wue, 0);
         assert_eq!(row.events_count, 1);
+    }
+
+    #[tokio::test]
+    async fn cost_usd_is_pre_computed_per_event_via_pricing_join() {
+        // Phase C regression: per-event time-anchored pricing flows
+        // through the SQL aggregate. 1M input + 100K output on Sonnet
+        // 4.6 at $3/$15 per MTok should yield:
+        //   input cost  = 1_000_000 × 3 / 1e6  = 3.00
+        //   output cost = 100_000   × 15 / 1e6 = 1.50
+        //   total       = 4.50
+        use crate::sync_pricing;
+        use tokenscale_core::PricingFile;
+
+        const PRICING_TOML: &str = r#"
+schema_version = 1
+file_status = "production"
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+[providers.anthropic.models."claude-sonnet-4-6"]
+display_name              = "Claude Sonnet 4.6"
+valid_from                = "2025-09-01"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-05-18"
+"#;
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let factors_file = EnvironmentalFactorsFile::parse(PROD_TOML).unwrap();
+        sync_environmental_factors(&database, &factors_file).await.unwrap();
+        let pricing = PricingFile::parse(PRICING_TOML).unwrap();
+        sync_pricing(&database, &pricing).await.unwrap();
+
+        insert_events(&database, &[event("claude-sonnet-4-6", 21, 1_000_000, 100_000)])
+            .await
+            .unwrap();
+
+        let rows = aggregate_impact_by_bucket(
+            &database,
+            "2026-04-01",
+            "2026-04-30",
+            ALL_PROVIDERS,
+            &[],
+            Granularity::Day,
+            &factors(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        let cost = row.cost_usd_total.expect("cost populated");
+        assert!((cost - 4.50).abs() < 1e-9, "cost_usd_total={cost}");
+        assert_eq!(row.events_missing_pricing, 0);
+    }
+
+    #[tokio::test]
+    async fn cost_usd_is_none_when_event_predates_pricing_valid_from() {
+        // D4 regression: a pre-launch event (event date < every
+        // pricing.valid_from for its model) → no matching row → cost
+        // contribution NULL → events_missing_pricing == events_count
+        // → cook() promotes cost_usd_total to None.
+        use crate::sync_pricing;
+        use tokenscale_core::PricingFile;
+
+        const PRICING_TOML: &str = r#"
+schema_version = 1
+file_status = "production"
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+[providers.anthropic.models."claude-sonnet-4-6"]
+display_name              = "Claude Sonnet 4.6"
+valid_from                = "2099-01-01"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://example"
+source_accessed_at        = "2026-05-18"
+"#;
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let factors_file = EnvironmentalFactorsFile::parse(PROD_TOML).unwrap();
+        sync_environmental_factors(&database, &factors_file).await.unwrap();
+        let pricing = PricingFile::parse(PRICING_TOML).unwrap();
+        sync_pricing(&database, &pricing).await.unwrap();
+
+        insert_events(&database, &[event("claude-sonnet-4-6", 21, 1_000_000, 100_000)])
+            .await
+            .unwrap();
+
+        let rows = aggregate_impact_by_bucket(
+            &database,
+            "2026-04-01",
+            "2026-04-30",
+            ALL_PROVIDERS,
+            &[],
+            Granularity::Day,
+            &factors(),
+        )
+        .await
+        .unwrap();
+        let row = &rows[0];
+        assert!(row.cost_usd_total.is_none(), "pre-launch cost must be None");
+        assert_eq!(row.events_missing_pricing, 1);
     }
 
     #[tokio::test]

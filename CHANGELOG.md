@@ -6,6 +6,53 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.13 — 2026-05-18
+
+The cost-side time-anchoring release. Mirrors what `environmental-factors.toml` already did per event onto `pricing.toml`: every event's cost now resolves through a per-event `valid_from` lookup, so a future rate change adds a new row dated to the announcement rather than overwriting history. Closes the v0.1.0 placeholder convention where every row carried `valid_from = "2026-04-28"` (tokenscale's own ship date, not Anthropic's launch dates) — the cost-side analog of the seed-value bug that v0.1.11 fixed on the rate side.
+
+> **Historical cost figures DO NOT shift retroactively.** Every model's input, output, cache-read, and cache-write rates are unchanged from v0.1.12. The release moves the time-dimension, not the dollar values. Every event in this dashboard's history that was priced in v0.1.12 — with the single window-wide rate — resolves to the same dollar amount in v0.1.13 via per-event time-anchoring, because every ingested event falls on or after its model's true launch date. The maintainer's release-gate audit confirmed this: exactly zero pre-launch events across the four priced models on a 21,133-event production database. See [`docs/cost-methodology.md`](docs/cost-methodology.md)'s new 2026-05-18 v0.1.13 corrections-log entry for the dated audit-trail entry, including the per-model launch-date table and provenance classifications.
+
+### Changed
+
+- **`pricing.toml` — multi-row schema + backfilled launch dates.** Each model now lives as `[[providers.<provider>.models."<id>"]]` (array-of-tables) rather than a single `[providers.<provider>.models."<id>"]` table. v0.1.13 ships exactly one row per model — future rate corrections add a new row with a later `valid_from` rather than overwriting the existing one. Each row gains a `launch_date_source` field carrying the URL or rationale backing the date. The four `valid_from` values:
+  - `claude-opus-4-7`: `2026-04-16` (sourced: Anthropic `whats-new-claude-4-7` + GitHub `changelog/2026-04-16-claude-opus-4-7-is-generally-available`).
+  - `claude-opus-4-6`: `2025-09-01` (conservative estimate from Bedrock ID `anthropic.claude-opus-4-6-v1`; start-of-month per D3 conservative-dating rule).
+  - `claude-sonnet-4-6`: `2025-09-01` (conservative estimate; same D3 treatment).
+  - `claude-haiku-4-5`: `2025-10-01` (sourced from Bedrock model ID `claude-haiku-4-5-20251001`).
+- **`pricing.toml`** also gains top-level `file_version = "1.0"` and `file_published = "2026-05-18"`, mirroring `environmental-factors.toml`. Surfaced through `/api/v1/health → pricing.file_version` / `file_published` so the dashboard banner can show "pricing v1.0".
+- **DB-side per-event time-anchored pricing.** `aggregate_impact_by_bucket` joins each event to its authoritative `pricing` row via a correlated subquery on `valid_from` (identical pattern to the env-factors join already in place). Per-token-type cost SUMs (`cost_usd_input`, `cost_usd_output`, `cost_usd_cache_read`, `cost_usd_cache_write_5m`, `cost_usd_cache_write_1h`) flow through `ImpactByBucketRow` → `ModelImpact` to the frontend, where the Cost (USD) view's stack-by-token-type chart reads them directly. The pre-launch case — an event whose `occurred_at` predates every `valid_from` for its `(provider, model)` pair — resolves to `costUsdTotal = null` and renders as "—" in the dashboard, matching the env-side missingness convention for CO₂e / water. `events_missing_pricing` is published alongside `eventsMissingEnvFactor` so the dashboard footer can show "X events without pricing data."
+
+### Removed (PUBLIC API CHANGE)
+
+- **`pricingByModel` removed from `GET /api/v1/usage/daily`.** The window-wide per-model rate dict (`{ "claude-opus-4-7": { "input_usd_per_mtok": 5.00 }, ... }`) is gone. It was fundamentally incompatible with multi-row time-anchored pricing — rates can change mid-window, so any single value would have been a lie. The frontend's Cost (USD) view, counterfactual-cost totals, per-model cost-share legend annotations, and cache-savings stat all rewired to consume the new per-bucket-row `tokens.impact.costUsd*` fields. **External consumers of this endpoint must update**: read `tokens.impact.costUsdTotal` (or the per-token-type fields) per bucket-row instead of multiplying token counts by the window-wide rate. Cost figures are now pre-computed in SQL with per-event resolution; clients no longer need to know rates.
+
+### Added
+
+- **`tokenscale audit pricing-launch-dates` CLI subcommand.** Reports per-(provider, model) pre-launch counts against the on-disk `pricing.toml` after syncing it into the DB. Exits non-zero when ANY priced model has events whose date predates its earliest `valid_from` — designed to gate v0.1.13+ release tags in CI / release-checklist runs. Distinguishes the two failure modes:
+  - **Priced pair with pre-launch events** — the wrong-launch-date regression. Fails the gate.
+  - **Unpriced model** — pair has no `pricing.toml` row at all (e.g. the `<synthetic>` admin-API aggregate, or a new model added to events before `pricing.toml`). Reported separately, does NOT fail the gate.
+- **`launch_date_source: Option<String>`** on `ModelPricing`. TOML-only provenance (not stored in the DB pricing table — same convention as `display_name`). Required for new rows going forward.
+- **`/api/v1/health → pricing.file_version` / `file_published`** — both `Option<String>`, mirroring the env-side fields. Frontend `HealthResponse` type updated accordingly.
+
+### Downgrade note
+
+**Downgrading from v0.1.13 → v0.1.12 requires reverting `pricing.toml` to single-row form.** v0.1.13's multi-row array-of-tables schema (`[[providers.anthropic.models."claude-opus-4-7"]]`) is forward-compatible with the parser (v0.1.11+'s `PricingFile::parse` accepts both single-table and array-of-tables forms via untagged-enum deserialization), but v0.1.12's parser only accepts the single-table form. Anyone running `brew unpin && brew switch tokenscale-cli @0.1.12` after taking v0.1.13 must also restore the v0.1.12-shape `pricing.toml` from git history (or accept that v0.1.12 will fail to start with the v0.1.13-shape file). The DB-side `pricing` table is forward-only — v0.1.12 wouldn't read or write `pricing` rows at all (the table was provisioned in v0.1.0's initial migration but never populated until v0.1.13), so downgrading does not require a DB migration.
+
+### Design decisions worth re-stating (locked in the v0.1.13 plan + signoffs)
+
+- **Five-phase atomic ship**: Phases A (in-memory multi-row TOML), B (DB sync), C (per-event SQL aggregation), D (backfilled launch dates), E (file_version + file_published) all in one v0.1.13 tag. Splitting them would have made the "no historical numbers move" claim harder to verify across releases.
+- **D3 conservative-dating rule** applied to genuine estimates only — Opus 4.6 and Sonnet 4.6 are dated to `2025-09-01` (start-of-month per D3) and explicitly labeled as estimates in `launch_date_source`. Sourced rows (Opus 4.7, Haiku 4.5) carry their exact dates; D3 does NOT apply to sourced rows.
+- **D4 missingness semantic**: pre-launch events render as "—" in the dashboard, not as `$0.00`. Same convention as CO₂e / water when no env factor is available for a region.
+- **D6 API change**: `pricingByModel` removal called out above as a breaking change, intentional rather than incidental. The dict's window-wide single-rate shape was structurally incompatible with the per-event time-anchored model that this release is built around.
+- **D7 rollback path**: forward-only DB migrations + replace-on-startup `pricing` sync absorb data corrections (wrong launch date, rate typo) without ceremony — edit `pricing.toml`, restart, the next sync rewrites the table. A wrong launch date is recoverable with a single-line edit + a `tokenscale audit pricing-launch-dates` re-run before tagging the patch.
+
+### Sequencing remaining
+
+- Source first-party Anthropic launch dates for Opus 4.6 and Sonnet 4.6 (currently conservative estimates); tighten those `valid_from` dates and update `launch_date_source` in a fast-follow.
+- Wire the audit subcommand into release-tag CI as a hard gate so the next pricing-data release can't ship if it would create pre-launch events.
+
+---
+
 ## v0.1.12 — 2026-05-18
 
 The drift-detector release. Ships the nightly CI check that compares `pricing.toml` against Anthropic's published rate card and opens a GitHub Issue when they diverge. Closes the "documented trigger with no detection mechanism" gap from v0.1.11: the next time Anthropic changes any Opus / Sonnet / Haiku per-token price, the detector flags it within 24 hours instead of letting historical numbers silently drift until a maintainer manually re-checks.

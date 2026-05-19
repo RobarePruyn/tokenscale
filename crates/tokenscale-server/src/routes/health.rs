@@ -36,6 +36,13 @@ pub struct IngestStatus {
 pub struct PricingStatus {
     pub schema_version: i64,
     pub file_status: String,
+    /// Human-readable file version — e.g. `"1.0"`. Mirrors the env-side
+    /// `file_version`. v0.1.13 introduced this on the pricing side along
+    /// with multi-row time-anchored entries; older files leave it `None`.
+    pub file_version: Option<String>,
+    /// ISO date the file was published. Pairs with `file_version` so
+    /// the banner can show "pricing v1.0, 2026-05-18".
+    pub file_published: Option<String>,
     /// Number of (provider, model) entries currently loaded.
     pub model_count: usize,
     /// `true` if `file_status != "production"` — drives the dashboard's
@@ -106,6 +113,8 @@ pub async fn handler(State(state): State<AppState>) -> Result<Json<HealthRespons
         pricing: PricingStatus {
             schema_version: pricing.schema_version,
             file_status: pricing.file_status.clone(),
+            file_version: pricing.file_version.clone(),
+            file_published: pricing.file_published.clone(),
             model_count: pricing_model_count,
             needs_review: pricing.is_review_pending(),
             accessed_at: pricing.most_recent_accessed_at().map(str::to_owned),

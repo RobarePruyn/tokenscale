@@ -94,7 +94,7 @@ source_accessed_at = "2026-04-28"
         )
         .unwrap();
         parsed
-            .lookup("anthropic", "claude-opus-4-7")
+            .lookup("anthropic", "claude-opus-4-7", "9999-12-31")
             .unwrap()
             .clone()
     }

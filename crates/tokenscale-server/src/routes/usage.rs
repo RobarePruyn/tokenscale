@@ -172,6 +172,39 @@ pub struct ModelImpact {
     /// indirect-water uncertainty.
     #[serde(rename = "indirectWaterUncertaintyPct")]
     pub indirect_water_uncertainty_pct: i32,
+    /// Per-token-type cost breakdown (USD) for this bucket-row, each
+    /// pre-computed in SQL with per-event time-anchored pricing
+    /// (v0.1.13 / Phase C). The five fields sum to `costUsdTotal`.
+    /// The frontend's "stack by token type" Cost (USD) view reads
+    /// these directly — same shape as the existing token-count stack,
+    /// so segment layout is symmetric.
+    #[serde(rename = "costUsdInput")]
+    pub cost_usd_input: f64,
+    #[serde(rename = "costUsdOutput")]
+    pub cost_usd_output: f64,
+    #[serde(rename = "costUsdCacheRead")]
+    pub cost_usd_cache_read: f64,
+    #[serde(rename = "costUsdCacheWrite5m")]
+    pub cost_usd_cache_write_5m: f64,
+    #[serde(rename = "costUsdCacheWrite1h")]
+    pub cost_usd_cache_write_1h: f64,
+    /// **Total cost (USD)** for this bucket-row — sum of the five
+    /// per-token-type costs above. `null` when every event in the
+    /// bucket lacked a matching `pricing.valid_from` row (e.g.
+    /// pre-launch events). Mirrors the env-side missingness convention
+    /// for `co2e_g` / `water_l`.
+    ///
+    /// **Replaces the v0.1.12 top-level `pricingByModel` dict.** The
+    /// frontend's Cost (USD) view now reads this field directly per
+    /// bucket-row instead of computing client-side from a window-wide
+    /// rate. See the v0.1.13 CHANGELOG and `docs/cost-methodology.md`.
+    #[serde(rename = "costUsdTotal")]
+    pub cost_usd_total: Option<f64>,
+    /// Number of events in this bucket-row that had NO matching pricing
+    /// row at their `occurred_at`. The dashboard surfaces this analogous
+    /// to `eventsMissingEnvFactor`.
+    #[serde(rename = "eventsMissingPricing")]
+    pub events_missing_pricing: i64,
     /// Number of events whose env_factor row was missing entirely. The
     /// dashboard surfaces this as "X events without factor data".
     #[serde(rename = "eventsMissingEnvFactor")]
@@ -237,24 +270,13 @@ pub struct DailyUsageResponse {
     /// formatter can match what was actually rendered (auto granularity is
     /// resolved client-side, but verifying server-side is cheap).
     pub granularity: Granularity,
-    /// Per-model pricing snippet (`input_usd_per_mtok` only — sufficient
-    /// for the dashboard to convert `billable` into USD via
-    /// `billable_value × input_price ÷ 1_000_000`). Models without a
-    /// pricing entry are absent from this map; same set as
-    /// `modelsWithoutPricing`. Sized by model count, not row count, so
-    /// the wire cost is trivial.
-    #[serde(rename = "pricingByModel")]
-    pub pricing_by_model: BTreeMap<String, ModelPricingForResponse>,
-}
-
-/// The slice of `ModelPricing` the dashboard needs to render the "Cost
-/// (USD)" view. Kept narrow on purpose: the full pricing record stays
-/// server-side, both to avoid leaking values the user hasn't asked for
-/// and to keep the API surface stable when more fields appear in the
-/// pricing schema later.
-#[derive(Serialize)]
-pub struct ModelPricingForResponse {
-    pub input_usd_per_mtok: f64,
+    // Note: `pricingByModel` was removed in v0.1.13 / Phase C as part
+    // of cost-side time-anchoring. The dict used to carry a single rate
+    // per model for the whole window, which was incompatible with the
+    // time-anchored multi-row model (rates can change mid-window). Cost
+    // computation moved into the per-bucket-row `ModelImpact.costUsdTotal`
+    // field, pre-computed in SQL with per-event valid_from resolution.
+    // See the v0.1.13 CHANGELOG → API changes.
 }
 
 // The body coordinates several pieces — visible-models lookup, impact
@@ -330,9 +352,14 @@ pub async fn daily_handler(
             continue;
         }
 
+        // Phase A: time-anchored pricing lookup using the row's bucket
+        // date. Phase C will move this into the SQL aggregate so we get
+        // per-event resolution (this is per-bucket-row). For current data
+        // with single-row pricing.toml, every bucket date resolves to the
+        // same one row — the v0.1.12 regression invariant.
         let billable_pair = state
             .pricing
-            .lookup(provider_for_pricing, &row.model)
+            .lookup(provider_for_pricing, &row.model, &row.bucket)
             .map(|model_pricing| compute_billable_breakdown(model_pricing, &row));
         let (billable, billable_total) = if let Some((breakdown, total)) = billable_pair {
             (Some(breakdown), Some(total))
@@ -361,6 +388,13 @@ pub async fn daily_handler(
                 co2e_uncertainty_pct: row.co2e_uncertainty_pct,
                 water_uncertainty_pct: row.water_uncertainty_pct,
                 indirect_water_uncertainty_pct: row.indirect_water_uncertainty_pct,
+                cost_usd_input: row.cost_usd_input,
+                cost_usd_output: row.cost_usd_output,
+                cost_usd_cache_read: row.cost_usd_cache_read,
+                cost_usd_cache_write_5m: row.cost_usd_cache_write_5m,
+                cost_usd_cache_write_1h: row.cost_usd_cache_write_1h,
+                cost_usd_total: row.cost_usd_total,
+                events_missing_pricing: row.events_missing_pricing,
                 events_missing_env_factor: row.events_missing_env_factor,
                 events_using_fallback_pue: row.events_using_fallback_pue,
                 events_using_fallback_wue: row.events_using_fallback_wue,
@@ -404,24 +438,11 @@ pub async fn daily_handler(
         .map(|(date, by_model)| DailyUsageRow { date, by_model })
         .collect();
 
-    // Build the per-model pricing snippet for visible models that have an
-    // entry. Sized by model count, not row count.
-    let pricing_by_model: BTreeMap<String, ModelPricingForResponse> = models
-        .iter()
-        .filter_map(|model_id| {
-            state
-                .pricing
-                .lookup(provider_for_pricing, model_id)
-                .map(|model_pricing| {
-                    (
-                        model_id.clone(),
-                        ModelPricingForResponse {
-                            input_usd_per_mtok: model_pricing.input_usd_per_mtok,
-                        },
-                    )
-                })
-        })
-        .collect();
+    // v0.1.13 / Phase C: the per-model pricing dict was removed here per
+    // D6. Cost (USD) values now arrive per-bucket-row inside
+    // `ModelImpact.costUsdTotal`, computed in SQL with per-event
+    // time-anchoring. This is a public API change called out in the
+    // v0.1.13 CHANGELOG.
 
     Ok(Json(DailyUsageResponse {
         rows,
@@ -431,7 +452,6 @@ pub async fn daily_handler(
         models_without_factors,
         configured_region: state.inference_region.clone(),
         granularity: resolved.granularity,
-        pricing_by_model,
     }))
 }
 

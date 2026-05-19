@@ -24,7 +24,8 @@ use tokenscale_core::{EnvironmentalFactorsFile, PricingFile};
 use tokenscale_ingest_cc::{run_scan_multi, ScanSummary};
 use tokenscale_server::{serve, AppState};
 use tokenscale_store::{
-    clear_file_state_for_source, delete_events_for_source, sync_environmental_factors, Database,
+    audit_pricing_launch_dates, clear_file_state_for_source, delete_events_for_source,
+    sync_environmental_factors, sync_pricing, Database, PricingLaunchDateAuditRow,
 };
 
 /// Source-kind constant the scan paths key off — mirrors the constant
@@ -105,6 +106,26 @@ enum TopLevelCommand {
         #[command(subcommand)]
         action: FactorsAction,
     },
+
+    /// Read-only audits over the ingested data. Used by release-checklist
+    /// gates and by operators investigating dashboard discrepancies.
+    Audit {
+        #[command(subcommand)]
+        action: AuditAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+#[command(rename_all = "kebab-case")]
+enum AuditAction {
+    /// Report how many ingested events predate the earliest
+    /// `pricing.toml` `valid_from` for their `(provider, model)`. Such
+    /// events have no time-anchored cost — the Cost (USD) view renders
+    /// "—" for them. v0.1.13 ships this as the Section 4 release-gate:
+    /// the audit's overall pre-launch count must be zero before tagging
+    /// a release that changes pricing launch dates. Non-zero count
+    /// exits non-zero so CI can gate on it.
+    PricingLaunchDates,
 }
 
 #[derive(Subcommand, Debug)]
@@ -147,6 +168,9 @@ async fn main() -> Result<()> {
                 println!("Phase 3 — not yet implemented");
                 Ok(())
             }
+        },
+        TopLevelCommand::Audit { action } => match action {
+            AuditAction::PricingLaunchDates => command_audit_pricing_launch_dates(&config_path).await,
         },
     }
 }
@@ -233,6 +257,17 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
              notes field before starting."
         );
     }
+    // v0.1.13: pricing also lives in a DB table now (the table was
+    // provisioned in v0.1.0's initial migration but never populated).
+    // pricing_sync rewrites the table from pricing.toml on every start,
+    // same idempotent replace-on-startup pattern as the env side. This
+    // is also the v0.1.13 recovery path for any wrong launch date —
+    // edit pricing.toml, restart, sync rewrites the table. Done BEFORE
+    // wrapping in Arc so we can pass &PricingFile directly.
+    let pricing_sync_summary = sync_pricing(&database, &pricing)
+        .await
+        .context("syncing pricing into the database")?;
+    info!(?pricing_sync_summary, "synced pricing into the database");
     let pricing = Arc::new(pricing);
 
     let factors = load_factors(&config)?;
@@ -502,6 +537,106 @@ async fn command_scan(config_path: &std::path::Path, mode: ScanMode) -> Result<(
         summary.lines_malformed
     );
     Ok(())
+}
+
+/// Implementation of `tokenscale audit pricing-launch-dates`.
+///
+/// Loads `pricing.toml` (same precedence as `serve` — config override or
+/// embedded), syncs it into the DB so the audit query sees the rows the
+/// next `serve` would see, then runs the audit and prints a table. Exit
+/// status is non-zero when ANY pair has events_pre_launch > 0, so CI
+/// scripts and release-checklist gates can use this as a hard fail.
+async fn command_audit_pricing_launch_dates(config_path: &std::path::Path) -> Result<()> {
+    let config = Config::load_or_default(config_path)?;
+    let database_path = config.effective_database_path()?;
+    let database = Database::open(&database_path)
+        .await
+        .with_context(|| format!("opening database at {}", database_path.display()))?;
+
+    // Sync pricing first so the audit reflects the on-disk pricing.toml,
+    // not whatever the last `serve` happened to load.
+    let pricing = load_pricing(&config)?;
+    sync_pricing(&database, &pricing)
+        .await
+        .context("syncing pricing into the database")?;
+
+    let rows = audit_pricing_launch_dates(&database)
+        .await
+        .context("running pricing-launch-dates audit")?;
+
+    print_pricing_launch_audit(&rows);
+
+    // Two distinct failure modes, two separate totals:
+    //   (a) Priced models with events whose date predates `valid_from`.
+    //       This is the wrong-launch-date regression we're gating on.
+    //   (b) Models with NO pricing row at all (e.g. the `<synthetic>`
+    //       admin-API aggregate, or a new model that hasn't been added
+    //       to pricing.toml yet). The Cost (USD) view also shows "—"
+    //       for these, but it's "unpriced model" rather than "wrong
+    //       launch date" — a separate concern not gated here.
+    let priced_pre_launch: i64 = rows
+        .iter()
+        .filter(|row| row.earliest_valid_from.is_some())
+        .map(|row| row.events_pre_launch)
+        .sum();
+    let unpriced_events: i64 = rows
+        .iter()
+        .filter(|row| row.earliest_valid_from.is_none())
+        .map(|row| row.events_pre_launch)
+        .sum();
+    let total_events: i64 = rows.iter().map(|row| row.events_total).sum();
+    let priced_pair_count = rows
+        .iter()
+        .filter(|row| row.earliest_valid_from.is_some())
+        .count();
+    let unpriced_pair_count = rows.len() - priced_pair_count;
+
+    println!();
+    println!("Total events: {total_events} across {} pair(s).", rows.len());
+    println!(
+        "  Priced pairs ({priced_pair_count}): {priced_pre_launch} event(s) predate their pair's earliest valid_from."
+    );
+    if unpriced_pair_count > 0 {
+        println!(
+            "  Unpriced pairs ({unpriced_pair_count}): {unpriced_events} event(s) belong to models with no pricing row (e.g. `<synthetic>` admin-API aggregates)."
+        );
+    }
+
+    if priced_pre_launch > 0 {
+        anyhow::bail!(
+            "audit failed: {priced_pre_launch} event(s) predate their pair's earliest \
+             pricing.valid_from on a model that HAS a pricing row. The Cost (USD) \
+             view would render \"—\" for these. Either correct the affected \
+             pricing.toml `valid_from` dates (D3 rule: bias earlier than best guess \
+             when uncertain, never later) or accept that those events will not be \
+             priced."
+        );
+    }
+    Ok(())
+}
+
+/// Render the audit as a fixed-width table.
+fn print_pricing_launch_audit(rows: &[PricingLaunchDateAuditRow]) {
+    if rows.is_empty() {
+        println!("No events in the database. Run `tokenscale scan` first if this is unexpected.");
+        return;
+    }
+    println!(
+        "{:<10} {:<24} {:>10} {:>14} {:<12} {:<12}",
+        "provider", "model", "events", "pre_launch", "earliest_ev", "valid_from"
+    );
+    for row in rows {
+        let valid_from = row.earliest_valid_from.as_deref().unwrap_or("<none>");
+        println!(
+            "{:<10} {:<24} {:>10} {:>14} {:<12} {:<12}",
+            row.provider,
+            row.model,
+            row.events_total,
+            row.events_pre_launch,
+            row.earliest_event_date,
+            valid_from,
+        );
+    }
 }
 
 #[cfg(test)]
