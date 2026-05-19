@@ -50,6 +50,14 @@ jobs:
         # Stop here.
         run: python3 .github/scripts/tests/test_pricing_drift_check.py
 
+      - name: Negative-path detector tests
+        # End-to-end exit-code coverage for main() — proves the alarm
+        # actually rings on real drift / internal inconsistency, and
+        # CRITICALLY that a parse-failure exit (2) cannot leak into
+        # the exit-1 issue-creation path. A false positive is worse
+        # than a missed detection: the first cry-wolf kills trust.
+        run: python3 .github/scripts/tests/test_drift_detector_exit_codes.py
+
       - name: Run drift check
         id: drift
         # Capture stdout AND propagate the exit code via $?. Don't use
