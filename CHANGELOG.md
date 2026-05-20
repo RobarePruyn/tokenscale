@@ -6,6 +6,67 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.14 — 2026-05-19
+
+The "prove the detector fires" release. v0.1.12 shipped the nightly pricing-drift-check workflow but every run since was against a known-correct `pricing.toml`, so only the exit-0 path had ever actually executed in production. A manual `workflow_dispatch` firing against a throwaway branch with deliberately-wrong rates surfaced **two real bugs** that the structural test layer alone could not have caught:
+
+> 1. **The `pricing-divergence` label did not exist on the repo.** v0.1.12 wrote `gh issue create --label pricing-divergence …` into the workflow but the label itself was never created. `gh issue create --label` aborts hard if the label is missing. The first real drift event in production would have rung silently.
+>
+> 2. **The detector's `load_pricing_toml()` was broken under v0.1.13's multi-row schema.** v0.1.13 introduced `[[providers.…models."<id>"]]` (array-of-tables) and tomllib parses that as a `list` of dicts, not a single dict. The detector did `model["input_usd_per_mtok"]` directly and crashed with TypeError. The detector had been silently broken on `main` for the ~4 hours between v0.1.13 shipping and the firing exercise.
+
+Both fixed and pinned with regression tests. The detector is now genuinely a safety net rather than a nominal one. Also closes [#2](https://github.com/RobarePruyn/tokenscale/issues/2) with three sum-invariant tests for `costUsdInput + … = costUsdTotal`, and lands the post-tag correction addendum noting that the `v0.1.13` tagged commit carries the superseded audit-scope figures (corrected on `main` in `7e230d7`).
+
+### Added
+
+- **`.github/scripts/tests/test_drift_detector_exit_codes.py`** — 14 end-to-end tests driving `pricing_drift_check.main()` through each non-clean exit path with monkeypatched fetch/load helpers, plus structural assertions on the workflow YAML's issue-creation step. The exit-2 test asserts full **disjointness** from the exit-1 issue path — a parse-failure run cannot leak the marker strings (`Pricing drift detected`, `INTERNAL`, `pricing.toml=$`, `Anthropic=$`, `Action: re-verify…`) that the workflow's bash heredoc would interpolate into an issue body. A false-positive drift alert is worse than a missed detection: the first cry-wolf kills trust.
+- **`.github/scripts/tests/fixtures/negative_path/parse_failure_restructured.md`** — deliberately-broken page (column header renamed) for exercising the exit-2 path. Lives under `negative_path/` with a "DO NOT USE AS PRODUCTION REFERENCE" header; unreachable from the live detector path because the tests monkeypatch `fetch_live_page` directly.
+- **`LoadPricingTomlSchemaCompat`** test class — end-to-end exercise of `load_pricing_toml()` against the live `pricing.toml`. Catches the exact bug the manual firing surfaced: a TOML schema change that no monkeypatched test would have seen.
+- **Three sum-invariant tests in `crates/tokenscale-store/src/impact_query.rs`** ([#2](https://github.com/RobarePruyn/tokenscale/issues/2)):
+  - `per_token_type_costs_sum_to_total` — single bucket, all five token types non-zero (1M of each at Sonnet 4.6 rates → $28.05 total).
+  - `multi_row_per_type_sum_invariant_holds` — seven daily buckets, asserts the invariant per row.
+  - `partial_cell_sums_priced_events_keeping_total_non_null` — partial pre-launch case: M-of-N events pre-date `valid_from`. Asserts `cost_usd_total` is `Some` (priced events only), `events_missing_pricing` is M, and the sum invariant holds with unpriced events contributing 0.
+
+### Fixed (caught by the manual firing exercise)
+
+- **`load_pricing_toml()`** now walks both single-table (v0.1.12 schema) and multi-row array-of-tables (v0.1.13 schema) forms. For multi-row entries, picks the row with the latest `valid_from` — that's the rate currently live and what Anthropic's page reflects. Historical rows are intentionally not compared against the live page. `LoadPricingTomlSchemaCompat` pins the loader against future schema breaks.
+- **`pricing-drift-check.yml` workflow** runs `gh label create --force pricing-divergence …` immediately before `gh issue create`. Idempotent: creates if absent, updates description if present. The `pricing-divergence` label was also created in the repo manually so the next firing succeeds even on older workflow checkouts.
+
+### Documentation
+
+- **`docs/cost-methodology.md`** — appended "Post-tag correction (2026-05-19)" paragraph inside the v0.1.13 corrections-log entry, recording that the tagged commit (`611d970`) carries the superseded "four real models / 21,133 events" figures and that the correct numbers (three priced models with events, 21,077 priced events) landed on `main` in `7e230d7`. The v0.1.13 tag was deliberately not moved; this addendum makes the trail visible to anyone reading the corrections log from `main`.
+- **`pricing-drift-check.yml`** has a new named CI step, `Negative-path detector tests`, running the new test suite alongside the existing `Unit tests for the parser` step.
+
+### Manual workflow_dispatch firing (captured)
+
+One real end-to-end firing executed by hand against a throwaway branch (`test/drift-detector-firing-v0.1.14`, since deleted) with Opus 4.7 rolled back to the v0.1.0-era $15/$75 rates. Three runs total:
+
+1. **Run [26126818352](https://github.com/RobarePruyn/tokenscale/actions/runs/26126818352)** — exited non-zero from `gh issue create` because the `pricing-divergence` label was missing. Caught the label bug.
+2. **Run [26126969964](https://github.com/RobarePruyn/tokenscale/actions/runs/26126969964)** — issue opened, but the body was a Python `TypeError` traceback. Caught the multi-row loader bug.
+3. **Run [26138183080](https://github.com/RobarePruyn/tokenscale/actions/runs/26138183080)** — after both fixes, the detector produced a correct drift report with all five fields named (input / output / cache_read / cache_write_5m / cache_write_1h) and both numbers each. Dedup logic correctly appended to the existing issue rather than opening a new one.
+
+Captured drift report from run 3 (the comment on issue #3, now closed):
+
+```
+::error::Pricing drift detected — pricing.toml is stale or inconsistent.
+
+  · claude-opus-4-7 input: pricing.toml=$15.0, Anthropic=$5.0
+  · claude-opus-4-7 output: pricing.toml=$75.0, Anthropic=$25.0
+  · claude-opus-4-7 cache_read: pricing.toml=$1.5, Anthropic=$0.5
+  · claude-opus-4-7 cache_write_5m: pricing.toml implies $18.75 (input $15.0 × 1.25), Anthropic publishes $6.25
+  · claude-opus-4-7 cache_write_1h: pricing.toml implies $30.00 (input $15.0 × 2.0), Anthropic publishes $10.0
+
+Action: re-verify against the source URL, update pricing.toml, recapture pricing-rate-card.snapshot.json, and tag a new release. See docs/cost-methodology.md → Drift detector for the runbook.
+```
+
+The detector is now proven to fire correctly. The bash heredoc works at runtime as the structural YAML test asserted; the runbook is preserved; the source URL interpolates correctly; dedup against an existing open issue activates as designed.
+
+### Out of scope
+
+- **Pre-existing lint debt** ([#1](https://github.com/RobarePruyn/tokenscale/issues/1) — 2 clippy errors on `factors.rs:309` + `pricing.rs:644`, 6 frontend `setState-in-effect` errors) is a separate cleanup tracked there, intentionally not folded into this release. v0.1.14 stays scoped to "detector negative-path proof + closing test debt."
+- **Granular-attribution roadmap Phase 0** is the next workstream, after v0.1.14.
+
+---
+
 ## v0.1.13 — 2026-05-18
 
 The cost-side time-anchoring release. Mirrors what `environmental-factors.toml` already did per event onto `pricing.toml`: every event's cost now resolves through a per-event `valid_from` lookup, so a future rate change adds a new row dated to the announcement rather than overwriting history. Closes the v0.1.0 placeholder convention where every row carried `valid_from = "2026-04-28"` (tokenscale's own ship date, not Anthropic's launch dates) — the cost-side analog of the seed-value bug that v0.1.11 fixed on the rate side.
