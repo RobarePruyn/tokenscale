@@ -727,6 +727,310 @@ source_accessed_at        = "2026-05-18"
         assert_eq!(row.events_missing_pricing, 1);
     }
 
+    // Helper for the sum-invariant tests below — same as `event()` but
+    // accepts cache-token fields so a single test can exercise all five
+    // token types in one row.
+    fn event_with_caches(
+        model: &str,
+        day: u32,
+        request_id: &str,
+        input: u64,
+        output: u64,
+        cache_read: u64,
+        cache_write_5m: u64,
+        cache_write_1h: u64,
+    ) -> Event {
+        Event {
+            source: "claude_code".to_owned(),
+            occurred_at: Utc.with_ymd_and_hms(2026, 4, day, 12, 0, 0).unwrap(),
+            model: model.to_owned(),
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_tokens: cache_read,
+            cache_write_5m_tokens: cache_write_5m,
+            cache_write_1h_tokens: cache_write_1h,
+            request_id: Some(request_id.to_owned()),
+            content_hash: None,
+            session_id: None,
+            project_id: None,
+            workspace_id: None,
+            api_key_id: None,
+            raw: None,
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // Issue #2 — cost_usd_total per-token-type sum invariant.
+    //
+    // The release notes claim "the five per-token-type fields sum
+    // exactly to costUsdTotal." That arithmetic happens in
+    // RawImpactByBucketRow::cook() (`Some(input + output + read +
+    // 5m + 1h)`). True today, but the day someone refactors the SQL
+    // SUM expressions or the cook() arithmetic, the invariant breaks
+    // silently — the per-type stack chart would still render, but
+    // segments wouldn't sum to the headline number. These tests
+    // pin the invariant against any such future regression.
+    // ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn per_token_type_costs_sum_to_total() {
+        use crate::sync_pricing;
+        use tokenscale_core::PricingFile;
+
+        const PRICING_TOML: &str = r#"
+schema_version = 1
+file_status = "production"
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+[providers.anthropic.models."claude-sonnet-4-6"]
+display_name              = "Claude Sonnet 4.6"
+valid_from                = "2025-09-01"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "x"
+source_accessed_at        = "2026-05-18"
+"#;
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let factors_file = EnvironmentalFactorsFile::parse(PROD_TOML).unwrap();
+        sync_environmental_factors(&database, &factors_file).await.unwrap();
+        sync_pricing(&database, &PricingFile::parse(PRICING_TOML).unwrap())
+            .await
+            .unwrap();
+
+        // All five token types non-zero. A 1M-of-each load gives
+        // tidy round numbers per type so a manual check is easy:
+        //   input     = 1_000_000 × 3   / 1e6 = 3.00
+        //   output    = 1_000_000 × 15  / 1e6 = 15.00
+        //   cache_read = 1_000_000 × 0.3 / 1e6 = 0.30
+        //   cache_5m  = 1_000_000 × 1.25 × 3 / 1e6 = 3.75
+        //   cache_1h  = 1_000_000 × 2.00 × 3 / 1e6 = 6.00
+        //   total     = 28.05
+        insert_events(
+            &database,
+            &[event_with_caches(
+                "claude-sonnet-4-6", 21, "r1",
+                1_000_000, 1_000_000, 1_000_000, 1_000_000, 1_000_000,
+            )],
+        )
+        .await
+        .unwrap();
+
+        let rows = aggregate_impact_by_bucket(
+            &database, "2026-04-01", "2026-04-30",
+            ALL_PROVIDERS, &[], Granularity::Day, &factors(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+
+        let total = row.cost_usd_total.expect("priced cell must have total");
+        let sum = row.cost_usd_input
+            + row.cost_usd_output
+            + row.cost_usd_cache_read
+            + row.cost_usd_cache_write_5m
+            + row.cost_usd_cache_write_1h;
+        // f64 addition over five terms — a few ULPs of rounding is
+        // acceptable but anything larger is a real divergence between
+        // the per-type SUMs and the cook()-computed total.
+        assert!(
+            (sum - total).abs() < 1e-9,
+            "per-type sum {sum} must equal cost_usd_total {total} (Δ={})",
+            sum - total,
+        );
+
+        // And the documented per-type values themselves are correct.
+        assert!((row.cost_usd_input - 3.00).abs() < 1e-9);
+        assert!((row.cost_usd_output - 15.00).abs() < 1e-9);
+        assert!((row.cost_usd_cache_read - 0.30).abs() < 1e-9);
+        assert!((row.cost_usd_cache_write_5m - 3.75).abs() < 1e-9);
+        assert!((row.cost_usd_cache_write_1h - 6.00).abs() < 1e-9);
+        assert!((total - 28.05).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn multi_row_per_type_sum_invariant_holds() {
+        use crate::sync_pricing;
+        use tokenscale_core::PricingFile;
+
+        const PRICING_TOML: &str = r#"
+schema_version = 1
+file_status = "production"
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+[providers.anthropic.models."claude-sonnet-4-6"]
+display_name              = "Claude Sonnet 4.6"
+valid_from                = "2025-09-01"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "x"
+source_accessed_at        = "2026-05-18"
+"#;
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let factors_file = EnvironmentalFactorsFile::parse(PROD_TOML).unwrap();
+        sync_environmental_factors(&database, &factors_file).await.unwrap();
+        sync_pricing(&database, &PricingFile::parse(PRICING_TOML).unwrap())
+            .await
+            .unwrap();
+
+        // Spans a week (Apr 20–26), one event per day with varied
+        // mixes of the five token types — produces 7 bucket rows that
+        // must each independently satisfy the sum invariant.
+        let events: Vec<Event> = (20..=26)
+            .map(|day| {
+                event_with_caches(
+                    "claude-sonnet-4-6", day,
+                    &format!("r-{day}"),
+                    100_000 * u64::from(day),
+                    50_000 * u64::from(day),
+                    200_000 * u64::from(day),
+                    30_000 * u64::from(day),
+                    10_000 * u64::from(day),
+                )
+            })
+            .collect();
+        insert_events(&database, &events).await.unwrap();
+
+        let rows = aggregate_impact_by_bucket(
+            &database, "2026-04-20", "2026-04-26",
+            ALL_PROVIDERS, &[], Granularity::Day, &factors(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 7, "one row per day in the week");
+
+        for row in &rows {
+            let total = row.cost_usd_total
+                .unwrap_or_else(|| panic!("row {} must have total", row.bucket));
+            let sum = row.cost_usd_input
+                + row.cost_usd_output
+                + row.cost_usd_cache_read
+                + row.cost_usd_cache_write_5m
+                + row.cost_usd_cache_write_1h;
+            assert!(
+                (sum - total).abs() < 1e-9,
+                "row {}: per-type sum {sum} must equal total {total} (Δ={})",
+                row.bucket, sum - total,
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_cell_sums_priced_events_keeping_total_non_null() {
+        // Issue #2 bonus + the partial-cell behavior asserted in the
+        // v0.1.13 release notes: "A partially-priced cell (some
+        // priced events, some pre-launch) sums only the priced events
+        // and is not null; the eventsMissingPricing count reports how
+        // many were unpriced."
+        //
+        // Two events on Apr 21 — one priced (after launch_date), one
+        // pre-launch — same model and bucket. Expect:
+        //   * cost_usd_total = Some(priced_event_cost)
+        //   * events_missing_pricing = 1
+        //   * sum invariant still holds (unpriced event contributes
+        //     0 to each per-type SUM via the SQL COALESCE)
+        use crate::sync_pricing;
+        use tokenscale_core::PricingFile;
+
+        const PRICING_TOML: &str = r#"
+schema_version = 1
+file_status = "production"
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+[providers.anthropic.models."claude-sonnet-4-6"]
+display_name              = "Claude Sonnet 4.6"
+valid_from                = "2026-04-15"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "x"
+source_accessed_at        = "2026-05-18"
+"#;
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let factors_file = EnvironmentalFactorsFile::parse(PROD_TOML).unwrap();
+        sync_environmental_factors(&database, &factors_file).await.unwrap();
+        sync_pricing(&database, &PricingFile::parse(PRICING_TOML).unwrap())
+            .await
+            .unwrap();
+
+        // valid_from is 2026-04-15. Pre-launch event date Apr 10
+        // (would resolve to no pricing row); priced event on Apr 21.
+        // Both at the same bucket date for the Day granularity so
+        // they share a row IFF we put them on the same date — but a
+        // pre-launch event must be on a different day or the bucket
+        // is the same date. To get them in ONE bucket-row, both
+        // events need to fall in the same day. Solution: weekly
+        // granularity. Apr 7 (pre-launch) and Apr 8 (post-launch)
+        // would be in different ISO weeks, so we use Apr 13 (Mon,
+        // pre-launch, < 2026-04-15) and Apr 18 (Sat) — same ISO
+        // week starting Apr 13.
+        let pre_launch = event_with_caches(
+            "claude-sonnet-4-6", 13, "r-pre",
+            1_000_000, 1_000_000, 0, 0, 0,
+        );
+        let priced = event_with_caches(
+            "claude-sonnet-4-6", 18, "r-post",
+            500_000, 200_000, 0, 0, 0,
+        );
+        insert_events(&database, &[pre_launch, priced]).await.unwrap();
+
+        let rows = aggregate_impact_by_bucket(
+            &database, "2026-04-01", "2026-04-30",
+            ALL_PROVIDERS, &[], Granularity::Week, &factors(),
+        )
+        .await
+        .unwrap();
+        // Both events in the same ISO week → one bucket-row.
+        assert_eq!(rows.len(), 1, "two events in same week → one bucket-row");
+        let row = &rows[0];
+
+        // Two events total, one pre-launch (no matching pricing row).
+        assert_eq!(row.events_count, 2);
+        assert_eq!(
+            row.events_missing_pricing, 1,
+            "one event pre-dates valid_from and must be counted as missing",
+        );
+
+        // Cost is non-null — partial cell does NOT promote to None.
+        let total = row.cost_usd_total
+            .expect("partial cell must keep total non-null");
+
+        // Total reflects ONLY the priced event:
+        //   priced input cost  = 500_000 × 3   / 1e6 = 1.50
+        //   priced output cost = 200_000 × 15  / 1e6 = 3.00
+        //   total              = 4.50
+        assert!(
+            (total - 4.50).abs() < 1e-9,
+            "partial-cell total must include only priced events; got {total}",
+        );
+
+        // Sum invariant still holds — unpriced event contributed 0
+        // to each per-type SUM via SQL COALESCE.
+        let sum = row.cost_usd_input
+            + row.cost_usd_output
+            + row.cost_usd_cache_read
+            + row.cost_usd_cache_write_5m
+            + row.cost_usd_cache_write_1h;
+        assert!(
+            (sum - total).abs() < 1e-9,
+            "partial-cell per-type sum {sum} must equal total {total}",
+        );
+    }
+
     #[tokio::test]
     async fn combined_uncertainty_pulls_grid_bands_through_quadrature() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
