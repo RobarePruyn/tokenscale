@@ -270,7 +270,18 @@ def fetch_live_page() -> str:
 
 def load_pricing_toml() -> dict[str, dict[str, float]]:
     """Load pricing.toml's tracked rows into a flat {model_id: {field: value}}
-    dict. Only the fields the detector compares against."""
+    dict. Only the fields the detector compares against.
+
+    Schema-compat note: v0.1.12 stored each model as a single TOML table
+    (`[providers.anthropic.models."claude-opus-4-7"]`) so the loader saw
+    a dict per model. v0.1.13 introduced multi-row format
+    (`[[providers.anthropic.models."claude-opus-4-7"]]`) and tomllib
+    parses that as a list of dicts. Anthropic only publishes one rate
+    per model, so the detector compares against the row with the latest
+    `valid_from` — the rate that's currently live. Older rows in
+    pricing.toml are historical and intentionally don't match the live
+    page.
+    """
     with PRICING_TOML.open("rb") as f:
         data = tomllib.load(f)
     out: dict[str, dict[str, float]] = {}
@@ -278,12 +289,20 @@ def load_pricing_toml() -> dict[str, dict[str, float]]:
         for model_id, model in provider.get("models", {}).items():
             if model_id not in TRACKED_MODELS:
                 continue
+            # Normalize single-table-form (dict) and multi-row-form (list)
+            # into the same shape, then pick the row with the latest
+            # valid_from. `valid_from` is ISO YYYY-MM-DD so lexical max
+            # is correct.
+            if isinstance(model, list):
+                latest = max(model, key=lambda row: row.get("valid_from", ""))
+            else:
+                latest = model
             out[model_id] = {
-                "input": float(model["input_usd_per_mtok"]),
-                "output": float(model["output_usd_per_mtok"]),
-                "cache_read": float(model["cache_read_usd_per_mtok"]),
-                "cache_write_5m_multiplier": float(model["cache_write_5m_multiplier"]),
-                "cache_write_1h_multiplier": float(model["cache_write_1h_multiplier"]),
+                "input": float(latest["input_usd_per_mtok"]),
+                "output": float(latest["output_usd_per_mtok"]),
+                "cache_read": float(latest["cache_read_usd_per_mtok"]),
+                "cache_write_5m_multiplier": float(latest["cache_write_5m_multiplier"]),
+                "cache_write_1h_multiplier": float(latest["cache_write_1h_multiplier"]),
             }
     return out
 

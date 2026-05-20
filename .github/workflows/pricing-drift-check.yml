@@ -83,6 +83,18 @@ jobs:
       - name: Open pricing-divergence issue if drift detected
         if: ${{ steps.drift.outputs.rc == '1' }}
         run: |
+          # Ensure the `pricing-divergence` label exists before we try
+          # to apply it. `gh issue create --label` aborts hard if the
+          # label is missing — that bug was caught the first time this
+          # path actually fired (manual workflow_dispatch during the
+          # v0.1.14 detector-test exercise; see CHANGELOG). `--force`
+          # is idempotent: creates if absent, updates description if
+          # present.
+          gh label create pricing-divergence \
+            --description "Drift detected between pricing.toml and Anthropic's published rates" \
+            --color d73a4a \
+            --force
+
           # `gh issue list --search` deduplicates: if a pricing-divergence
           # issue is already open for the current drift state, don't
           # open another one. Match on the title prefix.

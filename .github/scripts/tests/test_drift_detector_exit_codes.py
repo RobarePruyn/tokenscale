@@ -288,6 +288,100 @@ class WorkflowIssueStepStructure(unittest.TestCase):
             )
 
 
+class LoadPricingTomlSchemaCompat(unittest.TestCase):
+    """End-to-end: `load_pricing_toml()` must successfully read the
+    actual repo `pricing.toml` and return the expected shape. The other
+    test classes monkeypatch this function, so a schema break (like
+    v0.1.13's switch from single-table to multi-row format) wouldn't
+    show up there. This test reads the live file.
+
+    Caught a real bug on first manual `workflow_dispatch` firing: the
+    v0.1.13 multi-row schema (`[[providers.…models."<id>"]]`) makes
+    `models[<id>]` a list, not a dict. v0.1.12's loader did
+    `model["input_usd_per_mtok"]` directly and crashed with a TypeError
+    when v0.1.13 shipped. This test pins the loader to the schema in
+    use by the repo's actual pricing.toml.
+    """
+
+    def test_loader_returns_dict_for_every_tracked_model(self):
+        loaded = detector.load_pricing_toml()
+        self.assertEqual(
+            set(loaded.keys()), set(detector.TRACKED_MODELS.keys()),
+            "load_pricing_toml must return one entry per TRACKED_MODELS key",
+        )
+
+    def test_loader_returns_floats_for_every_compared_field(self):
+        loaded = detector.load_pricing_toml()
+        for model_id, fields in loaded.items():
+            for field in [
+                "input", "output", "cache_read",
+                "cache_write_5m_multiplier", "cache_write_1h_multiplier",
+            ]:
+                self.assertIn(field, fields, f"{model_id} missing field {field!r}")
+                self.assertIsInstance(
+                    fields[field], float,
+                    f"{model_id}.{field} should be float, got {type(fields[field])}",
+                )
+
+    def test_loader_picks_latest_valid_from_when_multiple_rows(self):
+        """For a multi-row entry, the detector must compare against the
+        latest valid_from row (the rate currently live). Synthesize a
+        two-row TOML in-memory and verify the loader picks the row with
+        the later valid_from."""
+        import tomllib
+        toml_text = b"""
+schema_version = 1
+file_status = "production"
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+[[providers.anthropic.models."claude-opus-4-7"]]
+display_name = "Claude Opus 4.7"
+valid_from = "2025-01-01"
+input_usd_per_mtok = 99.00
+output_usd_per_mtok = 999.00
+cache_read_usd_per_mtok = 9.90
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.0
+source_url = "x"
+source_accessed_at = "2025-01-01"
+
+[[providers.anthropic.models."claude-opus-4-7"]]
+display_name = "Claude Opus 4.7"
+valid_from = "2026-04-16"
+input_usd_per_mtok = 5.00
+output_usd_per_mtok = 25.00
+cache_read_usd_per_mtok = 0.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.0
+source_url = "x"
+source_accessed_at = "2026-05-18"
+"""
+        # Sanity-check tomllib parses the multi-row form to a list, so
+        # this test exercises the schema the bug was in.
+        parsed = tomllib.loads(toml_text.decode())
+        self.assertIsInstance(
+            parsed["providers"]["anthropic"]["models"]["claude-opus-4-7"], list,
+            "multi-row [[…]] form must parse to a list",
+        )
+
+        # Patch the loader's file path to a temp file with our two-row
+        # content. Cleanest mock: just override PRICING_TOML for the call.
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".toml", delete=False) as tmp:
+            tmp.write(toml_text)
+            tmp_path = Path(tmp.name)
+        try:
+            with patch.object(detector, "PRICING_TOML", tmp_path):
+                loaded = detector.load_pricing_toml()
+            self.assertEqual(loaded["claude-opus-4-7"]["input"], 5.00,
+                "loader must pick the row with the latest valid_from (2026-04-16, $5), "
+                "not the older 2025-01-01 row ($99)")
+        finally:
+            tmp_path.unlink()
+
+
 class ExistingFixtureRetainsNegativeAssertions(unittest.TestCase):
     """Confirms that the v0.1.12 negative assertions still hold against
     the current `pricing-page-sample.md` fixture. If anyone trims the
