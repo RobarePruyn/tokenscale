@@ -43,6 +43,10 @@ pub fn build_router(state: AppState) -> axum::Router {
             get(routes::usage::by_model_handler),
         )
         .route(
+            "/api/v1/usage/sessions",
+            get(routes::usage::sessions_handler),
+        )
+        .route(
             "/api/v1/sessions/recent",
             get(routes::sessions::recent_handler),
         )

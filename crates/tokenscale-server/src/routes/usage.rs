@@ -7,8 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use tokenscale_core::{BillableMultipliers, ModelPricing};
 use tokenscale_store::{
-    aggregate_impact_by_bucket, list_models_in_window, usage_by_model, Granularity,
-    ImpactByBucketRow, ImpactQueryFactors, ALL_PROVIDERS,
+    aggregate_impact_by_bucket, list_models_in_window, list_sessions_with_totals, usage_by_model,
+    Granularity, ImpactByBucketRow, ImpactQueryFactors, SessionSummaryRow, ALL_PROVIDERS,
+    DEFAULT_SESSION_LIMIT,
 };
 
 use crate::error::ApiError;
@@ -540,4 +541,269 @@ pub async fn by_model_handler(
         })
         .collect();
     Ok(Json(ByModelResponse { rows }))
+}
+
+// ----------------------------------------------------------------------------
+// sessions — per-session impact + cost rollup (granular-attribution Phase 1A)
+//
+// Same window / provider / project filters as `/usage/daily`, but
+// `GROUP BY events.session_id` instead of date bucket. Reuses the
+// v0.1.13 per-event pricing + factor joins so per-session numbers are
+// time-anchored exactly like the dashboard's per-bucket numbers.
+//
+// `limit` and `offset` are accepted from day 1 for API forward-compat
+// with future server-side pagination — the v0.1.15 frontend doesn't
+// use them, but the signature is fixed before brew users see the
+// endpoint so adding pagination later isn't a breaking change.
+// ----------------------------------------------------------------------------
+
+/// Extra query params beyond `UsageWindowParams` that this endpoint
+/// accepts. `limit` and `offset` are optional; missing means defaults.
+#[derive(Debug, Deserialize)]
+pub struct SessionsParams {
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub provider: Option<String>,
+    pub project: Option<String>,
+    /// Max rows to return. Default: 10,000 (effective no-op for any
+    /// realistic 90-day window; sized to be unbounded in practice
+    /// while keeping the URL parameter contract stable). Server-side
+    /// pagination becomes a real concern only if this is set
+    /// explicitly.
+    pub limit: Option<i64>,
+    /// Pagination offset. Default: 0.
+    pub offset: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct SessionsResponse {
+    pub sessions: Vec<SessionRow>,
+    /// Models present in the window but missing pricing rows. Same
+    /// shape as `/usage/daily`'s field of the same name.
+    #[serde(rename = "modelsWithoutPricing")]
+    pub models_without_pricing: Vec<String>,
+    /// Models present in the window but missing env-factor rows.
+    #[serde(rename = "modelsWithoutFactors")]
+    pub models_without_factors: Vec<String>,
+    /// Configured AWS region used for grid-factor attribution. Echoed
+    /// back so the dashboard's environmental banner can render
+    /// region + eGRID subregion without a separate /health round-trip.
+    #[serde(rename = "configuredRegion")]
+    pub configured_region: String,
+}
+
+/// One session in the response. Field naming + JSON shape matches the
+/// per-bucket `ModelImpact` where the underlying data is identical,
+/// so the frontend can reuse the same renderers for cost / impact /
+/// uncertainty / missingness columns. Session-specific fields
+/// (`sessionId`, `models`, `firstEventAt`, `lastEventAt`,
+/// `projectId`) are unique to this row.
+///
+/// `sessionId` is the full UUID. The dashboard's display rule is
+/// "first 8 characters" (matches `git` short-SHA convention and the
+/// prefix of `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`
+/// filenames, so a user can grep). The full UUID stays in the
+/// response for grep against logs and the raw `.jsonl` filename.
+#[derive(Serialize)]
+pub struct SessionRow {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    #[serde(rename = "projectId")]
+    pub project_id: Option<String>,
+    /// Distinct model IDs seen in this session, sorted for stable
+    /// display. Multi-model is the normal case for any non-trivial
+    /// session.
+    pub models: Vec<String>,
+    #[serde(rename = "firstEventAt")]
+    pub first_event_at: String,
+    #[serde(rename = "lastEventAt")]
+    pub last_event_at: String,
+    #[serde(rename = "eventCount")]
+    pub event_count: i64,
+
+    pub input: i64,
+    pub output: i64,
+    #[serde(rename = "cacheRead")]
+    pub cache_read: i64,
+    #[serde(rename = "cacheWrite5m")]
+    pub cache_write_5m: i64,
+    #[serde(rename = "cacheWrite1h")]
+    pub cache_write_1h: i64,
+
+    #[serde(rename = "energyWh")]
+    pub energy_wh: f64,
+    #[serde(rename = "facilityWh")]
+    pub facility_wh: f64,
+    #[serde(rename = "co2eG")]
+    pub co2e_g: Option<f64>,
+    #[serde(rename = "waterL")]
+    pub water_l: Option<f64>,
+    #[serde(rename = "indirectWaterL")]
+    pub indirect_water_l: Option<f64>,
+    #[serde(rename = "maxUncertaintyPct")]
+    pub max_uncertainty_pct: i32,
+    #[serde(rename = "co2eUncertaintyPct")]
+    pub co2e_uncertainty_pct: i32,
+    #[serde(rename = "waterUncertaintyPct")]
+    pub water_uncertainty_pct: i32,
+    #[serde(rename = "indirectWaterUncertaintyPct")]
+    pub indirect_water_uncertainty_pct: i32,
+
+    #[serde(rename = "costUsdInput")]
+    pub cost_usd_input: f64,
+    #[serde(rename = "costUsdOutput")]
+    pub cost_usd_output: f64,
+    #[serde(rename = "costUsdCacheRead")]
+    pub cost_usd_cache_read: f64,
+    #[serde(rename = "costUsdCacheWrite5m")]
+    pub cost_usd_cache_write_5m: f64,
+    #[serde(rename = "costUsdCacheWrite1h")]
+    pub cost_usd_cache_write_1h: f64,
+    /// `null` when every event in the session predates its model's
+    /// `valid_from` (matches the per-bucket missingness convention).
+    /// Partial sessions sum priced events only and are not null.
+    #[serde(rename = "costUsdTotal")]
+    pub cost_usd_total: Option<f64>,
+    #[serde(rename = "eventsMissingPricing")]
+    pub events_missing_pricing: i64,
+    #[serde(rename = "eventsMissingEnvFactor")]
+    pub events_missing_env_factor: i64,
+    #[serde(rename = "eventsUsingFallbackPue")]
+    pub events_using_fallback_pue: i64,
+    #[serde(rename = "eventsUsingFallbackWue")]
+    pub events_using_fallback_wue: i64,
+}
+
+pub async fn sessions_handler(
+    State(state): State<AppState>,
+    Query(params): Query<SessionsParams>,
+) -> Result<Json<SessionsResponse>, ApiError> {
+    // Resolve the window-shape params via the same path daily_handler
+    // uses, so date defaults / provider default / project sentinel
+    // semantics stay consistent.
+    let window = UsageWindowParams {
+        from: params.from,
+        to: params.to,
+        provider: params.provider,
+        project: params.project,
+        granularity: None,
+    };
+    let resolved = window.resolve()?;
+    let limit = params.limit.unwrap_or(DEFAULT_SESSION_LIMIT);
+    let offset = params.offset.unwrap_or(0);
+
+    let impact_factors = ImpactQueryFactors {
+        region: state.inference_region.as_str(),
+        fallback_pue: state.factors.effective_fallback_pue(),
+        fallback_wue_l_per_kwh: state.factors.effective_fallback_wue_l_per_kwh(),
+    };
+    let rows: Vec<SessionSummaryRow> = list_sessions_with_totals(
+        &state.database,
+        &resolved.from_date,
+        &resolved.to_date,
+        &resolved.provider,
+        &resolved.projects,
+        &impact_factors,
+        limit,
+        offset,
+    )
+    .await?;
+
+    // Models surfaced in the window — same provenance flags as
+    // /usage/daily. Sessions can reuse the same model lists.
+    let provider_for_factors = if resolved.provider == ALL_PROVIDERS {
+        "anthropic"
+    } else {
+        resolved.provider.as_str()
+    };
+    let models_in_window =
+        list_models_in_window(&state.database, &resolved.from_date, &resolved.to_date, &resolved.provider)
+            .await?;
+    let mut models_without_pricing: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    let mut models_without_factors: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
+    for model_row in &models_in_window {
+        // Structural check: "is this model in pricing.toml at all?"
+        // NOT a time-anchored "is there a row valid at the window
+        // start?" The latter conflates "no row ever" with "no row
+        // yet on this date" — e.g. a window starting 2026-04-01 with
+        // claude-opus-4-7 (launched 2026-04-16) would surface Opus
+        // 4.7 as unpriced even though every event after its launch
+        // resolves correctly. Per-event missingness is already
+        // surfaced per-session via `eventsMissingPricing`; this list
+        // is the model-level "we don't know how to price this model
+        // at all" banner.
+        if !state
+            .pricing
+            .providers
+            .get(provider_for_factors)
+            .is_some_and(|p| p.models.contains_key(&model_row.model))
+        {
+            models_without_pricing.insert(model_row.model.clone());
+        }
+        if !state
+            .factors
+            .providers
+            .get(provider_for_factors)
+            .is_some_and(|p| p.models.contains_key(&model_row.model))
+        {
+            models_without_factors.insert(model_row.model.clone());
+        }
+    }
+
+    let sessions: Vec<SessionRow> = rows
+        .into_iter()
+        .map(|row| {
+            // Split + sort the GROUP_CONCAT'd model list for stable
+            // display. SQLite's ordering inside GROUP_CONCAT is
+            // implementation-defined.
+            let mut models: Vec<String> = row
+                .models
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect();
+            models.sort();
+            SessionRow {
+                session_id: row.session_id,
+                project_id: row.project_id,
+                models,
+                first_event_at: row.first_event_at,
+                last_event_at: row.last_event_at,
+                event_count: row.events_count,
+                input: row.input_tokens,
+                output: row.output_tokens,
+                cache_read: row.cache_read_tokens,
+                cache_write_5m: row.cache_write_5m_tokens,
+                cache_write_1h: row.cache_write_1h_tokens,
+                energy_wh: row.energy_wh,
+                facility_wh: row.facility_wh,
+                co2e_g: row.co2e_g,
+                water_l: row.water_l,
+                indirect_water_l: row.indirect_water_l,
+                max_uncertainty_pct: row.max_uncertainty_pct,
+                co2e_uncertainty_pct: row.co2e_uncertainty_pct,
+                water_uncertainty_pct: row.water_uncertainty_pct,
+                indirect_water_uncertainty_pct: row.indirect_water_uncertainty_pct,
+                cost_usd_input: row.cost_usd_input,
+                cost_usd_output: row.cost_usd_output,
+                cost_usd_cache_read: row.cost_usd_cache_read,
+                cost_usd_cache_write_5m: row.cost_usd_cache_write_5m,
+                cost_usd_cache_write_1h: row.cost_usd_cache_write_1h,
+                cost_usd_total: row.cost_usd_total,
+                events_missing_pricing: row.events_missing_pricing,
+                events_missing_env_factor: row.events_missing_env_factor,
+                events_using_fallback_pue: row.events_using_fallback_pue,
+                events_using_fallback_wue: row.events_using_fallback_wue,
+            }
+        })
+        .collect();
+
+    Ok(Json(SessionsResponse {
+        sessions,
+        models_without_pricing: models_without_pricing.into_iter().collect(),
+        models_without_factors: models_without_factors.into_iter().collect(),
+        configured_region: state.inference_region.clone(),
+    }))
 }

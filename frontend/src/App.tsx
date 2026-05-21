@@ -129,6 +129,55 @@ type ProjectsResponse = {
   }>
 }
 
+/** Per-session row from `/api/v1/usage/sessions`. Mirrors
+ *  `tokenscale_server::routes::usage::SessionRow` field-for-field.
+ *  The dashboard truncates `sessionId` to the first 8 characters for
+ *  display via `truncateSessionId`; the full UUID stays here so users
+ *  can grep against `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`
+ *  filenames or any other surface that carries the full ID. */
+type SessionRow = {
+  sessionId: string
+  projectId: string | null
+  models: string[]
+  firstEventAt: string
+  lastEventAt: string
+  eventCount: number
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite5m: number
+  cacheWrite1h: number
+  energyWh: number
+  facilityWh: number
+  co2eG: number | null
+  waterL: number | null
+  indirectWaterL: number | null
+  maxUncertaintyPct: number
+  co2eUncertaintyPct: number
+  waterUncertaintyPct: number
+  indirectWaterUncertaintyPct: number
+  costUsdInput: number
+  costUsdOutput: number
+  costUsdCacheRead: number
+  costUsdCacheWrite5m: number
+  costUsdCacheWrite1h: number
+  /** `null` only when every event in this session predates the
+   *  model's `valid_from`. Partial-pre-launch sessions sum only the
+   *  priced events and stay non-null. */
+  costUsdTotal: number | null
+  eventsMissingPricing: number
+  eventsMissingEnvFactor: number
+  eventsUsingFallbackPue: number
+  eventsUsingFallbackWue: number
+}
+
+type SessionsResponse = {
+  sessions: SessionRow[]
+  modelsWithoutPricing: string[]
+  modelsWithoutFactors: string[]
+  configuredRegion: string
+}
+
 type HealthResponse = {
   status: string
   version: string
@@ -799,6 +848,18 @@ function formatRelativeTime(isoTimestamp: string | null): string {
   return `${days}d ago`
 }
 
+/** Display-rule single source of truth for session IDs. First 8
+ *  characters of the UUID, matching `git` short-SHA convention. The
+ *  full UUID is what the API returns; this helper is used in the
+ *  table, tooltips, and any error or log surface so the display rule
+ *  is consistent everywhere. A user grepping a session by the
+ *  displayed prefix hits the same characters as the leading bytes of
+ *  the `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`
+ *  filename. */
+function truncateSessionId(fullSessionId: string): string {
+  return fullSessionId.slice(0, 8)
+}
+
 function tokenFieldsForView(
   modelTokens: ModelTokens,
   viewMode: ViewMode,
@@ -895,7 +956,9 @@ export default function App() {
   // grow past two pages we can add react-router. Browser back button
   // doesn't preserve the methodology view across reloads — that's
   // an acceptable v0.1 trade.
-  const [currentView, setCurrentView] = useState<'dashboard' | 'methodology'>('dashboard')
+  const [currentView, setCurrentView] = useState<'dashboard' | 'sessions' | 'methodology'>(
+    'dashboard',
+  )
 
   // Provider filter is hard-set to 'all' for v1 since the UI dropdown
   // is hidden (Claude Code is the only ingest source today). Restore
@@ -939,6 +1002,26 @@ export default function App() {
     status: 'idle',
   })
   const [dailyState, setDailyState] = useState<FetchState<DailyUsageResponse>>({ status: 'idle' })
+  // Sessions data lives behind its own tab (granular-attribution Phase 1A).
+  // Lazy-loaded — the fetch only fires when currentView === 'sessions',
+  // so a user who never opens the tab pays nothing.
+  const [sessionsState, setSessionsState] = useState<FetchState<SessionsResponse>>({
+    status: 'idle',
+  })
+  // Client-side sort state for the Sessions table. Defaults to
+  // last-event-at descending — matches the server's default ORDER BY
+  // and is the same "what did I work on most recently" framing as the
+  // /sessions/recent footer. `direction` toggles per header click.
+  const [sessionsSortKey, setSessionsSortKey] = useState<
+    | 'lastEventAt'
+    | 'firstEventAt'
+    | 'eventCount'
+    | 'totalTokens'
+    | 'costUsdTotal'
+    | 'energyWh'
+    | 'project'
+  >('lastEventAt')
+  const [sessionsSortDir, setSessionsSortDir] = useState<'asc' | 'desc'>('desc')
   const [subscriptionsState, setSubscriptionsState] = useState<FetchState<SubscriptionsResponse>>({
     status: 'idle',
   })
@@ -1135,6 +1218,33 @@ export default function App() {
     effectiveGranularity,
     lastScannedAt,
   ])
+
+  // Sessions — lazy-loaded, only fires when the Sessions tab is the
+  // active view. Same filter dependencies as `/usage/daily` minus
+  // granularity (sessions are the bucket).
+  useEffect(() => {
+    if (currentView !== 'sessions') return
+    const abort = new AbortController()
+    setSessionsState({ status: 'loading' })
+    const params = new URLSearchParams({
+      from: fromDate,
+      to: toDate,
+      provider: providerFilter,
+    })
+    const projectParam = encodeProjectParam(selectedProjects)
+    if (projectParam !== null) params.set('project', projectParam)
+    fetch(`/api/v1/usage/sessions?${params.toString()}`, { signal: abort.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        return (await response.json()) as SessionsResponse
+      })
+      .then((data) => setSessionsState({ status: 'ok', data }))
+      .catch((error) => {
+        if ((error as Error).name === 'AbortError') return
+        setSessionsState({ status: 'error', message: (error as Error).message })
+      })
+    return () => abort.abort()
+  }, [currentView, providerFilter, selectedProjects, fromDate, toDate, lastScannedAt])
 
   // ----- Derived chart config ---------------------------------------------
   const chartConfig = useMemo(() => {
@@ -1558,6 +1668,18 @@ export default function App() {
             </button>
             <button
               type="button"
+              onClick={() => setCurrentView('sessions')}
+              className={
+                'px-3 py-1 rounded-md transition-colors ' +
+                (currentView === 'sessions'
+                  ? 'bg-blue-50 text-blue-700 font-medium'
+                  : 'text-slate-600 hover:bg-slate-50')
+              }
+            >
+              Sessions
+            </button>
+            <button
+              type="button"
               onClick={() => setCurrentView('methodology')}
               className={
                 'px-3 py-1 rounded-md transition-colors ' +
@@ -1676,6 +1798,77 @@ export default function App() {
       )}
 
       {currentView === 'methodology' && <MethodologyPage />}
+      {currentView === 'sessions' && (
+        <main className="mx-auto max-w-6xl px-6 py-8 space-y-6">
+          <section className="bg-white rounded-lg border border-slate-200 p-5 space-y-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold tracking-tight">Sessions</h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Per-session impact + cost, time-anchored. Filters share with the
+                  Dashboard tab.
+                </p>
+              </div>
+              <div className="text-xs text-slate-500">
+                {fromDate} → {toDate}
+              </div>
+            </div>
+
+            {/* Compact range picker — same presets as Dashboard, just
+                inline for tab-local convenience. */}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-slate-600 mr-1">Range:</span>
+              <div className="inline-flex rounded-md border border-slate-300 overflow-hidden">
+                {RANGE_PRESET_LABELS.map(({ value, label }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setRangePreset(value)}
+                    className={
+                      'px-2.5 py-1 text-xs transition-colors ' +
+                      (rangePreset === value
+                        ? 'bg-blue-50 text-blue-700 font-medium'
+                        : 'bg-white text-slate-700 hover:bg-slate-50') +
+                      ' border-r border-slate-300 last:border-r-0'
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {sessionsState.status === 'idle' && (
+              <p className="text-sm text-slate-500">Loading…</p>
+            )}
+            {sessionsState.status === 'loading' && (
+              <p className="text-sm text-slate-500">Loading sessions…</p>
+            )}
+            {sessionsState.status === 'error' && (
+              <p className="text-sm text-rose-600">
+                Failed to load sessions: {sessionsState.message}
+              </p>
+            )}
+            {sessionsState.status === 'ok' && (
+              <SessionsTable
+                data={sessionsState.data}
+                sortKey={sessionsSortKey}
+                sortDir={sessionsSortDir}
+                onSort={(key) => {
+                  if (key === sessionsSortKey) {
+                    setSessionsSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+                  } else {
+                    setSessionsSortKey(key)
+                    // Picking a new column resets to descending — the
+                    // common case for "show me the biggest" queries.
+                    setSessionsSortDir('desc')
+                  }
+                }}
+              />
+            )}
+          </section>
+        </main>
+      )}
       {currentView === 'dashboard' && (
       <main className="mx-auto max-w-6xl px-6 py-8 space-y-6">
         <section className="bg-white rounded-lg border border-slate-200 p-5 space-y-5">
@@ -3944,6 +4137,229 @@ const METHODOLOGY_TABS: ReadonlyArray<{
     description: 'What the next quarterly sweep should address.',
   },
 ]
+
+type SessionsSortKey =
+  | 'lastEventAt'
+  | 'firstEventAt'
+  | 'eventCount'
+  | 'totalTokens'
+  | 'costUsdTotal'
+  | 'energyWh'
+  | 'project'
+
+/** Sortable table for the Sessions view. Client-side sort over the
+ *  already-fetched response — fine at v0.1.15 session counts (up to
+ *  the API's DEFAULT_SESSION_LIMIT of 10,000). Server-side pagination
+ *  is wired through the API contract (limit + offset) for later use. */
+function SessionsTable({
+  data,
+  sortKey,
+  sortDir,
+  onSort,
+}: {
+  data: SessionsResponse
+  sortKey: SessionsSortKey
+  sortDir: 'asc' | 'desc'
+  onSort: (key: SessionsSortKey) => void
+}) {
+  const sorted = useMemo(() => {
+    const rows = data.sessions.slice()
+    const compare = (a: SessionRow, b: SessionRow): number => {
+      let av: number | string
+      let bv: number | string
+      switch (sortKey) {
+        case 'lastEventAt':
+          av = a.lastEventAt
+          bv = b.lastEventAt
+          break
+        case 'firstEventAt':
+          av = a.firstEventAt
+          bv = b.firstEventAt
+          break
+        case 'eventCount':
+          av = a.eventCount
+          bv = b.eventCount
+          break
+        case 'totalTokens':
+          av = a.input + a.output + a.cacheRead + a.cacheWrite5m + a.cacheWrite1h
+          bv = b.input + b.output + b.cacheRead + b.cacheWrite5m + b.cacheWrite1h
+          break
+        case 'costUsdTotal':
+          // Nulls sort to the bottom regardless of direction so a
+          // descending "biggest cost" sort doesn't lead with pre-launch
+          // cells. Effective tie-break on sessionId for determinism.
+          av = a.costUsdTotal ?? Number.NEGATIVE_INFINITY
+          bv = b.costUsdTotal ?? Number.NEGATIVE_INFINITY
+          break
+        case 'energyWh':
+          av = a.energyWh
+          bv = b.energyWh
+          break
+        case 'project':
+          av = a.projectId ?? ''
+          bv = b.projectId ?? ''
+          break
+      }
+      if (av < bv) return sortDir === 'asc' ? -1 : 1
+      if (av > bv) return sortDir === 'asc' ? 1 : -1
+      // Stable tie-break.
+      return a.sessionId.localeCompare(b.sessionId)
+    }
+    rows.sort(compare)
+    return rows
+  }, [data.sessions, sortKey, sortDir])
+
+  if (sorted.length === 0) {
+    return (
+      <p className="text-sm text-slate-500">
+        No sessions in this window. Try widening the date range or running{' '}
+        <code className="bg-slate-100 px-1 rounded">tokenscale scan</code> if you expect
+        recent activity.
+      </p>
+    )
+  }
+
+  const headerButtonClass = (key: SessionsSortKey, alignRight = false) =>
+    'px-2 py-1 text-xs font-medium ' +
+    (alignRight ? 'text-right ' : 'text-left ') +
+    (sortKey === key ? 'text-blue-700' : 'text-slate-600 hover:text-slate-900')
+  const arrow = (key: SessionsSortKey) =>
+    sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs border-collapse">
+        <thead>
+          <tr className="border-b border-slate-200">
+            <th className="px-2 py-1 text-left font-medium text-slate-600">Session</th>
+            <th className="px-2 py-1 text-left">
+              <button
+                type="button"
+                onClick={() => onSort('project')}
+                className={headerButtonClass('project')}
+              >
+                Project{arrow('project')}
+              </button>
+            </th>
+            <th className="px-2 py-1 text-left font-medium text-slate-600">Models</th>
+            <th className="px-2 py-1 text-left">
+              <button
+                type="button"
+                onClick={() => onSort('firstEventAt')}
+                className={headerButtonClass('firstEventAt')}
+              >
+                First seen{arrow('firstEventAt')}
+              </button>
+            </th>
+            <th className="px-2 py-1 text-left">
+              <button
+                type="button"
+                onClick={() => onSort('lastEventAt')}
+                className={headerButtonClass('lastEventAt')}
+              >
+                Last seen{arrow('lastEventAt')}
+              </button>
+            </th>
+            <th className="px-2 py-1 text-right">
+              <button
+                type="button"
+                onClick={() => onSort('eventCount')}
+                className={headerButtonClass('eventCount', true)}
+              >
+                Events{arrow('eventCount')}
+              </button>
+            </th>
+            <th className="px-2 py-1 text-right">
+              <button
+                type="button"
+                onClick={() => onSort('totalTokens')}
+                className={headerButtonClass('totalTokens', true)}
+              >
+                Tokens{arrow('totalTokens')}
+              </button>
+            </th>
+            <th className="px-2 py-1 text-right">
+              <button
+                type="button"
+                onClick={() => onSort('costUsdTotal')}
+                className={headerButtonClass('costUsdTotal', true)}
+              >
+                Cost (USD){arrow('costUsdTotal')}
+              </button>
+            </th>
+            <th className="px-2 py-1 text-right">
+              <button
+                type="button"
+                onClick={() => onSort('energyWh')}
+                className={headerButtonClass('energyWh', true)}
+              >
+                Energy (Wh){arrow('energyWh')}
+              </button>
+            </th>
+            <th className="px-2 py-1 text-right font-medium text-slate-600">CO₂e (g)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((s) => {
+            const totalTokens =
+              s.input + s.output + s.cacheRead + s.cacheWrite5m + s.cacheWrite1h
+            const projectLabel = s.projectId ? projectShortName(s.projectId) : '—'
+            return (
+              <tr
+                key={s.sessionId}
+                className="border-b border-slate-100 hover:bg-slate-50"
+              >
+                <td
+                  className="px-2 py-1 font-mono text-slate-700"
+                  title={s.sessionId}
+                >
+                  {truncateSessionId(s.sessionId)}
+                </td>
+                <td
+                  className="px-2 py-1 text-slate-700 max-w-[14rem] truncate"
+                  title={s.projectId ?? ''}
+                >
+                  {projectLabel}
+                </td>
+                <td className="px-2 py-1 text-slate-600">
+                  {s.models.map(modelDisplayName).join(', ') || '—'}
+                </td>
+                <td className="px-2 py-1 text-slate-600 whitespace-nowrap">
+                  {s.firstEventAt.slice(0, 16).replace('T', ' ')}
+                </td>
+                <td className="px-2 py-1 text-slate-600 whitespace-nowrap">
+                  {s.lastEventAt.slice(0, 16).replace('T', ' ')}
+                </td>
+                <td className="px-2 py-1 text-right tabular-nums">
+                  {formatCompactNumber(s.eventCount)}
+                </td>
+                <td className="px-2 py-1 text-right tabular-nums">
+                  {formatCompactNumber(totalTokens)}
+                </td>
+                <td className="px-2 py-1 text-right tabular-nums">
+                  {s.costUsdTotal === null
+                    ? '—'
+                    : formatRoundedDollars(s.costUsdTotal)}
+                </td>
+                <td className="px-2 py-1 text-right tabular-nums">
+                  {formatCompactNumber(Math.round(s.energyWh))}
+                </td>
+                <td className="px-2 py-1 text-right tabular-nums">
+                  {s.co2eG === null ? '—' : formatCompactNumber(Math.round(s.co2eG))}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+      <p className="mt-2 text-xs text-slate-500">
+        {sorted.length} session{sorted.length === 1 ? '' : 's'} in window. Cost cells
+        showing — mean every event in that session predates its model's launch date
+        (matches the per-bucket missingness convention). Click a header to sort.
+      </p>
+    </div>
+  )
+}
 
 function MethodologyPage() {
   const [activeTab, setActiveTab] = useState<DocSlug>('methodology')

@@ -28,6 +28,7 @@ mod impact_query;
 mod pricing_lookup;
 mod pricing_sync;
 mod queries;
+mod sessions_query;
 mod subscriptions;
 
 pub use audit::{audit_pricing_launch_dates, PricingLaunchDateAuditRow};
@@ -53,6 +54,7 @@ pub use queries::{
     DailyUsageFlatRow, Granularity, HealthSummary, ModelSummaryRow, ProjectSummaryRow,
     RecentSessionRow, UsageByModelRow, ALL_PROVIDERS,
 };
+pub use sessions_query::{list_sessions_with_totals, SessionSummaryRow, DEFAULT_SESSION_LIMIT};
 pub use subscriptions::{
     delete_subscription, insert_subscription, list_subscriptions, update_subscription, Subscription,
 };
