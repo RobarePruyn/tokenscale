@@ -56,6 +56,13 @@ pub struct SessionSummaryRow {
     /// git toplevel; this row's `project_id` shape doesn't change.
     pub project_id: Option<String>,
 
+    // Future refinement candidate: per-session project_id is currently
+    // MAX(project_id) — picks the lexicographically largest cwd, which
+    // approximates "most-specific subdirectory" but can still be wrong
+    // for sessions that genuinely span multiple repos. A
+    // most-frequent-cwd aggregation would be more accurate; tracked
+    // for post-v0.1.15 work.
+
     /// Comma-separated list of distinct model IDs seen in this
     /// session, in SQLite's `GROUP_CONCAT(DISTINCT ...)`
     /// implementation-defined order. The frontend splits on `,` and
@@ -134,7 +141,24 @@ pub async fn list_sessions_with_totals(
     let mut builder: QueryBuilder<sqlx::Sqlite> = QueryBuilder::new(
         "SELECT
             events.session_id AS session_id,
-            MIN(events.project_id) AS project_id,
+            -- Per-session project pick: the LONGEST cwd seen in this
+            -- session, ties broken alphabetically. The longest path
+            -- is the most-specific work directory in practice — a
+            -- session that mixes a one-off `cd ~` event with deep
+            -- repo subdirectory work should attribute to the repo,
+            -- not to home. Lexicographic MAX would fail this when a
+            -- short cwd has a higher-ASCII root letter (e.g.
+            -- /private/tmp/short beats /Users/long/path because
+            -- 'p' > 'U'). Longest-wins is robust against that.
+            -- Truly correct = most-frequent cwd, which would require
+            -- a window-function aggregation; longest-wins is the
+            -- v0.1.15 heuristic that handles the observed common case.
+            (SELECT e2.project_id
+               FROM events e2
+              WHERE e2.session_id = events.session_id
+                AND e2.project_id IS NOT NULL
+              ORDER BY LENGTH(e2.project_id) DESC, e2.project_id ASC
+              LIMIT 1) AS project_id,
             GROUP_CONCAT(DISTINCT events.model) AS models,
             MIN(events.occurred_at) AS first_event_at,
             MAX(events.occurred_at) AS last_event_at,
@@ -760,6 +784,89 @@ source_accessed_at        = "2026-05-21"
     // model dimension entirely (one row per (session, model) instead
     // of one row per session) or could double-count.
     // ----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn multi_cwd_session_picks_most_specific_project() {
+        // v0.1.15 1B-i smoke test surfaced that the maintainer's home
+        // directory was a git repo, so any session containing a
+        // `cd ~` event would have MIN(project_id) = `/Users/home`
+        // and the whole session's work attributed to home. MAX picks
+        // the lexicographically largest, which for prefixed cwds
+        // (home + subdirectories) gives the longer / more-specific
+        // path. This pins the v0.1.15 fix against regression to MIN.
+        let db = Database::open_in_memory_for_tests().await.unwrap();
+        seed_factors_and_pricing(&db).await;
+
+        // One session with two events: one shallow cwd, one deep.
+        // The deep cwd represents where the real work happened; the
+        // shallow one (typically the user's home dir) is a one-off.
+        insert_events(
+            &db,
+            &[
+                event_in_session("s1", "/Users/home", "claude-sonnet-4-6", 21, "r1", 100, 50, 0, 0, 0),
+                event_in_session("s1", "/Users/home/Dev/myrepo/src", "claude-sonnet-4-6", 21, "r2", 100, 50, 0, 0, 0),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let rows = list_sessions_with_totals(
+            &db, "2026-04-01", "2026-04-30",
+            ALL_PROVIDERS, &[], &factors(),
+            DEFAULT_SESSION_LIMIT, 0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        // Longest-cwd-wins picks the longer/more-specific path. NOT
+        // "/Users/home" (which MIN would have picked, attributing
+        // real work to the home-directory git toplevel) and NOT
+        // dependent on lexicographic ordering of root letters.
+        assert_eq!(
+            row.project_id.as_deref(),
+            Some("/Users/home/Dev/myrepo/src"),
+            "multi-cwd session must attribute to the deepest path, not the shallowest",
+        );
+    }
+
+    #[tokio::test]
+    async fn longest_cwd_wins_over_higher_ascii_root() {
+        // Pins the v0.1.15 fix that drove the choice away from MAX:
+        // a session with a short cwd that has a higher-ASCII root
+        // letter (e.g. /private/...) must NOT outrank a longer cwd
+        // under /Users/... even though MAX would pick /private/
+        // because 'p' > 'U' in ASCII.
+        let db = Database::open_in_memory_for_tests().await.unwrap();
+        seed_factors_and_pricing(&db).await;
+
+        insert_events(
+            &db,
+            &[
+                // Short cwd, higher-ASCII root.
+                event_in_session("s1", "/private/tmp/scratch", "claude-sonnet-4-6", 21, "r1", 100, 50, 0, 0, 0),
+                // Long cwd, lower-ASCII root.
+                event_in_session("s1", "/Users/me/Library/Documents/MyRepo/src/deep", "claude-sonnet-4-6", 21, "r2", 100, 50, 0, 0, 0),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let rows = list_sessions_with_totals(
+            &db, "2026-04-01", "2026-04-30",
+            ALL_PROVIDERS, &[], &factors(),
+            DEFAULT_SESSION_LIMIT, 0,
+        )
+        .await
+        .unwrap();
+        let row = &rows[0];
+        assert_eq!(
+            row.project_id.as_deref(),
+            Some("/Users/me/Library/Documents/MyRepo/src/deep"),
+            "longest cwd must win regardless of root-letter ASCII; \
+             MAX would have wrongly picked /private/tmp/scratch",
+        );
+    }
 
     #[tokio::test]
     async fn multi_model_session_aggregates_across_models() {

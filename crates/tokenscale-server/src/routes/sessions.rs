@@ -46,7 +46,13 @@ pub async fn recent_handler(
         .into_iter()
         .map(|row| SessionRow {
             session_id: row.session_id,
-            project_id: row.project_id,
+            // v0.1.15 1B-i: resolve raw cwd → git toplevel for display
+            // consistency with /usage/sessions. Raw cwd lives in the
+            // DB; the API exposes the resolved name.
+            project_id: row
+                .project_id
+                .as_ref()
+                .map(|raw| state.cwd_resolver.resolve(raw).to_owned()),
             first_event_at: row.first_event_at,
             last_event_at: row.last_event_at,
             event_count: row.event_count,

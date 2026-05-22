@@ -16,6 +16,7 @@
 //! Static-asset serving: production builds embed `frontend/dist/` into the
 //! binary at compile time via `rust-embed`. The wiring is in `embed.rs`.
 
+pub mod cwd_resolver;
 mod embed;
 mod error;
 pub mod notices;
@@ -169,6 +170,14 @@ fallback_pue = 1.15
         Arc::new(crate::notices::DismissalStore::new(tmp))
     }
 
+    /// Empty cwd resolver — tests don't exercise the resolution path,
+    /// so every `resolve()` call falls through to raw. Avoids needing
+    /// real git repos in tempdir for the handler-level tests; the
+    /// resolver's own unit tests exercise the real shell-out path.
+    fn test_resolver() -> Arc<crate::cwd_resolver::CwdResolver> {
+        Arc::new(crate::cwd_resolver::CwdResolver::empty())
+    }
+
     fn uuid_like_suffix() -> String {
         // Just a unique-enough suffix for parallel tests; doesn't need
         // to be a real UUID.
@@ -180,7 +189,7 @@ fallback_pue = 1.15
 
     async fn build_test_app() -> axum::Router {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()))
+        build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store(), test_resolver()))
     }
 
     #[tokio::test]
@@ -289,7 +298,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store(), test_resolver()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -363,7 +372,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store(), test_resolver()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -386,7 +395,7 @@ fallback_pue = 1.15
     #[tokio::test]
     async fn subscriptions_create_list_delete_roundtrip() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store(), test_resolver()));
 
         // Empty list initially.
         let response = app
@@ -475,7 +484,7 @@ fallback_pue = 1.15
     #[tokio::test]
     async fn subscriptions_update_replaces_fields() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store(), test_resolver()));
 
         // Create.
         let response = app
@@ -551,7 +560,7 @@ fallback_pue = 1.15
     #[tokio::test]
     async fn subscriptions_create_rejects_bad_inputs() {
         let database = Database::open_in_memory_for_tests().await.unwrap();
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store(), test_resolver()));
 
         let bad_cases = [
             // Empty plan name
@@ -622,7 +631,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store(), test_resolver()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -676,7 +685,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store(), test_resolver()));
 
         // Filter to alpha only.
         let response = app
@@ -745,7 +754,7 @@ fallback_pue = 1.15
         .await
         .unwrap();
 
-        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store()));
+        let app = build_router(AppState::new(database, test_pricing(), test_factors(), "us-east-1".to_owned(), test_dismissal_store(), test_resolver()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -852,6 +861,7 @@ fallback_wue_l_per_kwh = 0.15
             factors,
             "us-east-1".to_owned(),
             test_dismissal_store(),
+            test_resolver(),
         ));
         let response = app
             .oneshot(
@@ -925,6 +935,7 @@ fallback_wue_l_per_kwh = 0.15
             factors,
             "us-east-1".to_owned(),
             test_dismissal_store(),
+            test_resolver(),
         ));
         let response = app
             .oneshot(
@@ -957,6 +968,7 @@ fallback_wue_l_per_kwh = 0.15
             factors,
             "us-east-1".to_owned(),
             test_dismissal_store(),
+            test_resolver(),
         ));
         let response = app
             .oneshot(
@@ -1006,6 +1018,7 @@ fallback_wue_l_per_kwh = 0.15
             test_factors(),
             "us-east-1".to_owned(),
             test_dismissal_store(),
+            test_resolver(),
         ));
 
         let csv = "\

@@ -6,6 +6,69 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.15 — 2026-05-22
+
+**Granular Attribution Phase 1 — user-visible layer.** Per-session reporting and cwd → git toplevel resolution for the project view. Companion release v0.1.16 follows with the ingest-layer changes (parser captures + UNIQUE constraint on uuid); the split is by risk class, not by incompleteness — see "Why two releases" below.
+
+This release bundles three concerns: Phase 1A (per-session reporting, already present on `main` since `818f33a`), Phase 1B-i (cwd → git toplevel resolution), and Phase 1B-iii (a small `/api/v1/usage/daily` `modelsWithoutPricing` correctness fix surfaced during 1A smoke-testing).
+
+### Added
+
+- **`GET /api/v1/usage/sessions`** — per-session impact + cost endpoint (Phase 1A). Same window / provider / project filter surface as `/usage/daily`, but `GROUP BY events.session_id` instead of date bucket. Reuses the v0.1.13 per-event correlated-subquery pricing + factor joins; per-session numbers inherit time-anchoring verbatim. Includes `limit` + `offset` query params from day one for API forward-compat with future server-side pagination (default `limit=10000`, `offset=0` — effective no-op for any realistic 90-day window).
+- **Sessions tab in the dashboard** — new third top-level view between Dashboard and Methodology. Sortable table over the fetched response (client-side; `DEFAULT_SESSION_LIMIT=10000`). Sortable columns: project, firstEventAt, lastEventAt, eventCount, totalTokens, costUsdTotal, energyWh. Null `costUsdTotal` renders as `—` matching the per-bucket missingness convention from v0.1.13. Lazy-loaded — pays nothing if the tab is never opened.
+- **`truncateSessionId(s)` frontend helper** — single source of truth for the display rule (first 8 characters of the UUID). Matches `git` short-SHA convention and the prefix of `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` filenames so a user grepping a displayed prefix hits the right file. Full UUID lives in `title=` tooltips and the raw API response for grep against logs.
+- **cwd → git toplevel resolver** (Phase 1B-i) — `tokenscale-server::cwd_resolver` module. Built at server startup from the DB's distinct `project_id` values via `git -C <cwd> rev-parse --show-toplevel`. Bidirectional in-memory map: forward (raw cwd → resolved name) for display, reverse (resolved → list of raw cwds) for expanding `?project=<resolved>` filters into the SQL `WHERE project_id IN (...)` clause. Graceful fallback: a cwd whose directory no longer exists on disk OR isn't a git repo maps to itself, matching pre-v0.1.15 dashboard behavior. See `docs/roadmap-1b-cwd-resolution.md` § D1 for the choice of query-time over ingest-time.
+- **`/api/v1/projects` collapses raw cwds into resolved projects** — a single repo accessed from multiple subdirectories / worktrees now appears as one row in the project filter list with summed event counts and token totals. The "67 projects" fragmentation the maintainer's data exhibited is now down to ~30 (varies by user; collapse rate depends on how many distinct cwds map to the same toplevel). Worktrees count as distinct projects per § D4 — native `git rev-parse --show-toplevel` behavior; the A1 → A2 promotion (collapse worktrees to main repo) is a future one-line change if a user pattern emerges.
+- **Per-session project attribution heuristic** — when a session spans multiple cwds (e.g. one event with `cd ~` plus events in a deep repo subdirectory), the session-row attributes to the LONGEST cwd seen (ties broken alphabetically). v0.1.15 smoke test surfaced that the maintainer's home directory is a git repo, so the original `MIN(project_id)` aggregation attributed lots of work to `/Users/<name>` instead of the actual repo. Longest-cwd-wins is more robust than alphabetic MAX (which fails on root-letter ASCII edge cases like `/private/...` beating `/Users/...`). Truly correct attribution = most-frequent cwd via window function; longest-wins is the v0.1.15 heuristic that handles the observed common case. Tracked for a future refinement.
+
+### Changed
+
+- **`modelsWithoutPricing` on `/api/v1/usage/daily`** (Phase 1B-iii correctness fix) — switched from time-anchored `pricing.lookup` to a structural "is this model in `pricing.toml` at all?" check. Previously, a model with `valid_from = 2026-04-16` queried over a window starting 2026-04-01 would appear in `modelsWithoutPricing` for the first 15 days even though the model IS priced (just not yet on those dates). Per-event missingness is already correctly surfaced via `eventsMissingPricing` per cell; this banner is the model-level "no row at all" signal. `sessions_handler` already shipped with the correct structural check (1A landing); both handlers now share the same `model_has_pricing_row` / `model_has_factor_row` helpers in `routes/usage.rs`. Per-event time-anchored pricing on `/usage/daily` is unaffected — only the model-list banner could over-flag.
+
+### Why two releases
+
+Phase 1B's parser changes (capturing `gitBranch` / `uuid` / `parentUuid` into `Event` + UNIQUE partial index on `uuid` as the actual defense against the duplicate-message concern from Phase 0) ship as **v0.1.16** instead of bundling here.
+
+Rationale: parser changes carry ingest risk; cwd-resolution doesn't. The v0.1.13 lesson (the manual `workflow_dispatch` firing in v0.1.14 surfaced two real bugs from a single tag concentrating multiple schema-touching changes) argues for separating risk classes cleanly. v0.1.15 stays scoped to "query-layer and presentation-layer" — no migrations, no parser changes, downgrade trivial. v0.1.16 will carry the schema migration and parser captures with its own soak time before brew users see it.
+
+This is not v0.1.15 being incomplete — it's the deliberate D5 split documented in `docs/roadmap-1b-cwd-resolution.md`. The two tags land in quick succession with a coherent narrative across both CHANGELOGs.
+
+### Tests
+
+- 8 sessions_query tests (Phase 1A's 6 + 2 new for the multi-cwd attribution: `multi_cwd_session_picks_most_specific_project` and `longest_cwd_wins_over_higher_ascii_root`). Both Additions called out in 1A signoff are present: per-session sum invariant + multi-model session aggregation.
+- 6 cwd_resolver tests covering subdirectory collapse, missing-directory fallback, non-git directory fallback, worktree-as-project (D4 pinned), reverse lookup, and the empty-resolver default.
+- All 13 server test fixtures updated to pass an empty resolver via `test_resolver()`.
+
+### Smoke-tested against maintainer's production DB
+
+- 26 sessions in 30-day window, 11 multi-model (42%) — per-token-type sum invariant exact to f64 precision across all sampled rows.
+- 34 projects after collapse (varies; the resolver-served `/Users/Robare/...` paths fold into git toplevels; legacy `/Users/robarepruyn/...` paths from a different historical user-context fall back to raw because the path doesn't exist on disk, matching D1's graceful-fallback design).
+- Top sessions attribute to the deepest work cwd (`/Users/Robare/.../Dev/tokenscale`, `LifeOps`, `platform`) rather than the home-directory git toplevel — longest-cwd-wins working as designed.
+- `modelsWithoutPricing` empty on both `/usage/daily` and `/usage/sessions`.
+
+189 workspace tests green (+6 from cwd_resolver).
+
+### Sequencing
+
+```
+v0.1.15 (this release)
+  ├─ Phase 1A — per-session reporting [landed on main 818f33a]
+  ├─ Phase 1B-i — cwd → git toplevel resolution
+  └─ Phase 1B-iii — daily_handler modelsWithoutPricing fix
+
+v0.1.16 (next release)
+  └─ Phase 1B-ii — parser captures gitBranch/uuid/parentUuid + UNIQUE partial index on uuid
+     [forward-only schema migration; historical events stay NULL for new fields]
+
+v0.1.17+ (future)
+  └─ Phase 1.5 — tool-use / tool-result / file-history-snapshot ingest expansion
+     [gates Phase 2 commit-attribution Tier 1 + Phase 3 edit-survival Tier 2]
+```
+
+Open queue past Phase 1: granular-attribution Phases 2 / 3 / 4, PUE uncertainty band, Winget manifest.
+
+---
+
 ## v0.1.14 — 2026-05-19
 
 The "prove the detector fires" release. v0.1.12 shipped the nightly pricing-drift-check workflow but every run since was against a known-correct `pricing.toml`, so only the exit-0 path had ever actually executed in production. A manual `workflow_dispatch` firing against a throwaway branch with deliberately-wrong rates surfaced **two real bugs** that the structural test layer alone could not have caught:

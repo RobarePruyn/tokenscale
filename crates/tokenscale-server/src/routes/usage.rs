@@ -5,17 +5,89 @@ use axum::Json;
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tokenscale_core::{BillableMultipliers, ModelPricing};
+use tokenscale_core::{BillableMultipliers, EnvironmentalFactorsFile, ModelPricing, PricingFile};
 use tokenscale_store::{
     aggregate_impact_by_bucket, list_models_in_window, list_sessions_with_totals, usage_by_model,
     Granularity, ImpactByBucketRow, ImpactQueryFactors, SessionSummaryRow, ALL_PROVIDERS,
     DEFAULT_SESSION_LIMIT,
 };
 
+use crate::cwd_resolver::CwdResolver;
 use crate::error::ApiError;
 use crate::state::AppState;
 
 const DEFAULT_WINDOW_DAYS: i64 = 30;
+
+/// v0.1.15 1B-i: expand a user-supplied project filter (which carries
+/// resolved project names from the chip UI) into the underlying raw
+/// cwds for the SQL `WHERE project_id IN (...)` clause.
+///
+/// The reverse map's fallback semantics mean a resolved-name not in
+/// the map maps to itself — preserving the special-case behavior of
+/// the `NO_MATCH_SENTINEL` (selected explicitly as "none") and any
+/// raw cwd a user might have typed directly via API.
+///
+/// Empty input → empty output (the dashboard's "all projects" default).
+fn expand_project_filter_via_resolver(
+    projects: &[String],
+    resolver: &CwdResolver,
+) -> Vec<String> {
+    if projects.is_empty() {
+        return Vec::new();
+    }
+    let mut expanded: Vec<String> = projects
+        .iter()
+        .flat_map(|p| resolver.raw_paths_for_resolved(p))
+        .collect();
+    // Multiple resolved-name selections could theoretically reference
+    // the same raw cwd (unusual but possible after future
+    // pre-resolution edits). Dedup keeps the SQL clean.
+    expanded.sort();
+    expanded.dedup();
+    expanded
+}
+
+/// Structural check: does `pricing.toml` carry ANY row for this
+/// `(provider, model)` pair, regardless of `valid_from`?
+///
+/// 1B-iii — the daily-handler conflation fix. Previously, both
+/// handlers populated `modelsWithoutPricing` by checking a
+/// time-anchored `pricing.lookup(provider, model, date)`, which
+/// returns `None` for a model that IS priced but whose `valid_from`
+/// is after the queried date. That conflates "no row at all" with
+/// "no row yet on this date" — a model launched 2026-04-16 looked
+/// "without pricing" for any window starting earlier in April.
+///
+/// The right banner question is "does this model exist in pricing
+/// at all" (structural), not "is there a row valid at this exact
+/// date" (time-anchored). Per-event missingness is already surfaced
+/// per cell via `eventsMissingPricing`; this banner is the
+/// model-level "we don't know how to price this model at all"
+/// signal.
+///
+/// Used by both `daily_handler` and `sessions_handler`. The
+/// time-anchored `pricing.lookup` stays in `daily_handler` for the
+/// billable-multiplier computation, which IS correctly per-bucket.
+fn model_has_pricing_row(pricing: &PricingFile, provider: &str, model: &str) -> bool {
+    pricing
+        .providers
+        .get(provider)
+        .is_some_and(|p| p.models.contains_key(model))
+}
+
+/// Structural check: does `environmental-factors.toml` carry a row
+/// for this `(provider, model)` pair? Counterpart to
+/// `model_has_pricing_row` for the env side. Used by both handlers.
+fn model_has_factor_row(
+    factors: &EnvironmentalFactorsFile,
+    provider: &str,
+    model: &str,
+) -> bool {
+    factors
+        .providers
+        .get(provider)
+        .is_some_and(|p| p.models.contains_key(model))
+}
 
 /// Sentinel `project_id` value used by the `?project=__none__` query string
 /// to mean "filter to nothing." Real Claude Code cwd paths cannot contain
@@ -321,12 +393,19 @@ pub async fn daily_handler(
         fallback_pue: state.factors.effective_fallback_pue(),
         fallback_wue_l_per_kwh: state.factors.effective_fallback_wue_l_per_kwh(),
     };
+    // v0.1.15 1B-i: expand resolved-name filters back to raw cwds
+    // before SQL. The user clicked a "resolved git toplevel" chip;
+    // SQL groups by raw events.project_id.
+    let expanded_projects = expand_project_filter_via_resolver(
+        &resolved.projects,
+        &state.cwd_resolver,
+    );
     let impact_rows = aggregate_impact_by_bucket(
         &state.database,
         &resolved.from_date,
         &resolved.to_date,
         &resolved.provider,
-        &resolved.projects,
+        &expanded_projects,
         resolved.granularity,
         &impact_factors,
     )
@@ -353,11 +432,11 @@ pub async fn daily_handler(
             continue;
         }
 
-        // Phase A: time-anchored pricing lookup using the row's bucket
-        // date. Phase C will move this into the SQL aggregate so we get
-        // per-event resolution (this is per-bucket-row). For current data
-        // with single-row pricing.toml, every bucket date resolves to the
-        // same one row — the v0.1.12 regression invariant.
+        // Time-anchored lookup for billable multipliers — correctly
+        // per-bucket because billable rates can change across the
+        // window. A None here means "no priced billable for this
+        // (model, bucket-date)" and the billable view renders that
+        // cell as unpriced — orthogonal from the model-level banner.
         let billable_pair = state
             .pricing
             .lookup(provider_for_pricing, &row.model, &row.bucket)
@@ -365,9 +444,19 @@ pub async fn daily_handler(
         let (billable, billable_total) = if let Some((breakdown, total)) = billable_pair {
             (Some(breakdown), Some(total))
         } else {
-            models_without_pricing.insert(row.model.clone());
             (None, None)
         };
+        // v0.1.15 1B-iii: `modelsWithoutPricing` uses the structural
+        // check, NOT the time-anchored lookup above. The old code
+        // conflated "no row valid at this bucket date" with "no row
+        // at all" — a model with launch_date 2026-04-16 looked
+        // "without pricing" for any window starting earlier in April
+        // even though it WAS priced (just not yet). Per-event
+        // missingness is already surfaced per cell via
+        // `eventsMissingPricing` in `ModelImpact`.
+        if !model_has_pricing_row(&state.pricing, provider_for_pricing, &row.model) {
+            models_without_pricing.insert(row.model.clone());
+        }
 
         let bucket = row.bucket.clone();
         let model_key = row.model.clone();
@@ -422,13 +511,7 @@ pub async fn daily_handler(
     // answer for dashboard banners ("Claude Opus 4.7: factor data unavailable").
     let models_without_factors: Vec<String> = visible_models
         .iter()
-        .filter(|model_id| {
-            !state
-                .factors
-                .providers
-                .get(provider_for_pricing)
-                .is_some_and(|provider| provider.models.contains_key(*model_id))
-        })
+        .filter(|model_id| !model_has_factor_row(&state.factors, provider_for_pricing, model_id))
         .cloned()
         .collect();
     let mut models_without_factors = models_without_factors;
@@ -697,12 +780,17 @@ pub async fn sessions_handler(
         fallback_pue: state.factors.effective_fallback_pue(),
         fallback_wue_l_per_kwh: state.factors.effective_fallback_wue_l_per_kwh(),
     };
+    // v0.1.15 1B-i: same project-filter expansion as daily_handler.
+    let expanded_projects = expand_project_filter_via_resolver(
+        &resolved.projects,
+        &state.cwd_resolver,
+    );
     let rows: Vec<SessionSummaryRow> = list_sessions_with_totals(
         &state.database,
         &resolved.from_date,
         &resolved.to_date,
         &resolved.provider,
-        &resolved.projects,
+        &expanded_projects,
         &impact_factors,
         limit,
         offset,
@@ -724,30 +812,12 @@ pub async fn sessions_handler(
     let mut models_without_factors: std::collections::BTreeSet<String> =
         std::collections::BTreeSet::new();
     for model_row in &models_in_window {
-        // Structural check: "is this model in pricing.toml at all?"
-        // NOT a time-anchored "is there a row valid at the window
-        // start?" The latter conflates "no row ever" with "no row
-        // yet on this date" — e.g. a window starting 2026-04-01 with
-        // claude-opus-4-7 (launched 2026-04-16) would surface Opus
-        // 4.7 as unpriced even though every event after its launch
-        // resolves correctly. Per-event missingness is already
-        // surfaced per-session via `eventsMissingPricing`; this list
-        // is the model-level "we don't know how to price this model
-        // at all" banner.
-        if !state
-            .pricing
-            .providers
-            .get(provider_for_factors)
-            .is_some_and(|p| p.models.contains_key(&model_row.model))
-        {
+        // v0.1.15 1B-iii: shared structural helpers — same check
+        // used by daily_handler. See module-top doc comments.
+        if !model_has_pricing_row(&state.pricing, provider_for_factors, &model_row.model) {
             models_without_pricing.insert(model_row.model.clone());
         }
-        if !state
-            .factors
-            .providers
-            .get(provider_for_factors)
-            .is_some_and(|p| p.models.contains_key(&model_row.model))
-        {
+        if !model_has_factor_row(&state.factors, provider_for_factors, &model_row.model) {
             models_without_factors.insert(model_row.model.clone());
         }
     }
@@ -765,9 +835,15 @@ pub async fn sessions_handler(
                 .map(str::to_owned)
                 .collect();
             models.sort();
+            // v0.1.15 1B-i: resolve raw cwd → git toplevel for display.
+            // The session's underlying events still carry raw cwd in
+            // events.project_id; the API exposes the resolved name.
+            let resolved_project_id = row.project_id.as_ref().map(|raw| {
+                state.cwd_resolver.resolve(raw).to_owned()
+            });
             SessionRow {
                 session_id: row.session_id,
-                project_id: row.project_id,
+                project_id: resolved_project_id,
                 models,
                 first_event_at: row.first_event_at,
                 last_event_at: row.last_event_at,

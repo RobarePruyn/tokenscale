@@ -4,10 +4,18 @@
 //!
 //! Same window/provider params as `/api/v1/usage/daily` so the chip list
 //! reflects exactly what's in the chart.
+//!
+//! v0.1.15 1B-i: raw cwds returned by the store query are passed
+//! through the AppState `cwd_resolver` and then re-aggregated by
+//! resolved project name. A single repo accessed from multiple raw
+//! cwds (subdirectories, worktrees that share a toplevel) collapses
+//! to one row in the chip list. The per-row counts sum across all
+//! contributing raw cwds.
 
 use axum::extract::{Query, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use tokenscale_store::{list_projects_with_totals, ALL_PROVIDERS};
 
 use crate::error::ApiError;
@@ -56,14 +64,23 @@ pub async fn list_handler(
     let provider = params.provider.unwrap_or_else(|| ALL_PROVIDERS.to_owned());
 
     let rows = list_projects_with_totals(&state.database, &from_date, &to_date, &provider).await?;
-    let projects = rows
-        .into_iter()
-        .map(|row| ProjectSummary {
-            project_id: row.project_id,
-            event_count: row.event_count,
-            total_tokens: row.total_tokens,
-        })
-        .collect();
+
+    // v0.1.15 1B-i: collapse raw cwds → resolved project names.
+    // BTreeMap for deterministic output ordering; the frontend
+    // re-sorts by total_tokens descending for display, but a stable
+    // server-side ordering helps caching and snapshot tests.
+    let mut aggregated: BTreeMap<String, ProjectSummary> = BTreeMap::new();
+    for row in rows {
+        let resolved = state.cwd_resolver.resolve(&row.project_id).to_owned();
+        let entry = aggregated.entry(resolved.clone()).or_insert(ProjectSummary {
+            project_id: resolved,
+            event_count: 0,
+            total_tokens: 0,
+        });
+        entry.event_count += row.event_count;
+        entry.total_tokens += row.total_tokens;
+    }
+    let projects: Vec<ProjectSummary> = aggregated.into_values().collect();
 
     Ok(Json(ProjectsResponse { projects }))
 }

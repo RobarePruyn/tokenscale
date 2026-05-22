@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokenscale_core::{EnvironmentalFactorsFile, PricingFile};
 use tokenscale_store::Database;
 
+use crate::cwd_resolver::CwdResolver;
 use crate::notices::DismissalStore;
 
 #[derive(Clone)]
@@ -33,6 +34,13 @@ pub struct AppState {
     /// Persisted dismissal state for in-app release notices (e.g. the
     /// v0.1.11 pricing-correction notice). See `notices` module.
     pub dismissal_store: Arc<DismissalStore>,
+    /// cwd → git toplevel resolver (granular-attribution Phase 1B-i,
+    /// v0.1.15). Built at startup via `cwd_resolver::build_resolver_from_db`,
+    /// `Arc`'d for cheap clone per request. The resolver is fixed for
+    /// the lifetime of the server process — a `tokenscale serve` restart
+    /// picks up new cwds and re-resolves projects that have moved on
+    /// disk. See `docs/roadmap-1b-cwd-resolution.md` § D1.
+    pub cwd_resolver: Arc<CwdResolver>,
 }
 
 impl AppState {
@@ -43,6 +51,7 @@ impl AppState {
         factors: Arc<EnvironmentalFactorsFile>,
         inference_region: String,
         dismissal_store: Arc<DismissalStore>,
+        cwd_resolver: Arc<CwdResolver>,
     ) -> Self {
         Self {
             database,
@@ -50,6 +59,7 @@ impl AppState {
             factors,
             inference_region,
             dismissal_store,
+            cwd_resolver,
         }
     }
 }

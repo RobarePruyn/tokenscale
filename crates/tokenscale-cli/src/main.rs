@@ -336,8 +336,32 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
         dismissed_notices_path,
     ));
 
+    // cwd → git toplevel resolver (granular-attribution Phase 1B-i,
+    // v0.1.15). Built from the DB's distinct project_ids at startup.
+    // Sub-second on typical event counts; runs sequentially because
+    // the maintainer's data has 16 distinct cwds and the parallelism
+    // win is negligible at that scale. Resolution failures fall back
+    // to raw cwd — the dashboard renders the raw path same as
+    // pre-v0.1.15. See docs/roadmap-1b-cwd-resolution.md § D1.
+    let cwd_resolver = tokenscale_server::cwd_resolver::build_resolver_from_db(&database)
+        .await
+        .context("building cwd → git toplevel resolver")?;
+    info!(
+        raw_cwd_count = cwd_resolver.raw_cwd_count(),
+        resolved_project_count = cwd_resolver.resolved_project_count(),
+        "built cwd resolver",
+    );
+    let cwd_resolver = Arc::new(cwd_resolver);
+
     let serve_result = serve(
-        AppState::new(database, pricing, factors, inference_region, dismissal_store),
+        AppState::new(
+            database,
+            pricing,
+            factors,
+            inference_region,
+            dismissal_store,
+            cwd_resolver,
+        ),
         bind_address,
     )
     .await;
