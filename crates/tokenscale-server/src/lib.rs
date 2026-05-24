@@ -285,6 +285,9 @@ fallback_pue = 1.15
             project_id: Some("/p".to_owned()),
             workspace_id: None,
             api_key_id: None,
+            uuid: None,
+            parent_uuid: None,
+            git_branch: None,
             raw: None,
         };
         insert_events(
@@ -366,7 +369,10 @@ fallback_pue = 1.15
                 project_id: Some("/proj/alpha".to_owned()),
                 workspace_id: None,
                 api_key_id: None,
-                raw: None,
+                uuid: None,
+            parent_uuid: None,
+            git_branch: None,
+            raw: None,
             }],
         )
         .await
@@ -619,6 +625,9 @@ fallback_pue = 1.15
             project_id: Some(project.to_owned()),
             workspace_id: None,
             api_key_id: None,
+            uuid: None,
+            parent_uuid: None,
+            git_branch: None,
             raw: None,
         };
         insert_events(
@@ -673,6 +682,9 @@ fallback_pue = 1.15
             project_id: Some(project.to_owned()),
             workspace_id: None,
             api_key_id: None,
+            uuid: None,
+            parent_uuid: None,
+            git_branch: None,
             raw: None,
         };
         insert_events(
@@ -748,7 +760,10 @@ fallback_pue = 1.15
                 project_id: Some("/p".to_owned()),
                 workspace_id: None,
                 api_key_id: None,
-                raw: None,
+                uuid: None,
+            parent_uuid: None,
+            git_branch: None,
+            raw: None,
             }],
         )
         .await
@@ -849,7 +864,10 @@ fallback_wue_l_per_kwh = 0.15
                 project_id: None,
                 workspace_id: None,
                 api_key_id: None,
-                raw: None,
+                uuid: None,
+            parent_uuid: None,
+            git_branch: None,
+            raw: None,
             }],
         )
         .await
@@ -923,7 +941,10 @@ fallback_wue_l_per_kwh = 0.15
                 project_id: None,
                 workspace_id: None,
                 api_key_id: None,
-                raw: None,
+                uuid: None,
+            parent_uuid: None,
+            git_branch: None,
+            raw: None,
             }],
         )
         .await

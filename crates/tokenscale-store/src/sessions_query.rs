@@ -591,6 +591,9 @@ source_accessed_at        = "2026-05-21"
             project_id: Some(project.to_owned()),
             workspace_id: None,
             api_key_id: None,
+            uuid: None,
+            parent_uuid: None,
+            git_branch: None,
             raw: None,
         }
     }

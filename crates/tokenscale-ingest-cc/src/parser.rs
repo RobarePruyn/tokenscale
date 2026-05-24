@@ -23,6 +23,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokenscale_core::Event;
+use tracing::debug;
 
 const SOURCE_KIND: &str = "claude_code";
 
@@ -70,6 +71,24 @@ struct AssistantPayload {
     /// `~/.claude/projects/`).
     #[serde(default)]
     cwd: Option<String>,
+
+    /// v0.1.16: per-message UUID. Present in every observed assistant
+    /// line (Phase 0 sample: 27,388/27,388), but `Option` for
+    /// schema-drift tolerance. Drives the new UNIQUE partial index
+    /// `events_source_uuid_unique` as the actual defense against
+    /// same-message-different-requestId duplicates.
+    #[serde(default)]
+    uuid: Option<String>,
+
+    /// v0.1.16: the preceding turn's UUID in this session. `None`
+    /// on the first turn. Future per-thread reconstruction.
+    #[serde(rename = "parentUuid", default)]
+    parent_uuid: Option<String>,
+
+    /// v0.1.16: git branch active in the session's cwd at call time.
+    /// `None` when the cwd isn't in a git repo.
+    #[serde(rename = "gitBranch", default)]
+    git_branch: Option<String>,
 
     message: AssistantMessage,
 }
@@ -153,6 +172,20 @@ pub fn parse_line(raw_line: &str, capture_raw: bool) -> ParseOutcome {
         }
     };
 
+    // v0.1.16: per-field debug-level log when the capture is missing.
+    // Phase 0 found uuid present in 27,388/27,388 lines, so a missing
+    // uuid is the load-bearing signal — log at debug so operators can
+    // `RUST_LOG=tokenscale_ingest_cc=debug` to spot CC schema drift.
+    // parent_uuid is legitimately None on first turns; git_branch is
+    // legitimately None for non-git cwds — both quieter at trace.
+    if assistant.uuid.is_none() {
+        debug!(
+            request_id = ?assistant.request_id,
+            timestamp = %assistant.timestamp,
+            "JSONL assistant line missing uuid — CC schema drift?"
+        );
+    }
+
     let mut event = Event {
         source: SOURCE_KIND.to_owned(),
         occurred_at: assistant.timestamp,
@@ -168,6 +201,9 @@ pub fn parse_line(raw_line: &str, capture_raw: bool) -> ParseOutcome {
         project_id: assistant.cwd,
         workspace_id: None,
         api_key_id: None,
+        uuid: assistant.uuid,
+        parent_uuid: assistant.parent_uuid,
+        git_branch: assistant.git_branch,
         raw: capture_raw.then(|| raw_line.to_owned()),
     };
 
@@ -312,6 +348,81 @@ mod tests {
         );
         let outcome = parse_line(&drifted, false);
         assert!(matches!(outcome, ParseOutcome::Event(_)));
+    }
+
+    // v0.1.16 — three parser tests for the new captures.
+
+    #[test]
+    fn assistant_line_captures_uuid_parent_uuid_git_branch() {
+        // All three fields present in the test fixture (per the
+        // ASSISTANT_LINE constant) → Event carries them through.
+        let ParseOutcome::Event(event) = parse_line(ASSISTANT_LINE, false) else {
+            panic!("expected Event");
+        };
+        assert_eq!(event.uuid.as_deref(), Some("db6baab1"));
+        assert_eq!(event.parent_uuid.as_deref(), Some("9a27c40f"));
+        assert_eq!(event.git_branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn assistant_line_missing_uuid_yields_none_other_fields_intact() {
+        // Strip the uuid field from the fixture but keep everything
+        // else. Parser must emit the row with uuid=None and the other
+        // captures populated. Tolerance contract from § 2.
+        let stripped = ASSISTANT_LINE.replace(r#","uuid":"db6baab1""#, "");
+        let ParseOutcome::Event(event) = parse_line(&stripped, false) else {
+            panic!("expected Event");
+        };
+        assert!(event.uuid.is_none(), "missing uuid must yield None");
+        // Other captures unaffected:
+        assert_eq!(event.parent_uuid.as_deref(), Some("9a27c40f"));
+        assert_eq!(event.git_branch.as_deref(), Some("main"));
+        // And the non-1B-ii fields aren't affected either:
+        assert_eq!(event.request_id.as_deref(), Some("req_011CaFyK"));
+        assert_eq!(event.input_tokens, 6);
+    }
+
+    #[test]
+    fn assistant_line_missing_parent_uuid_yields_none_other_fields_intact() {
+        let stripped = ASSISTANT_LINE.replace(r#""parentUuid":"9a27c40f","#, "");
+        let ParseOutcome::Event(event) = parse_line(&stripped, false) else {
+            panic!("expected Event");
+        };
+        assert!(event.parent_uuid.is_none());
+        assert_eq!(event.uuid.as_deref(), Some("db6baab1"));
+        assert_eq!(event.git_branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn assistant_line_missing_git_branch_yields_none_other_fields_intact() {
+        let stripped = ASSISTANT_LINE.replace(r#","gitBranch":"main""#, "");
+        let ParseOutcome::Event(event) = parse_line(&stripped, false) else {
+            panic!("expected Event");
+        };
+        assert!(event.git_branch.is_none());
+        assert_eq!(event.uuid.as_deref(), Some("db6baab1"));
+        assert_eq!(event.parent_uuid.as_deref(), Some("9a27c40f"));
+    }
+
+    #[test]
+    fn assistant_line_missing_all_three_captures_yields_all_none() {
+        // Regression for pre-v0.1.16 JSONL shape, in case CC's older
+        // versions ever land in an ingest. Today's data always
+        // carries all three (Phase 0: 27,388/27,388) but the parser
+        // must not break on the legitimate-historical case.
+        let stripped = ASSISTANT_LINE
+            .replace(r#","uuid":"db6baab1""#, "")
+            .replace(r#""parentUuid":"9a27c40f","#, "")
+            .replace(r#","gitBranch":"main""#, "");
+        let ParseOutcome::Event(event) = parse_line(&stripped, false) else {
+            panic!("expected Event");
+        };
+        assert!(event.uuid.is_none());
+        assert!(event.parent_uuid.is_none());
+        assert!(event.git_branch.is_none());
+        // Token totals unaffected.
+        assert_eq!(event.input_tokens, 6);
+        assert_eq!(event.output_tokens, 136);
     }
 
     #[test]

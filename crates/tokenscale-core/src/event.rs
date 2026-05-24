@@ -60,6 +60,28 @@ pub struct Event {
     /// Admin API only — API key UUID, when provided.
     pub api_key_id: Option<String>,
 
+    /// Per-message UUID emitted by Claude Code in each JSONL line's
+    /// `uuid` field (v0.1.16+). Forward-only: events ingested before
+    /// v0.1.16 carry `None` here, by design. The UNIQUE partial index
+    /// `events_source_uuid_unique` enforces dedup on non-NULL values
+    /// going forward — the actual defense against the
+    /// same-message-different-requestId duplicate case flagged in
+    /// Phase 0. See `docs/roadmap-1b-ii-parser-captures.md`.
+    pub uuid: Option<String>,
+
+    /// The `parentUuid` field from each JSONL line — the uuid of the
+    /// preceding turn in a CC session. `None` on the first turn of a
+    /// session (no parent) and on every pre-v0.1.16 event. Captured
+    /// for future per-thread reconstruction work; not surfaced in
+    /// v0.1.16's dashboard.
+    pub parent_uuid: Option<String>,
+
+    /// The `gitBranch` field from each JSONL line — the git branch
+    /// active in the session's cwd at call time. `None` for cwds that
+    /// aren't in a git repo and for every pre-v0.1.16 event. Captured
+    /// for a future "filter by branch" surface; not used in v0.1.16.
+    pub git_branch: Option<String>,
+
     /// Original payload as a JSON string. The ingester populates this only
     /// when `ingest.store_raw = true`. Useful for debugging schema drift and
     /// for re-deriving fields the parser missed; trades disk for diagnostics.

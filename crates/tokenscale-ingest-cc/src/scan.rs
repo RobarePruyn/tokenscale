@@ -28,7 +28,20 @@ pub struct ScanSummary {
     pub files_parsed: usize,
     pub files_unchanged: usize,
     pub events_inserted: usize,
+    /// Hits on the existing (source, request_id) / (source, content_hash)
+    /// partial unique indexes. Steady-state value is large — every
+    /// unchanged-file rescan increments this, expected, silent.
     pub events_duplicates: usize,
+    /// v0.1.16: hits on the new (source, uuid) partial unique index
+    /// (or, more precisely, the pre-check in `insert_events` that
+    /// catches the collision before INSERT OR IGNORE). Phase 0 found
+    /// zero of these in 27,388 lines — steady-state value SHOULD be
+    /// zero. **Non-zero is the loud signal** that Claude Code's
+    /// behavior may have changed; see preceding log lines for the
+    /// per-event uuid + JSONL path + line number context. Tracked
+    /// separately from `events_duplicates` because bundling the
+    /// counts hides the loud signal in the noisy one.
+    pub uuid_duplicates_skipped: usize,
     pub lines_skipped: usize,
     pub lines_malformed: usize,
 }
@@ -90,6 +103,7 @@ async fn run_scan_over_files(
                 summary.files_parsed += 1;
                 summary.events_inserted += file_summary.events_inserted;
                 summary.events_duplicates += file_summary.events_duplicates;
+                summary.uuid_duplicates_skipped += file_summary.uuid_duplicates_skipped;
                 summary.lines_skipped += file_summary.lines_skipped;
                 summary.lines_malformed += file_summary.lines_malformed;
             }
@@ -110,6 +124,7 @@ enum FileOutcome {
 struct FileSummary {
     events_inserted: usize,
     events_duplicates: usize,
+    uuid_duplicates_skipped: usize,
     lines_skipped: usize,
     lines_malformed: usize,
 }
@@ -137,12 +152,22 @@ async fn scan_one_file(
     };
 
     let mut events_to_insert = Vec::new();
+    // v0.1.16: parallel to events_to_insert. 1-indexed line number
+    // for each event (matches what an operator sees in
+    // editor / `head -n N` output). Used to emit per-uuid-duplicate
+    // warnings after insert_events returns its indices.
+    // I1.5 Option A: scan caller owns provenance + emits warnings;
+    // Event struct stays clean of ingest-only fields.
+    let mut event_line_numbers: Vec<usize> = Vec::new();
     let mut file_summary = FileSummary::default();
 
     for (line_index, raw_line) in file_contents.lines().enumerate() {
         match parse_line(raw_line, capture_raw_payloads) {
             ParseOutcome::Skip => file_summary.lines_skipped += 1,
-            ParseOutcome::Event(boxed_event) => events_to_insert.push(*boxed_event),
+            ParseOutcome::Event(boxed_event) => {
+                events_to_insert.push(*boxed_event);
+                event_line_numbers.push(line_index + 1);
+            }
             ParseOutcome::Malformed { reason } => {
                 file_summary.lines_malformed += 1;
                 warn!(
@@ -158,6 +183,23 @@ async fn scan_one_file(
     let insert_summary = insert_events(database, &events_to_insert).await?;
     file_summary.events_inserted = insert_summary.inserted;
     file_summary.events_duplicates = insert_summary.skipped_duplicate;
+    file_summary.uuid_duplicates_skipped = insert_summary.uuid_duplicate_indices.len();
+
+    // v0.1.16: emit per-event WARN logs with the documented context.
+    // Steady-state value is zero (Phase 0 found no current duplicates);
+    // a non-zero count here is the loud signal that CC's behavior may
+    // have changed.
+    for &event_index in &insert_summary.uuid_duplicate_indices {
+        let event = &events_to_insert[event_index];
+        let line_number = event_line_numbers[event_index];
+        warn!(
+            uuid = event.uuid.as_deref().unwrap_or("?"),
+            source = %event.source,
+            source_jsonl = %path_string,
+            line = line_number,
+            "duplicate uuid detected during ingest — skipping; CC behavior change?"
+        );
+    }
 
     upsert_file_state(
         database,

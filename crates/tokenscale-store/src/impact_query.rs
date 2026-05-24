@@ -553,6 +553,9 @@ egrid_subregion_full_name = "SERC Virginia/Carolina"
             project_id: None,
             workspace_id: None,
             api_key_id: None,
+            uuid: None,
+            parent_uuid: None,
+            git_branch: None,
             raw: None,
         }
     }
@@ -755,6 +758,9 @@ source_accessed_at        = "2026-05-18"
             project_id: None,
             workspace_id: None,
             api_key_id: None,
+            uuid: None,
+            parent_uuid: None,
+            git_branch: None,
             raw: None,
         }
     }

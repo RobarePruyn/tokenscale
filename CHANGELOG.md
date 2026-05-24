@@ -6,6 +6,106 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.16 — 2026-05-24
+
+**Granular Attribution Phase 1 — ingest layer.** Companion to v0.1.15, separated by risk class per the Phase 1B sign-off. v0.1.15 shipped query-layer + presentation changes (sessions tab, cwd resolution, daily-handler fix); v0.1.16 ships the ingest-layer plumbing for future phases.
+
+**No new dashboard features.** Parser now captures `gitBranch`, `uuid`, and `parentUuid` from Claude Code JSONL into the `events` table. A partial UNIQUE index on `(source, uuid) WHERE uuid IS NOT NULL` is the actual defense against the same-message-different-requestId duplicate case Phase 0 flagged as the load-bearing correctness concern. Historical events stay NULL — see "Forward-only" below.
+
+### Schema (`migrations/20260523000001_parser_captures.sql`)
+
+```sql
+ALTER TABLE events ADD COLUMN git_branch  TEXT;
+ALTER TABLE events ADD COLUMN uuid        TEXT;
+ALTER TABLE events ADD COLUMN parent_uuid TEXT;
+
+CREATE UNIQUE INDEX events_source_uuid_unique
+    ON events (source, uuid)
+    WHERE uuid IS NOT NULL;
+```
+
+Forward-only, additive only. Matches the existing partial-WHERE-index idiom from `20260428000001_initial.sql`. `(source, uuid)` not `(uuid)` alone — see `docs/roadmap-1b-ii-parser-captures.md` § 1 for the rationale (matches the existing `(source, request_id)` convention; safer once Phase 1.5 introduces additional ingest sources).
+
+### Forward-only
+
+The three new columns are **NULL for every event ingested before v0.1.16**. No re-parse step runs at upgrade — this is deliberate, not a missing backfill. Run `tokenscale scan --rebuild` if you want historical events backfilled (user-elective, not upgrade-time default). The partial UNIQUE index excludes NULL from uniqueness, so historical NULLs do not conflict with each other or with future captures.
+
+Stated in three places (this CHANGELOG, the migration file header, and `docs/roadmap-1b-ii-parser-captures.md` § 5) so a future maintainer doesn't mistake NULL-historical-uuid for a missing backfill.
+
+### Duplicate detection — skip-with-warning
+
+Per Phase 1B sign-off § D2: storage + UNIQUE + skip-with-warning over fail-line-outright.
+
+- **Pre-check in `tokenscale-store::insert_events`** (I1.5 Option A, see scoping doc): for each event with a non-NULL `uuid`, query the existing row's `request_id`. Distinguishes:
+  - **Same uuid + same request_id** = "I rescanned an unchanged file." Normal, silent. Falls through to `INSERT OR IGNORE`, counts via the existing `skipped_duplicate` channel.
+  - **Same uuid, DIFFERENT request_id** = "CC behavior change." Exceptional, loud. Skip + add the event's index to `summary.uuid_duplicate_indices` so the caller emits a per-event `WARN` log with the uuid, source, JSONL path, and line number.
+- **SQL `UNIQUE` constraint stays as backstop** for races (two parallel scans inserting the same uuid simultaneously).
+- **`ScanSummary.uuid_duplicates_skipped: usize`** is a new field, distinct from `events_duplicates` (the existing noisy rescan count). Steady-state value is `0` per Phase 0's empirical finding (27,388/27,388 lines, zero duplicates). Non-zero is the loud signal.
+
+The user-facing `tokenscale scan` summary line gains a conditional clause:
+
+```
+Scan complete: 29 files seen, 3 parsed, 26 unchanged. 216 new events, 12911 duplicates skipped. 16704 non-assistant lines, 0 malformed.
+```
+
+becomes, when uuid duplicates are non-zero:
+
+```
+Scan complete: 29 files seen, 3 parsed, 26 unchanged. 216 new events, 12911 duplicates skipped (including 3 uuid duplicates — see logs). 16704 non-assistant lines, 0 malformed.
+```
+
+Zero uuid duplicates means the line reads exactly as before. **The signal is loud only when it fires.**
+
+### Parser
+
+`crates/tokenscale-ingest-cc::parser`'s `AssistantPayload` gains three new `#[serde(default, rename = "…")] Option<String>` fields. Missing fields → row emits with that field as NULL, parse succeeds, debug log surfaces missing uuids for schema-drift detection.
+
+The JSONL schema for these fields is not documented upstream; the assumed shape is reverse-engineered from observed lines and consistent across all 27,388 lines in the maintainer's 48-file sample. See scoping doc § 2.
+
+### Tests
+
+13 new tests across the workspace:
+
+- **5 parser tests** (`tokenscale-ingest-cc::parser::tests`): all three fields captured; each individually missing → NULL with others intact; missing all three → all NULL (pre-v0.1.16 JSONL shape regression).
+- **6 ingest tests** (`tokenscale-store::tests`):
+  - `duplicate_uuid_different_request_id_is_skipped_with_warning` — the load-bearing case; pre-check catches it, counts in `uuid_duplicate_indices`, doesn't increment `skipped_duplicate`.
+  - `duplicate_uuid_same_request_id_is_a_silent_rescan_not_a_uuid_collision` — the smoke-test-surfaced regression; pre-check distinguishes rescan from CC behavior change.
+  - `two_events_with_null_uuid_both_land` — partial UNIQUE index excludes NULL.
+  - `unique_violation_does_not_abort_ingest_run` — middle-of-batch collision doesn't propagate as Err.
+  - `same_uuid_different_source_both_land` (**Addition 3** per sign-off) — pins the `(source, uuid)` choice against a future refactor that might drop `source` from the key.
+  - `null_uuid_event_round_trips_through_queries` — pre-v0.1.16 events query/aggregate cleanly post-migration.
+- **2 existing test fixtures** (`InsertSummary` struct literals in `tokenscale-store::tests`) updated for the new `uuid_duplicate_indices` field.
+
+`202` workspace tests green (was `189` pre-v0.1.16; +13).
+
+### Smoke-test results on maintainer's real DB
+
+- Migration `20260523000001` applied cleanly on top of v0.1.15-shape DB
+- 22,769 total events: 22,553 historical (NULL uuid) + 216 new (all three captures populated)
+- **0 uuid duplicates** detected in the entire 216-event new-ingest batch (Phase 0's finding holds in production)
+- **0 duplicate uuids in the non-NULL subset** (UNIQUE partial index working)
+- Scan summary's conditional uuid-duplicate clause correctly omits when count is zero
+
+### Build-pass artifacts
+
+- **`SELECT *` grep over the workspace**: 0 hits across `crates/`, `migrations/`, `.github/scripts/`. The "v0.1.15 binary cleanly ignores v0.1.16 columns" downgrade story is structurally guaranteed, not just empirically.
+- **I1.5 path chosen**: Option A (`insert_events` returns `uuid_duplicate_indices: Vec<usize>`; scan caller owns the per-event provenance map and emits the final warning). Diff is smaller than Option B (no leak of ingest-only fields into the core `Event` struct); concerns stay where they belong (store owns dedup, scan owns file context).
+- **Detector check**: `grep -rn "events\." .github/scripts/` returns 0 hits. The drift detector reads `pricing.toml` + the snapshot, never touches `events`. No detector changes required.
+
+### Risk-class note
+
+Bundling these schema changes with v0.1.15's user-visible work would have concentrated migration risk with cosmetic risk. The v0.1.13 lesson (the manual workflow_dispatch firing surfaced two real bugs from a single tag concentrating multiple schema-touching changes) argued for separation. v0.1.15 stayed "no migration / trivial downgrade"; v0.1.16 isolates the schema change with its own soak time. Both tags read as one coherent Phase 1 narrative across CHANGELOG entries.
+
+### What this enables
+
+The captures + UNIQUE don't surface anywhere in v0.1.16. They enable:
+
+- **Phase 1.5** — tool-use / tool-result / file-history-snapshot ingest expansion (commit attribution Tier 1/2 prerequisites; `parentUuid` lets tool-call linkage reconstruct edit chains)
+- **Phase 2+** — `git_branch` per-session reporting once a UI surface exists
+- **Audit value** — if Claude Code ever starts producing same-uuid-different-requestId duplicates, the warning surfaces it at ingest time rather than letting totals silently inflate
+
+---
+
 ## v0.1.15 — 2026-05-22
 
 **Granular Attribution Phase 1 — user-visible layer.** Per-session reporting and cwd → git toplevel resolution for the project view. Companion release v0.1.16 follows with the ingest-layer changes (parser captures + UNIQUE constraint on uuid); the split is by risk class, not by incompleteness — see "Why two releases" below.

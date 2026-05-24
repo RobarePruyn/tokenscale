@@ -528,6 +528,9 @@ mod tests {
             project_id: Some("/p".to_owned()),
             workspace_id: None,
             api_key_id: None,
+            uuid: None,
+            parent_uuid: None,
+            git_branch: None,
             raw: None,
         }
     }
@@ -647,6 +650,9 @@ mod tests {
             project_id: Some(project.to_owned()),
             workspace_id: None,
             api_key_id: None,
+            uuid: None,
+            parent_uuid: None,
+            git_branch: None,
             raw: None,
         };
         insert_events(
@@ -725,6 +731,9 @@ mod tests {
             project_id: Some("/p".to_owned()),
             workspace_id: None,
             api_key_id: None,
+            uuid: None,
+            parent_uuid: None,
+            git_branch: None,
             raw: None,
         };
         // 2026-04-20 is a Monday, 21 = Tue, 22 = Wed — all same ISO week.
@@ -774,6 +783,9 @@ mod tests {
             project_id: Some("/p".to_owned()),
             workspace_id: None,
             api_key_id: None,
+            uuid: None,
+            parent_uuid: None,
+            git_branch: None,
             raw: None,
         };
         insert_events(
@@ -824,6 +836,9 @@ mod tests {
             project_id: Some(project.to_owned()),
             workspace_id: None,
             api_key_id: None,
+            uuid: None,
+            parent_uuid: None,
+            git_branch: None,
             raw: None,
         };
         insert_events(

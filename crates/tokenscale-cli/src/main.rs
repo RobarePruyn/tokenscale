@@ -550,13 +550,26 @@ async fn command_scan(config_path: &std::path::Path, mode: ScanMode) -> Result<(
             .await
             .context("running Claude Code scan")?;
 
+    // v0.1.16: conditional "(including N uuid duplicates — see logs)"
+    // clause appears only when the count is non-zero. Steady-state
+    // value is zero per Phase 0; a non-zero number is the loud signal
+    // that Claude Code's behavior may have changed.
+    let uuid_dup_clause = if summary.uuid_duplicates_skipped > 0 {
+        format!(
+            " (including {} uuid duplicates — see logs)",
+            summary.uuid_duplicates_skipped
+        )
+    } else {
+        String::new()
+    };
     println!(
-        "Scan complete: {} files seen, {} parsed, {} unchanged. {} new events, {} duplicates skipped. {} non-assistant lines, {} malformed.",
+        "Scan complete: {} files seen, {} parsed, {} unchanged. {} new events, {} duplicates skipped{}. {} non-assistant lines, {} malformed.",
         summary.files_seen,
         summary.files_parsed,
         summary.files_unchanged,
         summary.events_inserted,
         summary.events_duplicates,
+        uuid_dup_clause,
         summary.lines_skipped,
         summary.lines_malformed
     );
