@@ -17,6 +17,10 @@ sqlx.workspace            = true
 chrono.workspace          = true
 thiserror.workspace       = true
 serde.workspace           = true
+# v0.1.17 / Phase 1.5: query primitives extract per-tool fields
+# (Bash `command`, Edit `file_path`, …) from the tool_uses.input_json
+# column on demand. Caller-side parsing keeps the schema simple.
+serde_json.workspace      = true
 tracing.workspace         = true
 tokio.workspace           = true
 # Used by billing::synthesize_external_id to dedup CSV rows that have

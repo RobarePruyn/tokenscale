@@ -28,6 +28,7 @@ mod event;
 pub mod factors;
 pub mod impact;
 pub mod pricing;
+pub mod tool_data;
 
 pub use billable::BillableMultipliers;
 pub use billing::{
@@ -43,6 +44,7 @@ pub use impact::{
     FactorsProvenance, ImpactInputs,
 };
 pub use pricing::{ModelPricing, PricingFile, ProviderPricing};
+pub use tool_data::{FileSnapshot, ToolResult, ToolUse};
 
 #[cfg(test)]
 mod tests {

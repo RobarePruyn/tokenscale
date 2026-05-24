@@ -11,11 +11,14 @@
 //! a byte offset so we read only the appended tail.
 
 use std::path::{Path, PathBuf};
-use tokenscale_store::{get_file_state, insert_events, upsert_file_state, Database};
+use tokenscale_store::{
+    count_tool_use_orphans, get_file_state, insert_events, insert_tool_data, upsert_file_state,
+    Database,
+};
 use tracing::{debug, info, warn};
 
 use crate::error::Result;
-use crate::parser::{parse_line, ParseOutcome};
+use crate::parser::{parse_line, ParsedRecords, ParseOutcome};
 use crate::walker::{walk_claude_code_roots, JsonlFile};
 
 const SOURCE_KIND: &str = "claude_code";
@@ -42,6 +45,24 @@ pub struct ScanSummary {
     /// separately from `events_duplicates` because bundling the
     /// counts hides the loud signal in the noisy one.
     pub uuid_duplicates_skipped: usize,
+    /// v0.1.17 / Phase 1.5: rows that landed in the new auxiliary
+    /// tables. Steady-state values are ~0.6× / ~0.6× / ~0.1× the
+    /// assistant-event count per Phase 1.5 §1's empirical sample.
+    /// Re-scan of an unchanged file lands all three at zero (the
+    /// (source, *_id) UNIQUE indexes dedup via INSERT OR IGNORE,
+    /// same posture as events_duplicates).
+    pub tool_uses_inserted: usize,
+    pub tool_results_inserted: usize,
+    pub file_snapshots_inserted: usize,
+    /// v0.1.17 / Phase 1.5 Addition 1: count of `tool_use` rows in
+    /// the DB (post-ingest, across the source) whose `tool_use_id`
+    /// has no matching `tool_result`. Phase 0 baseline on maintainer
+    /// data: 5 (interrupted sessions, expected). Not a release gate;
+    /// not a steady-state warning. **First sign of upstream schema
+    /// drift surfaces here cheaply** — if a future scan reports 50
+    /// orphans, something changed about how CC writes JSONL or how
+    /// Tokenscale ingests it.
+    pub tool_use_orphans: usize,
     pub lines_skipped: usize,
     pub lines_malformed: usize,
 }
@@ -104,11 +125,20 @@ async fn run_scan_over_files(
                 summary.events_inserted += file_summary.events_inserted;
                 summary.events_duplicates += file_summary.events_duplicates;
                 summary.uuid_duplicates_skipped += file_summary.uuid_duplicates_skipped;
+                summary.tool_uses_inserted += file_summary.tool_uses_inserted;
+                summary.tool_results_inserted += file_summary.tool_results_inserted;
+                summary.file_snapshots_inserted += file_summary.file_snapshots_inserted;
                 summary.lines_skipped += file_summary.lines_skipped;
                 summary.lines_malformed += file_summary.lines_malformed;
             }
         }
     }
+
+    // v0.1.17 / Phase 1.5 Addition 1: orphan-count baseline. Run
+    // once at the end of the scan rather than per-file (cheap;
+    // single COUNT(*) joined against the (source, tool_use_id)
+    // indexes). Surfaces upstream schema drift cheaply.
+    summary.tool_use_orphans = count_tool_use_orphans(database, SOURCE_KIND).await?;
 
     info!(?summary, "scan complete");
     Ok(summary)
@@ -125,6 +155,9 @@ struct FileSummary {
     events_inserted: usize,
     events_duplicates: usize,
     uuid_duplicates_skipped: usize,
+    tool_uses_inserted: usize,
+    tool_results_inserted: usize,
+    file_snapshots_inserted: usize,
     lines_skipped: usize,
     lines_malformed: usize,
 }
@@ -161,12 +194,32 @@ async fn scan_one_file(
     let mut event_line_numbers: Vec<usize> = Vec::new();
     let mut file_summary = FileSummary::default();
 
+    // v0.1.17 / Phase 1.5: collect tool-use auxiliary records alongside
+    // the events. Each parsed line can produce an Event AND/OR
+    // tool_uses / tool_results / file_snapshots (per the ParsedRecords
+    // fan-out). Insert paths land separately but inside the same
+    // per-file transaction surface.
+    let mut tool_uses_to_insert: Vec<tokenscale_core::ToolUse> = Vec::new();
+    let mut tool_results_to_insert: Vec<tokenscale_core::ToolResult> = Vec::new();
+    let mut file_snapshots_to_insert: Vec<tokenscale_core::FileSnapshot> = Vec::new();
+
     for (line_index, raw_line) in file_contents.lines().enumerate() {
         match parse_line(raw_line, capture_raw_payloads) {
             ParseOutcome::Skip => file_summary.lines_skipped += 1,
-            ParseOutcome::Event(boxed_event) => {
-                events_to_insert.push(*boxed_event);
-                event_line_numbers.push(line_index + 1);
+            ParseOutcome::Records(records) => {
+                let ParsedRecords {
+                    event,
+                    tool_uses,
+                    tool_results,
+                    file_snapshots,
+                } = *records;
+                if let Some(boxed_event) = event {
+                    events_to_insert.push(*boxed_event);
+                    event_line_numbers.push(line_index + 1);
+                }
+                tool_uses_to_insert.extend(tool_uses);
+                tool_results_to_insert.extend(tool_results);
+                file_snapshots_to_insert.extend(file_snapshots);
             }
             ParseOutcome::Malformed { reason } => {
                 file_summary.lines_malformed += 1;
@@ -184,6 +237,22 @@ async fn scan_one_file(
     file_summary.events_inserted = insert_summary.inserted;
     file_summary.events_duplicates = insert_summary.skipped_duplicate;
     file_summary.uuid_duplicates_skipped = insert_summary.uuid_duplicate_indices.len();
+
+    // v0.1.17 / Phase 1.5: insert the auxiliary tool-data rows. Runs
+    // in its own transaction; INSERT OR IGNORE on the (source, *_id)
+    // UNIQUE indexes dedups rescans automatically (same posture as
+    // events). The three Vec<…> shape mirrors the parallel fan-out
+    // from ParsedRecords.
+    let tool_summary = insert_tool_data(
+        database,
+        &tool_uses_to_insert,
+        &tool_results_to_insert,
+        &file_snapshots_to_insert,
+    )
+    .await?;
+    file_summary.tool_uses_inserted = tool_summary.tool_uses_inserted;
+    file_summary.tool_results_inserted = tool_summary.tool_results_inserted;
+    file_summary.file_snapshots_inserted = tool_summary.file_snapshots_inserted;
 
     // v0.1.16: emit per-event WARN logs with the documented context.
     // Steady-state value is zero (Phase 0 found no current duplicates);

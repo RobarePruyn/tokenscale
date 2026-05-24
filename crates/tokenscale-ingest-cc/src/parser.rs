@@ -21,20 +21,55 @@
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Deserialize;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tokenscale_core::Event;
+use tokenscale_core::{Event, FileSnapshot, ToolResult, ToolUse};
 use tracing::debug;
 
 const SOURCE_KIND: &str = "claude_code";
 
+/// Records produced from a single JSONL line. v0.1.17 / Phase 1.5:
+/// the parser fans out — one line can produce an Event (assistant
+/// lines), plus auxiliary tool-use / tool-result / file-snapshot
+/// records depending on the line type. Per the D2 sign-off
+/// (one-to-many at parse).
+#[derive(Debug, Default)]
+pub struct ParsedRecords {
+    /// `Some` only for assistant lines. User lines and
+    /// file-history-snapshot lines never produce an Event.
+    pub event: Option<Box<Event>>,
+    /// Populated when an assistant message's content array contains
+    /// one or more `tool_use` blocks. p99 = 1 per Phase 1.5 §1, max
+    /// observed = 3.
+    pub tool_uses: Vec<ToolUse>,
+    /// Populated when a user message's content array contains one or
+    /// more `tool_result` blocks. Linked to `tool_uses` by
+    /// `tool_use_id` at query time (D3 sign-off).
+    pub tool_results: Vec<ToolResult>,
+    /// Populated for `file-history-snapshot` lines. Each snapshot's
+    /// `trackedFileBackups` dict produces zero or many rows.
+    pub file_snapshots: Vec<FileSnapshot>,
+}
+
+impl ParsedRecords {
+    fn is_empty(&self) -> bool {
+        self.event.is_none()
+            && self.tool_uses.is_empty()
+            && self.tool_results.is_empty()
+            && self.file_snapshots.is_empty()
+    }
+}
+
 /// What happened to one JSONL line.
 #[derive(Debug)]
 pub enum ParseOutcome {
-    /// Not an `assistant` line, or an `assistant` line with no usage to
-    /// record. Counted but otherwise unremarkable.
+    /// Nothing of interest in this line (e.g., a `queue-operation`
+    /// record, or a user message with no tool_result blocks).
     Skip,
-    /// Successfully parsed assistant turn.
-    Event(Box<Event>),
+    /// Successfully parsed at least one record. The records may
+    /// include an Event (assistant lines), tool_uses, tool_results,
+    /// and/or file_snapshots — whichever applied to this line type.
+    Records(Box<ParsedRecords>),
     /// JSON parse failed or required fields absent. Logged and counted; the
     /// scan continues.
     Malformed { reason: String },
@@ -48,8 +83,17 @@ pub enum ParseOutcome {
 enum JsonlLine {
     #[serde(rename = "assistant")]
     Assistant(Box<AssistantPayload>),
-    /// Any other line type — `user`, `queue-operation`, `attachment`, etc.
-    /// We don't need the data; the unit catches all non-assistant variants.
+    /// User lines carry tool_result blocks (v0.1.17 / Phase 1.5).
+    /// Previously dropped via the `Other` catch-all.
+    #[serde(rename = "user")]
+    User(Box<UserPayload>),
+    /// File-history-snapshot lines carry file-edit tracking
+    /// (v0.1.17 / Phase 1.5). Previously dropped.
+    #[serde(rename = "file-history-snapshot")]
+    FileHistorySnapshot(Box<FileHistorySnapshotPayload>),
+    /// Any other line type — `queue-operation`, `attachment`,
+    /// `last-prompt`, `ai-title`, `pr-link`, `system`. Not gated by
+    /// Phase 1.5; keep dropping.
     #[serde(other)]
     Other,
 }
@@ -102,6 +146,156 @@ struct AssistantMessage {
     /// non-error / non-success edge cases.
     #[serde(default)]
     usage: AssistantUsage,
+    /// v0.1.17 / Phase 1.5: the content array can contain `text`,
+    /// `tool_use`, and other block types. We only extract `tool_use`;
+    /// `text` blocks are dropped (they're the assistant's prose
+    /// response, not gating any phase).
+    #[serde(default)]
+    content: Vec<MessageBlock>,
+}
+
+/// User-message payload (v0.1.17). User lines carry tool_result blocks
+/// inside their content array; we extract those and emit per-result
+/// ToolResult records. User lines without tool_result blocks produce
+/// `ParseOutcome::Skip`.
+///
+/// `message` defaults to empty so simplified or pre-Phase-1.5
+/// user-line shapes (`{"type":"user","timestamp":"…","content":"hi"}`)
+/// degrade to Skip rather than Malformed — schema-drift tolerance,
+/// same posture as the assistant `AssistantUsage::default()`.
+#[derive(Debug, Deserialize)]
+struct UserPayload {
+    timestamp: DateTime<Utc>,
+    #[serde(rename = "sessionId", default)]
+    session_id: Option<String>,
+    /// User-message uuid — joins back to the user's parent_event_uuid
+    /// on the tool_result rows. Captured but Event is not emitted
+    /// for user lines (cost / impact aggregation is per-assistant-
+    /// turn).
+    #[serde(default)]
+    uuid: Option<String>,
+    #[serde(default)]
+    message: UserMessage,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct UserMessage {
+    /// Real CC data has user message `content` in two shapes:
+    /// (1) a plain string for text-only user input (e.g.,
+    /// `<task-notification>` blocks the user pastes), and (2) an
+    /// array of typed blocks when carrying tool_result responses.
+    /// Untagged enum handles both; Vec is the only shape that
+    /// produces tool_result rows.
+    ///
+    /// Smoke-test-surfaced bug fix during v0.1.17 build: my initial
+    /// `Vec<MessageBlock>` was too strict and turned 42 real user
+    /// lines into ParseOutcome::Malformed against the maintainer's
+    /// real DB (was 0 malformed in v0.1.16). The dual-shape tolerance
+    /// brings the count back to 0.
+    #[serde(default)]
+    content: UserContent,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum UserContent {
+    // String body matches CC's "text-only user input" shape; we read
+    // it off the wire to satisfy serde's untagged dispatch but never
+    // use the value (no tool_result extractable from a string).
+    Text(#[allow(dead_code)] String),
+    Blocks(Vec<MessageBlock>),
+}
+
+impl Default for UserContent {
+    fn default() -> Self {
+        UserContent::Blocks(Vec::new())
+    }
+}
+
+/// File-history-snapshot payload (v0.1.17). One row per file in the
+/// snapshot's `trackedFileBackups` dict — the dict can be empty (most
+/// common — many snapshots track nothing), one file, or many.
+///
+/// All fields default to allow schema-drift tolerance: pre-Phase-1.5
+/// fixture shapes (no `messageId`, no nested `snapshot`) parse
+/// successfully but degrade to `ParseOutcome::Skip` because there's
+/// nothing to ingest. Real CC data always carries both, per Phase
+/// 1.5 §1's empirical sample.
+#[derive(Debug, Deserialize)]
+struct FileHistorySnapshotPayload {
+    /// Outer messageId — joins to events.uuid of the assistant turn
+    /// that triggered the snapshot. Missing → Skip (can't link).
+    #[serde(rename = "messageId", default)]
+    message_id: Option<String>,
+    /// Inner snapshot object carrying the trackedFileBackups dict.
+    /// Missing → Skip (nothing to ingest).
+    #[serde(default)]
+    snapshot: Option<SnapshotInner>,
+    #[serde(rename = "isSnapshotUpdate", default)]
+    is_snapshot_update: bool,
+    /// Session + cwd context not present on snapshot lines in
+    /// observed data; we'll fall back to None and let queries that
+    /// need session context JOIN through events.uuid = message_id.
+    #[serde(rename = "sessionId", default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotInner {
+    // The snapshot's own timestamp is informational; per-file
+    // `backup_time` is what we land per file_snapshot row, so this
+    // field is read off the wire but not stored.
+    #[allow(dead_code)]
+    timestamp: DateTime<Utc>,
+    #[serde(rename = "trackedFileBackups", default)]
+    tracked_file_backups: std::collections::HashMap<String, TrackedFileBackup>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrackedFileBackup {
+    #[serde(rename = "backupFileName", default)]
+    backup_file_name: Option<String>,
+    version: i64,
+    #[serde(rename = "backupTime")]
+    backup_time: DateTime<Utc>,
+}
+
+/// Block variants inside `message.content` arrays. Assistant messages
+/// carry `tool_use` (and `text`); user messages carry `tool_result`
+/// (and `text`). The `Other` catch-all covers `text` and any future
+/// block type — we only care about the two we extract.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum MessageBlock {
+    #[serde(rename = "tool_use")]
+    ToolUse(ToolUseBlock),
+    #[serde(rename = "tool_result")]
+    ToolResult(ToolResultBlock),
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+struct ToolUseBlock {
+    id: String,
+    name: String,
+    /// Tool-specific input object. Stored verbatim as JSON text on
+    /// the ToolUse record — Phase 2/3 query primitives extract
+    /// per-tool fields on demand.
+    input: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct ToolResultBlock {
+    tool_use_id: String,
+    /// Content can be a plain string (99.3% of observed records) OR
+    /// a structured array (0.7% — typically tool-reference metadata
+    /// like `{"type":"tool_reference","tool_name":"…"}`). We
+    /// normalize both shapes to a String at parse time so the DB
+    /// column stays simple TEXT.
+    content: Value,
 }
 
 /// Mirrors the Anthropic API `usage` object as Claude Code persists it.
@@ -153,11 +347,19 @@ pub fn parse_line(raw_line: &str, capture_raw: bool) -> ParseOutcome {
         }
     };
 
-    let assistant = match line {
-        JsonlLine::Assistant(payload) => payload,
-        JsonlLine::Other => return ParseOutcome::Skip,
-    };
+    match line {
+        JsonlLine::Assistant(payload) => parse_assistant(*payload, raw_line, capture_raw),
+        JsonlLine::User(payload) => parse_user(*payload),
+        JsonlLine::FileHistorySnapshot(payload) => parse_file_history_snapshot(*payload),
+        JsonlLine::Other => ParseOutcome::Skip,
+    }
+}
 
+fn parse_assistant(
+    assistant: AssistantPayload,
+    raw_line: &str,
+    capture_raw: bool,
+) -> ParseOutcome {
     let (cache_write_5m, cache_write_1h) = match assistant.message.usage.cache_creation {
         Some(breakdown) => (
             breakdown.ephemeral_5m_input_tokens,
@@ -173,11 +375,6 @@ pub fn parse_line(raw_line: &str, capture_raw: bool) -> ParseOutcome {
     };
 
     // v0.1.16: per-field debug-level log when the capture is missing.
-    // Phase 0 found uuid present in 27,388/27,388 lines, so a missing
-    // uuid is the load-bearing signal — log at debug so operators can
-    // `RUST_LOG=tokenscale_ingest_cc=debug` to spot CC schema drift.
-    // parent_uuid is legitimately None on first turns; git_branch is
-    // legitimately None for non-git cwds — both quieter at trace.
     if assistant.uuid.is_none() {
         debug!(
             request_id = ?assistant.request_id,
@@ -197,11 +394,11 @@ pub fn parse_line(raw_line: &str, capture_raw: bool) -> ParseOutcome {
         cache_write_1h_tokens: cache_write_1h,
         request_id: assistant.request_id,
         content_hash: None,
-        session_id: assistant.session_id,
-        project_id: assistant.cwd,
+        session_id: assistant.session_id.clone(),
+        project_id: assistant.cwd.clone(),
         workspace_id: None,
         api_key_id: None,
-        uuid: assistant.uuid,
+        uuid: assistant.uuid.clone(),
         parent_uuid: assistant.parent_uuid,
         git_branch: assistant.git_branch,
         raw: capture_raw.then(|| raw_line.to_owned()),
@@ -214,7 +411,122 @@ pub fn parse_line(raw_line: &str, capture_raw: bool) -> ParseOutcome {
         event.content_hash = Some(compute_content_hash(&event));
     }
 
-    ParseOutcome::Event(Box::new(event))
+    // v0.1.17 / Phase 1.5: extract tool_use blocks. The parent_event_uuid
+    // is the assistant event's uuid — if it's None (schema-drift case),
+    // the tool_uses still need SOME parent reference, so we fall back to
+    // the empty string. The orphan-detection query in scan.rs surfaces
+    // this case if it ever happens at scale.
+    let parent_event_uuid = assistant.uuid.clone().unwrap_or_default();
+    let mut tool_uses: Vec<ToolUse> = Vec::new();
+    for block in assistant.message.content {
+        if let MessageBlock::ToolUse(tu) = block {
+            // Serialize input verbatim as JSON text. serde_json never
+            // fails to serialize a Value it just deserialized.
+            let input_json = serde_json::to_string(&tu.input)
+                .unwrap_or_else(|_| String::from("{}"));
+            tool_uses.push(ToolUse {
+                tool_use_id: tu.id,
+                parent_event_uuid: parent_event_uuid.clone(),
+                source: SOURCE_KIND.to_owned(),
+                tool_name: tu.name,
+                input_json,
+                occurred_at: assistant.timestamp,
+                session_id: assistant.session_id.clone(),
+                project_id: assistant.cwd.clone(),
+            });
+        }
+        // text blocks and any future kind drop silently via Other.
+    }
+
+    ParseOutcome::Records(Box::new(ParsedRecords {
+        event: Some(Box::new(event)),
+        tool_uses,
+        tool_results: Vec::new(),
+        file_snapshots: Vec::new(),
+    }))
+}
+
+fn parse_user(user: UserPayload) -> ParseOutcome {
+    // User lines never produce an Event (cost / impact aggregation
+    // is per-assistant-turn). They only contribute tool_result rows.
+    let parent_event_uuid = user.uuid.unwrap_or_default();
+    let blocks = match user.message.content {
+        UserContent::Text(_) => {
+            // Text-only user input (typed prompt, pasted text, etc.).
+            // No tool_result here; nothing to ingest.
+            return ParseOutcome::Skip;
+        }
+        UserContent::Blocks(blocks) => blocks,
+    };
+    let mut tool_results: Vec<ToolResult> = Vec::new();
+    for block in blocks {
+        if let MessageBlock::ToolResult(tr) = block {
+            // Normalize content: string passes through; array gets
+            // JSON-encoded. Either shape preserves the original
+            // information in a single TEXT column.
+            let content = match tr.content {
+                Value::String(s) => s,
+                other => serde_json::to_string(&other).unwrap_or_default(),
+            };
+            tool_results.push(ToolResult {
+                tool_use_id: tr.tool_use_id,
+                parent_event_uuid: parent_event_uuid.clone(),
+                source: SOURCE_KIND.to_owned(),
+                content,
+                occurred_at: user.timestamp,
+                session_id: user.session_id.clone(),
+            });
+        }
+    }
+    if tool_results.is_empty() {
+        // User message with no tool_result blocks — text-only user
+        // prompt, ~6% of user lines per §1. Nothing to ingest.
+        return ParseOutcome::Skip;
+    }
+    let records = ParsedRecords {
+        event: None,
+        tool_uses: Vec::new(),
+        tool_results,
+        file_snapshots: Vec::new(),
+    };
+    debug_assert!(!records.is_empty());
+    ParseOutcome::Records(Box::new(records))
+}
+
+fn parse_file_history_snapshot(payload: FileHistorySnapshotPayload) -> ParseOutcome {
+    // Schema-drift tolerance: missing messageId or missing inner
+    // snapshot → can't ingest anything useful, return Skip cleanly.
+    // (Pre-Phase-1.5 fixtures had a different snapshot shape — this
+    // path lets them parse without raising Malformed.)
+    let (Some(message_id), Some(snapshot_inner)) = (payload.message_id, payload.snapshot) else {
+        return ParseOutcome::Skip;
+    };
+
+    let mut file_snapshots: Vec<FileSnapshot> = Vec::new();
+    for (file_path, backup) in snapshot_inner.tracked_file_backups {
+        file_snapshots.push(FileSnapshot {
+            snapshot_message_id: message_id.clone(),
+            source: SOURCE_KIND.to_owned(),
+            file_path,
+            backup_file_name: backup.backup_file_name,
+            version: backup.version,
+            backup_time: backup.backup_time,
+            is_snapshot_update: payload.is_snapshot_update,
+            session_id: payload.session_id.clone(),
+            project_id: payload.cwd.clone(),
+        });
+    }
+    if file_snapshots.is_empty() {
+        // Empty trackedFileBackups dict — most common case per §1.
+        // Nothing to ingest from this snapshot.
+        return ParseOutcome::Skip;
+    }
+    ParseOutcome::Records(Box::new(ParsedRecords {
+        event: None,
+        tool_uses: Vec::new(),
+        tool_results: Vec::new(),
+        file_snapshots,
+    }))
 }
 
 /// Deterministic SHA-256 over the fields that uniquely identify an event
@@ -256,12 +568,22 @@ mod tests {
 
     const ERROR_LINE_NO_REQUEST_ID: &str = r#"{"parentUuid":"x","isSidechain":false,"message":{"model":"claude-opus-4-7","id":"msg_err","type":"message","role":"assistant","content":[],"stop_reason":"error","usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}}},"type":"assistant","uuid":"y","timestamp":"2026-04-21T00:30:00.000Z","sessionId":"455218e7","cwd":"/tmp/proj","version":"2.1.120","userType":"external","entrypoint":"claude-vscode","gitBranch":"main","isApiErrorMessage":true,"error":"overloaded"}"#;
 
+    /// v0.1.17 helper: extract the Event from a ParseOutcome::Records,
+    /// panicking with a clear message otherwise. Centralizes the
+    /// post-fan-out unpacking the existing tests used to inline via
+    /// `let ParseOutcome::Event(event) = ...`.
+    fn take_event(outcome: ParseOutcome) -> Box<Event> {
+        match outcome {
+            ParseOutcome::Records(records) => records
+                .event
+                .expect("expected ParseOutcome::Records to carry an Event"),
+            other => panic!("expected ParseOutcome::Records, got {other:?}"),
+        }
+    }
+
     #[test]
     fn assistant_line_parses_with_full_token_breakdown() {
-        let outcome = parse_line(ASSISTANT_LINE, false);
-        let ParseOutcome::Event(event) = outcome else {
-            panic!("expected Event, got {outcome:?}");
-        };
+        let event = take_event(parse_line(ASSISTANT_LINE, false));
         assert_eq!(event.source, "claude_code");
         assert_eq!(event.model, "claude-opus-4-7");
         assert_eq!(event.input_tokens, 6);
@@ -278,9 +600,7 @@ mod tests {
 
     #[test]
     fn assistant_line_with_capture_raw_stores_payload() {
-        let ParseOutcome::Event(event) = parse_line(ASSISTANT_LINE, true) else {
-            panic!("expected Event");
-        };
+        let event = take_event(parse_line(ASSISTANT_LINE, true));
         assert_eq!(event.raw.as_deref(), Some(ASSISTANT_LINE));
     }
 
@@ -318,9 +638,7 @@ mod tests {
 
     #[test]
     fn error_line_without_request_id_gets_content_hash() {
-        let ParseOutcome::Event(event) = parse_line(ERROR_LINE_NO_REQUEST_ID, false) else {
-            panic!("expected Event");
-        };
+        let event = take_event(parse_line(ERROR_LINE_NO_REQUEST_ID, false));
         assert!(event.request_id.is_none());
         assert!(event.content_hash.is_some());
         // SHA-256 hex output is 64 chars
@@ -329,12 +647,8 @@ mod tests {
 
     #[test]
     fn content_hash_is_deterministic() {
-        let ParseOutcome::Event(first) = parse_line(ERROR_LINE_NO_REQUEST_ID, false) else {
-            panic!()
-        };
-        let ParseOutcome::Event(second) = parse_line(ERROR_LINE_NO_REQUEST_ID, false) else {
-            panic!()
-        };
+        let first = take_event(parse_line(ERROR_LINE_NO_REQUEST_ID, false));
+        let second = take_event(parse_line(ERROR_LINE_NO_REQUEST_ID, false));
         assert_eq!(first.content_hash, second.content_hash);
     }
 
@@ -347,7 +661,7 @@ mod tests {
             r#""type":"assistant","surprise":"new field appearing in v2.99""#,
         );
         let outcome = parse_line(&drifted, false);
-        assert!(matches!(outcome, ParseOutcome::Event(_)));
+        assert!(matches!(outcome, ParseOutcome::Records(_)));
     }
 
     // v0.1.16 — three parser tests for the new captures.
@@ -356,9 +670,7 @@ mod tests {
     fn assistant_line_captures_uuid_parent_uuid_git_branch() {
         // All three fields present in the test fixture (per the
         // ASSISTANT_LINE constant) → Event carries them through.
-        let ParseOutcome::Event(event) = parse_line(ASSISTANT_LINE, false) else {
-            panic!("expected Event");
-        };
+        let event = take_event(parse_line(ASSISTANT_LINE, false));
         assert_eq!(event.uuid.as_deref(), Some("db6baab1"));
         assert_eq!(event.parent_uuid.as_deref(), Some("9a27c40f"));
         assert_eq!(event.git_branch.as_deref(), Some("main"));
@@ -370,9 +682,7 @@ mod tests {
         // else. Parser must emit the row with uuid=None and the other
         // captures populated. Tolerance contract from § 2.
         let stripped = ASSISTANT_LINE.replace(r#","uuid":"db6baab1""#, "");
-        let ParseOutcome::Event(event) = parse_line(&stripped, false) else {
-            panic!("expected Event");
-        };
+        let event = take_event(parse_line(&stripped, false));
         assert!(event.uuid.is_none(), "missing uuid must yield None");
         // Other captures unaffected:
         assert_eq!(event.parent_uuid.as_deref(), Some("9a27c40f"));
@@ -385,9 +695,7 @@ mod tests {
     #[test]
     fn assistant_line_missing_parent_uuid_yields_none_other_fields_intact() {
         let stripped = ASSISTANT_LINE.replace(r#""parentUuid":"9a27c40f","#, "");
-        let ParseOutcome::Event(event) = parse_line(&stripped, false) else {
-            panic!("expected Event");
-        };
+        let event = take_event(parse_line(&stripped, false));
         assert!(event.parent_uuid.is_none());
         assert_eq!(event.uuid.as_deref(), Some("db6baab1"));
         assert_eq!(event.git_branch.as_deref(), Some("main"));
@@ -396,9 +704,7 @@ mod tests {
     #[test]
     fn assistant_line_missing_git_branch_yields_none_other_fields_intact() {
         let stripped = ASSISTANT_LINE.replace(r#","gitBranch":"main""#, "");
-        let ParseOutcome::Event(event) = parse_line(&stripped, false) else {
-            panic!("expected Event");
-        };
+        let event = take_event(parse_line(&stripped, false));
         assert!(event.git_branch.is_none());
         assert_eq!(event.uuid.as_deref(), Some("db6baab1"));
         assert_eq!(event.parent_uuid.as_deref(), Some("9a27c40f"));
@@ -414,9 +720,7 @@ mod tests {
             .replace(r#","uuid":"db6baab1""#, "")
             .replace(r#""parentUuid":"9a27c40f","#, "")
             .replace(r#","gitBranch":"main""#, "");
-        let ParseOutcome::Event(event) = parse_line(&stripped, false) else {
-            panic!("expected Event");
-        };
+        let event = take_event(parse_line(&stripped, false));
         assert!(event.uuid.is_none());
         assert!(event.parent_uuid.is_none());
         assert!(event.git_branch.is_none());
@@ -431,9 +735,7 @@ mod tests {
         // `cache_creation` sub-object absent. We attribute to 5m by
         // convention so totals still reconcile.
         let old_format = r#"{"type":"assistant","timestamp":"2026-04-21T00:29:54.704Z","sessionId":"s","cwd":"/p","message":{"model":"claude-opus-4-7","id":"m","type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":4}},"requestId":"req_x"}"#;
-        let ParseOutcome::Event(event) = parse_line(old_format, false) else {
-            panic!()
-        };
+        let event = take_event(parse_line(old_format, false));
         assert_eq!(event.cache_write_5m_tokens, 4);
         assert_eq!(event.cache_write_1h_tokens, 0);
     }

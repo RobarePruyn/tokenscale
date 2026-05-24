@@ -6,6 +6,85 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.17 — 2026-05-24
+
+**Phase 1.5 — tool-use ingest expansion.** No new dashboard features; this is plumbing for Phase 2 (Tier 1 commit attribution: which commits did CC author?) and Phase 3 (Tier 2 edit-survival: how much CC-authored code is still in the repo?).
+
+Three new tables — `tool_uses`, `tool_results`, `file_snapshots` — capture data that v0.1.16's parser dropped: every `tool_use` block inside an assistant message's `content` array (Bash, Edit, Read, Write, TodoWrite, etc.), every `tool_result` inside a user message, and the `trackedFileBackups` dict from each `file-history-snapshot` line. **Forward-only**: historical events have no rows in these tables; run `tokenscale scan --rebuild` for a backfill.
+
+### Schema (`migrations/20260524000001_tool_use_ingest.sql`)
+
+Three CREATE TABLE statements + eight indexes, all additive. Same `(source, *_id) WHERE * IS NOT NULL` partial-UNIQUE idiom v0.1.16 introduced — re-scans dedup via `INSERT OR IGNORE`. `(source, uuid)` keying explicitly (not `(uuid)` alone) keeps the door open for Phase 1.5+ ingest expansions adding new sources.
+
+### Parser changes
+
+`ParseOutcome::Event(Box<Event>)` becomes `ParseOutcome::Records(Box<ParsedRecords>)` (D2 sign-off: one-to-many at parse). `ParsedRecords` carries the optional `Event` plus `Vec<ToolUse>`, `Vec<ToolResult>`, `Vec<FileSnapshot>` — any combination may be empty depending on line type. User lines and `file-history-snapshot` lines are now parsed (were dropped via the `JsonlLine::Other` catch-all in v0.1.16).
+
+Linkage between `tool_use` and `tool_result` resolves at **query time** (D3 sign-off) via SQL JOIN on `(source, tool_use_id)`. Phase 0's empirical 100% linkage rate (every observed `tool_result` references a known `tool_use`) makes the JOIN reliable; parser stays pure.
+
+### Scan summary
+
+`ScanSummary` gains four new fields:
+
+| Field | Meaning |
+|---|---|
+| `tool_uses_inserted` | New `tool_uses` rows landed this scan. Re-scan of unchanged file = 0 (INSERT OR IGNORE). |
+| `tool_results_inserted` | Same shape for `tool_results`. |
+| `file_snapshots_inserted` | Same shape for `file_snapshots`. **NOT per file-history-snapshot RECORD** — per `(snapshot_message_id, file_path)` row. CC's `trackedFileBackups` is an open set that re-emits on every snapshot; a session with N snapshots tracking K files lands N×K rows. |
+| `tool_use_orphans` | **Addition 1 from sign-off.** Count of `tool_use` rows in the source whose `tool_use_id` has no matching `tool_result` (interrupted sessions). Phase 0 baseline: 5 on maintainer data. Not a release gate; non-zero growth is the loud signal that upstream CC behavior changed. |
+
+The CLI `tokenscale scan` summary line is unchanged in steady-state; the new counts surface in tracing logs (`?summary` field of the "scan complete" INFO line).
+
+### Smoke-test-surfaced fixes during build (§7 release gate)
+
+Two bugs caught in real-DB smoke before tag — exactly the pattern §7 warned about. Fixed in this commit; pinned by tests.
+
+1. **`UserMessage.content` shape mismatch.** Real CC user lines carry `content` either as a string (text-only input like `<task-notification>` blocks) OR as an array of typed blocks. My initial `Vec<MessageBlock>` was too strict and rejected 42 real user lines as `ParseOutcome::Malformed` against the maintainer's real DB (was 0 malformed in v0.1.16). Fixed with an `UserContent` untagged enum (`Text(String)` | `Blocks(Vec<MessageBlock>)`) — text-only lines degrade to Skip cleanly; tool-result lines parse as before. Real-DB smoke now reports `lines_malformed: 0` again.
+2. **`FileHistorySnapshotPayload` schema-drift tolerance.** The pre-existing `realistic_session.jsonl` test fixture used a different snapshot shape than real CC data (top-level `timestamp` + `files` array vs. the real nested `snapshot.trackedFileBackups`). My initial implementation produced `Malformed` on the legacy shape. Made `messageId` and `snapshot` both `Option`-defaulted; missing-essential-field → `Skip` cleanly. Same posture as v0.1.16's `AssistantUsage::default()`.
+
+The §7 release-gate prediction held: every schema-touching release in this arc has surfaced a real bug during smoke that no test caught (v0.1.13's `daily_handler` conflation, v0.1.14's `load_pricing_toml` + missing label, v0.1.15's `MIN(project_id)`, v0.1.16's pre-check inversion, v0.1.17's `UserContent` rigidity). **The bug-find is the expected outcome; the release isn't tagged until it's found.**
+
+### Phase 2/3 query primitive stubs
+
+`list_session_bash_calls` and `list_session_file_edits` ship as functional stubs in `tokenscale-store`. Bodies are real (Phase 2/3 will use them as-is), but **no handler exposes them in v0.1.17**. Phase 2/3 can build against the committed signatures.
+
+### Tests
+
+7 new tests across `tokenscale-store` + `tokenscale-ingest-cc/tests/fixture_sample_session.rs`:
+
+- `tool_data::tests::insert_tool_data_lands_three_record_kinds`
+- `tool_data::tests::insert_tool_data_is_idempotent_on_rescan`
+- `tool_data::tests::count_tool_use_orphans_returns_unmatched_count`
+- `tool_data::tests::list_session_bash_calls_joins_through_tool_use_id`
+- `tool_data::tests::list_session_file_edits_filters_to_edit_and_write`
+- `tool_data::tests::aggregate_impact_by_bucket_numbers_unchanged_by_tool_data_inserts` — **the §7 aggregation regression test**; pins that the new tables don't leak into cost/impact aggregation.
+- `tests/fixture_sample_session.rs::sample_session_fixture_lands_expected_tool_data` — end-to-end against the new representative `sample-session.jsonl` fixture (Addition 4 from sign-off: fixtures live in files, not strings); covers all top-5 tool names + max=3 tool_use case + one orphan + one non-empty file-snapshot + cross-line linkage.
+
+**209 workspace tests green** (was 202 in v0.1.16; +7).
+
+### Forward-only
+
+The three new columns are NULL/empty for every event ingested before v0.1.17 — no historical backfill at upgrade. Stated in three places (this CHANGELOG, migration file header comment, `docs/roadmap-1.5-tool-use-ingest.md` § 5) so a future maintainer doesn't mistake the empty-historical-rows for a missing backfill step. `tokenscale scan --rebuild` is the user-elective re-ingest path; the query-time linkage (D3) means rebuild file ordering doesn't matter.
+
+### Real-DB smoke artifacts
+
+Against maintainer's production DB (29 files, 3 freshly parsed during the smoke):
+
+- `events_inserted: 19` / `events_duplicates: 13,558` (steady-state rescan posture)
+- `uuid_duplicates_skipped: 0` (v0.1.16 invariant holds)
+- `tool_uses_inserted: 18` / `tool_results_inserted: 18` (1:1 in this batch — no orphans landed this scan)
+- `file_snapshots_inserted: 345` (delta; cumulative DB count is 147,379 across 1,141 distinct snapshot records, ~129 files per snapshot — CC's `trackedFileBackups` is an open set, this is the natural row count)
+- `tool_use_orphans: 4` (within Phase 0's baseline of 5; the difference is partial scan coverage, not regression)
+- `lines_malformed: 0` (post-UserContent-fix; was 42 before)
+
+### What this enables
+
+- **Phase 2** — Tier 1 commit attribution. `list_session_bash_calls` returns Bash invocations + results; filter for `git commit` and extract SHAs from result text.
+- **Phase 3** — Tier 2 edit-survival. `list_session_file_edits` returns Edit/Write file paths per session; `git blame` the current tree to measure survival rate.
+- **Phase 1.5 Addition 1 audit value** — orphan count surfaces upstream schema drift cheaply if CC's behavior ever changes.
+
+---
+
 ## v0.1.16 — 2026-05-24
 
 **Granular Attribution Phase 1 — ingest layer.** Companion to v0.1.15, separated by risk class per the Phase 1B sign-off. v0.1.15 shipped query-layer + presentation changes (sessions tab, cwd resolution, daily-handler fix); v0.1.16 ships the ingest-layer plumbing for future phases.

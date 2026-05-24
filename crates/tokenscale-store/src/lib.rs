@@ -30,6 +30,7 @@ mod pricing_sync;
 mod queries;
 mod sessions_query;
 mod subscriptions;
+mod tool_data;
 
 pub use audit::{audit_pricing_launch_dates, PricingLaunchDateAuditRow};
 pub use billing::{
@@ -55,6 +56,10 @@ pub use queries::{
     RecentSessionRow, UsageByModelRow, ALL_PROVIDERS,
 };
 pub use sessions_query::{list_sessions_with_totals, SessionSummaryRow, DEFAULT_SESSION_LIMIT};
+pub use tool_data::{
+    count_tool_use_orphans, insert_tool_data, list_session_bash_calls, list_session_file_edits,
+    SessionBashCallRow, SessionFileEditRow, ToolDataInsertSummary,
+};
 pub use subscriptions::{
     delete_subscription, insert_subscription, list_subscriptions, update_subscription, Subscription,
 };
