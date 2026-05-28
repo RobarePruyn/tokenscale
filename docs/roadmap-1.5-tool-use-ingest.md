@@ -98,9 +98,9 @@ Linkage via `tool_use_id` (string match against the `tool_use.id`). `content` is
 
 ### Sample `file-history-snapshot` record
 
-Two forms observed:
+Two forms observed. Across 3,069 file-history-snapshot lines in 44 maintainer JSONL files, 3,045 (99.2%) are non-empty and 24 (0.8%) are empty. The rare empty case is handled by the parser but is not the common path.
 
-**Empty** (most common):
+**Empty** (0.8% of observed):
 ```json
 {
   "type": "file-history-snapshot",
@@ -114,7 +114,7 @@ Two forms observed:
 }
 ```
 
-**Non-empty** (after a file edit):
+**Non-empty** (99.2% of observed, emitted after a file edit):
 ```json
 {
   "type": "file-history-snapshot",

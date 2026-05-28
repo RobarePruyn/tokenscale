@@ -12,8 +12,8 @@
 
 use std::path::{Path, PathBuf};
 use tokenscale_store::{
-    count_tool_use_orphans, get_file_state, insert_events, insert_tool_data, upsert_file_state,
-    Database,
+    count_tool_use_orphans, get_file_state, insert_events, insert_tool_data,
+    process_session_commits, upsert_file_state, Database,
 };
 use tracing::{debug, info, warn};
 
@@ -63,6 +63,11 @@ pub struct ScanSummary {
     /// orphans, something changed about how CC writes JSONL or how
     /// Tokenscale ingests it.
     pub tool_use_orphans: usize,
+    /// v0.1.18 / Phase 2: rows that landed in `session_commits` this
+    /// scan. Re-scan of an unchanged file lands 0 (the (source,
+    /// tool_use_id) UNIQUE index dedups via INSERT OR IGNORE, same
+    /// posture as the other tool tables).
+    pub session_commits_inserted: usize,
     pub lines_skipped: usize,
     pub lines_malformed: usize,
 }
@@ -139,6 +144,16 @@ async fn run_scan_over_files(
     // single COUNT(*) joined against the (source, tool_use_id)
     // indexes). Surfaces upstream schema drift cheaply.
     summary.tool_use_orphans = count_tool_use_orphans(database, SOURCE_KIND).await?;
+
+    // v0.1.18 / Phase 2: run commit extraction over every Bash
+    // tool_use for the source. Operates on the already-inserted rows
+    // so it sees both new-this-scan and pre-existing tool_uses;
+    // INSERT OR IGNORE keeps re-runs idempotent. The per-cwd
+    // resolution cache inside process_session_commits keeps the git
+    // rev-parse shellouts bounded to one per unique cwd.
+    let commit_summary = process_session_commits(database, SOURCE_KIND).await?;
+    summary.session_commits_inserted = commit_summary.session_commits_inserted;
+    debug!(?commit_summary, "session_commits processed");
 
     info!(?summary, "scan complete");
     Ok(summary)

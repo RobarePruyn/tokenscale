@@ -127,6 +127,38 @@ pub async fn insert_tool_data(
     Ok(summary)
 }
 
+/// v0.1.18 / Issue #6 fix: delete every tool_use for a source. Used
+/// by `--rebuild` to wipe the slate before a full re-parse, paired
+/// with the matching deletes for tool_results and file_snapshots
+/// (also in this module) plus session_commits (in commit_data.rs).
+/// v0.1.17 shipped `--rebuild` without these; the resulting bug
+/// retained stale rows across rebuilds. See Issue #6.
+pub async fn delete_tool_uses_for_source(database: &Database, source: &str) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM tool_uses WHERE source = ?")
+        .bind(source)
+        .execute(database.pool())
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// v0.1.18 / Issue #6 fix: companion to `delete_tool_uses_for_source`.
+pub async fn delete_tool_results_for_source(database: &Database, source: &str) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM tool_results WHERE source = ?")
+        .bind(source)
+        .execute(database.pool())
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// v0.1.18 / Issue #6 fix: companion to `delete_tool_uses_for_source`.
+pub async fn delete_file_snapshots_for_source(database: &Database, source: &str) -> Result<u64> {
+    let result = sqlx::query("DELETE FROM file_snapshots WHERE source = ?")
+        .bind(source)
+        .execute(database.pool())
+        .await?;
+    Ok(result.rows_affected())
+}
+
 /// Phase 1.5 Addition 1: orphan-count baseline. Counts `tool_use`
 /// rows (in the given source) whose `tool_use_id` has no matching
 /// `tool_result`. Phase 0 baseline on maintainer data: 5. Surfaces

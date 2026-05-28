@@ -1,6 +1,7 @@
 //! Route handlers, organized by surface area.
 
 pub mod billing;
+pub mod commits;
 pub mod docs;
 pub mod factors;
 pub mod health;

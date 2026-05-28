@@ -25,7 +25,9 @@ use tokenscale_ingest_cc::{run_scan_multi, ScanSummary};
 use tokenscale_server::{serve, AppState};
 use tokenscale_store::{
     audit_pricing_launch_dates, clear_file_state_for_source, delete_events_for_source,
-    sync_environmental_factors, sync_pricing, Database, PricingLaunchDateAuditRow,
+    delete_file_snapshots_for_source, delete_session_commits_for_source,
+    delete_tool_results_for_source, delete_tool_uses_for_source, sync_environmental_factors,
+    sync_pricing, Database, PricingLaunchDateAuditRow,
 };
 
 /// Source-kind constant the scan paths key off — mirrors the constant
@@ -523,16 +525,41 @@ async fn command_scan(config_path: &std::path::Path, mode: ScanMode) -> Result<(
         .with_context(|| format!("opening database at {}", database_path.display()))?;
 
     if matches!(mode, ScanMode::Rebuild) {
-        let deleted = delete_events_for_source(&database, CLAUDE_CODE_SOURCE)
+        // v0.1.18 / Issue #6 fix: the wipe set now covers all five
+        // CC-source tables. v0.1.17 only wiped events + file_state,
+        // which left stale rows in tool_uses / tool_results /
+        // file_snapshots after rebuild (UNIQUE-keyed; INSERT OR
+        // IGNORE silently kept the doubled-up state). Extending the
+        // wipe set is the cleanup path; the v0.1.17 CHANGELOG points
+        // users at re-running --rebuild after upgrading to recover.
+        let deleted_events = delete_events_for_source(&database, CLAUDE_CODE_SOURCE)
             .await
             .context("deleting events for rebuild")?;
+        let deleted_tool_uses = delete_tool_uses_for_source(&database, CLAUDE_CODE_SOURCE)
+            .await
+            .context("deleting tool_uses for rebuild")?;
+        let deleted_tool_results = delete_tool_results_for_source(&database, CLAUDE_CODE_SOURCE)
+            .await
+            .context("deleting tool_results for rebuild")?;
+        let deleted_file_snapshots =
+            delete_file_snapshots_for_source(&database, CLAUDE_CODE_SOURCE)
+                .await
+                .context("deleting file_snapshots for rebuild")?;
+        let deleted_session_commits =
+            delete_session_commits_for_source(&database, CLAUDE_CODE_SOURCE)
+                .await
+                .context("deleting session_commits for rebuild")?;
         let cleared = clear_file_state_for_source(&database, CLAUDE_CODE_SOURCE)
             .await
             .context("clearing file_state for rebuild")?;
         warn!(
-            deleted_events = deleted,
+            deleted_events,
+            deleted_tool_uses,
+            deleted_tool_results,
+            deleted_file_snapshots,
+            deleted_session_commits,
             cleared_file_state_rows = cleared,
-            "--rebuild: events and file_state for source={CLAUDE_CODE_SOURCE} wiped; re-parsing from scratch"
+            "--rebuild: all CC-source tables wiped; re-parsing from scratch"
         );
     } else if matches!(mode, ScanMode::Rescan) {
         let cleared = clear_file_state_for_source(&database, CLAUDE_CODE_SOURCE)

@@ -18,6 +18,8 @@
 
 mod audit;
 mod billing;
+mod commit_data;
+mod commit_extract;
 mod database;
 mod error;
 mod events;
@@ -57,8 +59,17 @@ pub use queries::{
 };
 pub use sessions_query::{list_sessions_with_totals, SessionSummaryRow, DEFAULT_SESSION_LIMIT};
 pub use tool_data::{
-    count_tool_use_orphans, insert_tool_data, list_session_bash_calls, list_session_file_edits,
-    SessionBashCallRow, SessionFileEditRow, ToolDataInsertSummary,
+    count_tool_use_orphans, delete_file_snapshots_for_source, delete_tool_results_for_source,
+    delete_tool_uses_for_source, insert_tool_data, list_session_bash_calls,
+    list_session_file_edits, SessionBashCallRow, SessionFileEditRow, ToolDataInsertSummary,
+};
+pub use commit_data::{
+    count_session_commits, delete_session_commits_for_source, list_session_commits,
+    parse_recovery_source, process_session_commits, SessionCommitInsertSummary, SessionCommitRow,
+};
+pub use commit_extract::{
+    extract_cd_target, extract_session_commit, extract_sha, is_amend_command,
+    is_output_head_truncated_by_command, is_real_commit_command, is_testing_project, ExtractedSha,
 };
 pub use subscriptions::{
     delete_subscription, insert_subscription, list_subscriptions, update_subscription, Subscription,

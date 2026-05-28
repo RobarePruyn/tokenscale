@@ -1523,6 +1523,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex"
+version = "1.12.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "regex-automata"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2224,7 +2236,7 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokenscale-cli"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "clap",
@@ -2244,18 +2256,19 @@ dependencies = [
 
 [[package]]
 name = "tokenscale-core"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "chrono",
  "csv",
  "serde",
  "thiserror",
  "toml",
+ "tracing",
 ]
 
 [[package]]
 name = "tokenscale-ingest-api"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "chrono",
  "reqwest",
@@ -2270,7 +2283,7 @@ dependencies = [
 
 [[package]]
 name = "tokenscale-ingest-cc"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "chrono",
  "directories",
@@ -2288,7 +2301,7 @@ dependencies = [
 
 [[package]]
 name = "tokenscale-server"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "axum",
@@ -2310,13 +2323,15 @@ dependencies = [
 
 [[package]]
 name = "tokenscale-store"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "chrono",
  "hex",
+ "regex",
  "serde",
  "serde_json",
  "sha2",
+ "shlex",
  "sqlx",
  "thiserror",
  "tokenscale-core",

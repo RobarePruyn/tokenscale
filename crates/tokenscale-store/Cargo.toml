@@ -27,3 +27,10 @@ tokio.workspace           = true
 # no Stripe-side stable identifier.
 sha2.workspace            = true
 hex.workspace             = true
+# v0.1.18 / Phase 2: commit extraction needs regex (primary SHA
+# capture, push-refspec fallback) and shlex (token-walk filter for
+# real `git commit` invocations vs meta-mentions). See
+# docs/roadmap-2-commit-attribution.md § 1.1 for why the LIKE
+# filter alone overcounts by 4.7x.
+regex.workspace           = true
+shlex.workspace           = true

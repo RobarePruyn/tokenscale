@@ -51,6 +51,10 @@ pub fn build_router(state: AppState) -> axum::Router {
             "/api/v1/sessions/recent",
             get(routes::sessions::recent_handler),
         )
+        .route(
+            "/api/v1/sessions/{session_id}/commits",
+            get(routes::commits::handler),
+        )
         .route("/api/v1/projects", get(routes::projects::list_handler))
         .route(
             "/api/v1/subscriptions",

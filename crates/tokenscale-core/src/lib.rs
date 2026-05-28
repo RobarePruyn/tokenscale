@@ -23,6 +23,8 @@
 
 pub mod billable;
 pub mod billing;
+pub mod commit;
+pub mod cwd;
 mod error;
 mod event;
 pub mod factors;
@@ -34,6 +36,8 @@ pub use billable::BillableMultipliers;
 pub use billing::{
     parse_stripe_csv, BillingCategory, BillingCharge, BillingParseError,
 };
+pub use commit::{RecoverySource, SessionCommit};
+pub use cwd::resolve_to_git_toplevel;
 pub use error::{CoreError, Result};
 pub use event::{Event, SourceKind};
 pub use factors::{

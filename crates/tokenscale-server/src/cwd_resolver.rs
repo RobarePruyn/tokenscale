@@ -23,9 +23,9 @@
 //! to the main worktree path) is a one-line future addition.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::process::Command;
+use tokenscale_core::resolve_to_git_toplevel;
 use tokenscale_store::{list_projects_with_totals, Database, Result as StoreResult, ALL_PROVIDERS};
-use tracing::{debug, info, warn};
+use tracing::info;
 
 /// Bidirectional mapping between raw `cwd` strings and resolved git
 /// toplevels.
@@ -157,48 +157,13 @@ pub fn build_resolver_from_raw_cwds(raw_cwds: &[String]) -> CwdResolver {
     resolver
 }
 
-/// Single-cwd resolution. Shells out `git -C <raw_cwd> rev-parse
-/// --show-toplevel`. Returns the toplevel on success, the raw cwd on
-/// failure (regardless of failure kind — missing directory, not a
-/// git repo, git binary not installed, permissions error).
-///
-/// `git rev-parse` writes the toplevel to stdout on success and exits
-/// 0; on failure it writes to stderr and exits non-zero. We only read
-/// stdout and trim it — non-zero exit OR empty stdout both fall
-/// through to the raw fallback.
+/// Single-cwd resolution. Delegates to
+/// `tokenscale_core::resolve_to_git_toplevel`. The shellout logic was
+/// promoted to `tokenscale-core` in v0.1.18 so both the server-side
+/// resolver and the ingest-side `session_commits` insert path share
+/// the same semantic.
 fn resolve_one(raw_cwd: &str) -> String {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(raw_cwd)
-        .arg("rev-parse")
-        .arg("--show-toplevel")
-        .output();
-
-    match output {
-        Ok(out) if out.status.success() => {
-            let trimmed = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-            if trimmed.is_empty() {
-                debug!(cwd = raw_cwd, "git rev-parse returned empty stdout; falling back to raw");
-                raw_cwd.to_owned()
-            } else {
-                trimmed
-            }
-        }
-        Ok(_) => {
-            // Non-zero exit — typically "not a git repository" or
-            // "no such file or directory." Common enough that we
-            // log at debug, not warn.
-            debug!(cwd = raw_cwd, "git rev-parse returned non-zero; falling back to raw");
-            raw_cwd.to_owned()
-        }
-        Err(e) => {
-            // git binary not on PATH, permission denied on the exec,
-            // or some other system-level error. Less common; warn
-            // because it points at a broken environment.
-            warn!(cwd = raw_cwd, error = %e, "git rev-parse failed to execute; falling back to raw");
-            raw_cwd.to_owned()
-        }
-    }
+    resolve_to_git_toplevel(raw_cwd)
 }
 
 #[cfg(test)]

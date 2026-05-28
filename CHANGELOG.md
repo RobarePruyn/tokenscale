@@ -6,6 +6,109 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.18, 2026-05-26
+
+**Phase 2, Tier 1 commit attribution.** First user-visible attribution layer on top of v0.1.17's tool-use ingest: a new `session_commits` table populated at scan time captures every `git commit` Bash invocation per session, with the SHA extracted from the tool_result content. A new endpoint `GET /api/v1/sessions/{session_id}/commits` returns those commits with per-row resolution status against the current tree.
+
+This release also bundles the fix for Issue [#6](https://github.com/RobarePruyn/tokenscale/issues/6) (the v0.1.17 `--rebuild` semantic gap), so a one-time `tokenscale scan --rebuild` after upgrading deduplicates the tool tables that were retained across v0.1.17 rebuilds. **v0.1.17 users should run `tokenscale scan --rebuild` after upgrading** to dedupe `tool_uses`, `tool_results`, and `file_snapshots` rows that doubled under the v0.1.17 `--rebuild` semantic gap.
+
+See `docs/roadmap-2-commit-attribution.md` for the full design pass (six D-decisions: D1 schema, D2 dual-regex SHA capture, D3 query-time SHA resolution, D4 project attribution plus /tmp filter, D5 diagnostic fields, D6 `--amend` handling). The scoping doc also captures the four documented D2 failure modes (commit-and-push-to-different-repos, multi-commit-then-push, push-refspec old/new ambiguity, new-branch push with no `<old>..<new>` range), the `recovery_source = none` semantic conflation as a known limitation, and the Phase 3 scoping input to evaluate splitting `none` into three sub-classes (committed-unlinkable, commit-failed, unknown) for the exact-but-partial honesty story.
+
+### Schema (`migrations/20260526000001_session_commits.sql`)
+
+One CREATE TABLE plus four indexes (one UNIQUE, three secondary, one partial). Same `(source, *_id) WHERE * IS NOT NULL` idiom v0.1.16 introduced. `(source, tool_use_id)` is the natural unique key per the v0.1.17 `tool_uses` UNIQUE shape; session_id is denormalised for query convenience.
+
+### Commit extraction (the `commit_extract` module)
+
+Three pure-function pieces wired together in `crates/tokenscale-store/src/commit_extract.rs`:
+
+1. **`is_real_commit_command`**: the canonical filter from D-decision §1.1 of the scoping doc. shlex-tokenises each `&&` / `;` / `||` subcommand and checks for `["git", "commit"]` as the first two tokens. The naive `LIKE '%git commit%'` overcounts by 4.7x in the maintainer corpus (671 raw hits versus 143 real invocations); meta-mentions like sqlite queries, probe scripts, and `grep "git commit"` lines fail this filter.
+2. **`extract_sha`**: primary regex `[<branch>( \(root-commit\))? <sha>]` covers 93.7% of clean commit invocations in the corpus. Push-refspec fallback regex `<old>..<new>  <local> -> <remote>` covers an additional 3.5% (the `git push` line when chained), lifting cumulative coverage to 97.2%.
+3. **Flag detection**: `--amend` and the `| tail` truncation indicator (`output_head_truncated_by_command`) are detected by regex on the command text.
+
+### Scan summary
+
+`ScanSummary` gains one new field:
+
+| Field | Meaning |
+|---|---|
+| `session_commits_inserted` | New `session_commits` rows that landed this scan. Re-scan of unchanged data lands 0 (INSERT OR IGNORE on `(source, tool_use_id)` UNIQUE). |
+
+The CLI `tokenscale scan` summary line is unchanged in steady-state; the new count surfaces in tracing logs. The full `SessionCommitInsertSummary` (with the `bash_tool_uses_scanned`, `bash_tool_uses_filtered_out`, `session_commits_duplicates` breakdown) is logged at `debug` for operators inspecting scan output.
+
+### HTTP surface
+
+`GET /api/v1/sessions/{session_id}/commits` returns the per-session commit list. Each row carries:
+
+- `tool_use_id`, `session_id`, `occurred_at`
+- `sha: Option<String>` (the captured SHA; NULL for ~3.9% of real commit invocations where neither regex captures, breakdown per §1.11 of the scoping doc: 19 head-piped or new-branch-push cases, 3 real failures, 2 orphans, 1 testing-in-/tmp)
+- `sha_resolves_in_tree: Option<bool>` (filled in at query time via batched `git cat-file --batch-check` against `project_resolved`; one git invocation per unique project)
+- `cd_target_raw: Option<String>` (verbatim `cd "<path>"` target if present)
+- `project_resolved: String` (cwd_resolver output; cd target preferred, project_id fallback)
+- `recovery_source: "primary" | "push_refspec" | "none"`
+- `output_head_truncated_by_command: bool`
+- `is_amend: bool`
+
+`?include_testing=true` surfaces /tmp testing commits which are filtered by default per D4a.
+
+### Smoke-test-surfaced fixes during build (§9 release gate)
+
+The §9 release-gate prediction held: real-DB smoke surfaced a bug that no test caught, in the canonical shlex-token-walk filter. The `split_subcommands` helper that walks `&&` / `;` / `||` separators was traversing heredoc body content as if it were shell, which allowed probe scripts (Python heredocs embedded inside `python3 <<'PY' ... PY` blocks) to slip past the filter when their body contained `git commit` substrings AND a separator (a `;` or `&&` in a Python expression).
+
+**Fix in commit, pinned by tests.** The pre-fix `split_subcommands` returned `Vec<&str>` over the raw command string. The post-fix version first calls a new `strip_heredoc_bodies` helper that detects `<<MARKER`, `<<'MARKER'`, `<<"MARKER"`, and `<<-MARKER` patterns and skips body lines until the matching closer; then it splits the heredoc-stripped command on top-level separators. Five regression tests pin the fix; one is broad-pattern coverage and one is the discriminating test that fails without `strip_heredoc_bodies` (verified by bypass-patching the helper to a no-op during the §9 tag-gate sanity check):
+
+- `probe_script_with_heredoc_python_body_does_not_pass_filter` (broad pattern; does not discriminate on its own because its body fragment has an unbalanced quote that shlex rejects)
+- `discriminating_test_heredoc_body_with_amp_amp_git_commit_fragment_fails_filter` (the DISCRIMINATING test; balanced-quote fragment that shlex parses to `[git, commit, ...]`; fails without the fix)
+- `strip_heredoc_bodies_handles_single_and_double_quoted_markers`
+- `strip_heredoc_bodies_handles_unquoted_marker`
+- `split_subcommands_does_not_split_on_separators_inside_heredoc_body`
+
+**Empirical consequence on the scoping-doc baseline.** The probe report's "143 real commits" count (`docs/roadmap-2-probe-report.md` § 1.1) was an undercount because the Python probe script that produced it had the same heredoc-body-splitting bug. The maintainer's real corpus has 637 real `git commit` invocations once the v0.1.18 implementation runs against the rebuilt DB. The structural conclusions from the probe report all hold (narrow shape, dual-regex captures most, sample-dependency on `| tail`, /tmp filter useful) but the absolute scale shifts.
+
+**Corrected empirical baseline against the rebuilt DB** (use these in Phase 3 scoping rather than the probe-report numbers):
+
+| Metric | Probe-report value | v0.1.18 actual |
+|---|---:|---:|
+| Real commit invocations | 143 | 637 |
+| SHA capture (combined) | 97.2% | 96.1% |
+| recovery_source = primary | 93.7% | 90.9% |
+| recovery_source = push_refspec | 3.5% | 5.2% |
+| recovery_source = none | 2.8% | 3.9% |
+| cd-prefix rate | 86.0% | 84.9% |
+| is_amend rate | 2.1% (3 commits) | 0.5% (3 commits) |
+| /tmp filter suppressed | 1 | 1 |
+| `output_head_truncated_by_command` (operator pipe through tail) | 4.9% (the no-SHA subset) | 57.6% (all command-structure matches; full population) |
+
+The is_amend count (3 commits) is identical between the two passes because none of the three `--amend` commands happened to have a heredoc-body-semicolon issue that would fragment them. The /tmp filter count is also stable at 1.
+
+The `output_head_truncated_by_command` jump (4.9% to 57.6%) reflects a framing difference, not a bug: the probe-report counted the NO-SHA subset attributable to head-piping; the v0.1.18 implementation counts every commit whose command contains `| tail`, including the many where the commit's output was short enough that `| tail -3` or `| tail -5` kept the head. Cross-tabbing with `recovery_source` separates the operator-caused misses (head_truncated AND recovery_source=none) from operator-pipe-with-recovery. The flag is a risk signal about command structure, not an outcome signal about truncation; the dashboard can use it either way.
+
+### Tests
+
+7 new tests in `commit_data` + 12 unit tests in `commit_extract`, plus the §9 aggregation regression test (`aggregate_impact_by_bucket_numbers_unchanged_by_session_commits_inserts`) that pins session_commits against leaking into the cost/impact aggregation path. The shlex token-walk filter is canonical, not a one-off probe artifact; it lives in `commit_extract` as documented in §1.1 of the scoping doc.
+
+### Issue [#6](https://github.com/RobarePruyn/tokenscale/issues/6) fix bundled
+
+The destructive `--rebuild` path in `crates/tokenscale-cli/src/main.rs` now wipes all five CC-source tables (`events`, `tool_uses`, `tool_results`, `file_snapshots`, `session_commits`) in addition to `file_state`. v0.1.17 only wiped `events` and `file_state`, which left the three v0.1.17-added tables with retained rows from prior partial scans (UNIQUE-keyed; INSERT OR IGNORE silently kept the doubled-up state). The new WARN line reports per-table deletion counts.
+
+For v0.1.17 users: re-running `tokenscale scan --rebuild --yes` after upgrading to v0.1.18 produces the clean wipe-and-reinsert that v0.1.17's `--rebuild` was supposed to do, dropping the retained stale rows.
+
+### Forward-only
+
+The `session_commits` table is forward-only: historical sessions whose tool_uses rows landed before v0.1.18 ships will not have `session_commits` rows. The ingest path populates this table only at scan time going forward. Stated in three places (this CHANGELOG, `migrations/20260526000001_session_commits.sql` header comment, `docs/roadmap-2-commit-attribution.md` §8) per the project pattern. Run `tokenscale scan --rebuild --yes` for the user-elective backfill (which now correctly wipes all five tables thanks to the Issue #6 fix).
+
+### Sample-dependency caveat (exact-but-partial honesty)
+
+Phase 2 commit attribution achieves **96.1% SHA capture** in the maintainer's corpus at the v0.1.18 baseline (637 real commit invocations). The 3.0% irreducible-miss rate from head-piped-without-recoverable-push cases (19 of 637) is attributable to project-specific maintainer command patterns, notably `| tail -N` piping of `git commit` output to compress for context-window reasons, plus new-branch pushes where the `git push` output carries no `<old>..<new>` range for the push-refspec fallback to match. The pattern is widespread across the maintainer's projects (per-project head-pipe rates range from 38% to 100% at the v0.1.18 baseline; see scoping doc §1.11) rather than concentrated in any single cohort. Other deployments will have different rates depending on their command patterns and feature-branch workflows; the dashboard surfaces this via `output_head_truncated_by_command: true` on affected rows so operators can identify which commits are head-cut by their own command structure. See `docs/roadmap-2-probe-5-report.md` for the original empirical evidence and `docs/roadmap-2-commit-attribution.md` §1.11 for the corrected v0.1.18 baseline.
+
+### What this enables
+
+- **Phase 3** (Tier 2 edit-survival): `list_session_file_edits` (v0.1.17 stub) plus a new `git blame` pass over the current tree. Phase 2's `project_resolved` populated at insert time is reusable.
+- **Phase 4** (Tier 3 forward instrumentation): post-commit hook writing `Tokenscale-Session:` trailer becomes the exact-attribution path going forward. Tier 1's row-per-invocation shape is what the Phase 4 hook attaches to.
+- **Per-project commit reports**: the `project_resolved` denormalisation plus the `session_id` index supports "all commits in project X across sessions" queries cheaply.
+
+---
+
 ## v0.1.17 — 2026-05-24
 
 **Phase 1.5 — tool-use ingest expansion.** No new dashboard features; this is plumbing for Phase 2 (Tier 1 commit attribution: which commits did CC author?) and Phase 3 (Tier 2 edit-survival: how much CC-authored code is still in the repo?).

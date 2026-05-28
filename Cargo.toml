@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version      = "0.1.17"
+version      = "0.1.18"
 edition      = "2021"
 # 1.82 (Oct 2024) is the floor — we use `Option::is_none_or` and other
 # stabilizations from that release. See docs/decisions.md.
@@ -83,6 +83,14 @@ hex  = "0.4"
 
 # --- CSV parsing (Stripe Customer Portal billing imports) ---
 csv = "1"
+
+# --- v0.1.18 / Phase 2: commit attribution ---
+# `regex` for primary `[branch sha]` capture and push-refspec fallback.
+# `shlex` for the canonical token-walk filter that identifies real
+# `git commit` invocations and avoids the 4.7x LIKE-filter overcount
+# (see docs/roadmap-2-commit-attribution.md § 1.1).
+regex = "1"
+shlex = "1"
 
 # --- Path helpers (~/.config/tokenscale, ~/.claude, ProjectDirs) ---
 directories = "6"
