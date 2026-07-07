@@ -1,12 +1,14 @@
-//! Filesystem walker — find Claude Code session JSONL files under a root.
+//! Filesystem walker: find Claude Code session JSONL files under a root.
 //!
-//! Layout we walk:
+//! Layout we walk (recursively, within each project directory):
 //!
 //! ```text
 //! <root>/
 //!   -Users-r-Dev-QTrial/
-//!     455218e7-....jsonl
-//!     ...
+//!     455218e7-....jsonl                 (top-level session transcript)
+//!     455218e7-...../
+//!       subagents/
+//!         agent-abc.jsonl                (subagent transcript, v0.1.19+)
 //!   -Users-r-Dev-Other/
 //!     ...
 //! ```
@@ -63,9 +65,17 @@ pub async fn walk_claude_code_roots(claude_code_roots: &[std::path::PathBuf]) ->
     Ok(all_files)
 }
 
-/// Walk one level deep under `claude_code_root` and return every `*.jsonl`
-/// file encountered. Returns an error if the root itself doesn't exist; an
-/// individual unreadable subdirectory only logs a warning and is skipped.
+/// Return every `*.jsonl` file under `claude_code_root`, recursing through
+/// each project directory's full subtree. Returns an error if the root
+/// itself doesn't exist; an individual unreadable subdirectory only logs a
+/// warning and is skipped.
+///
+/// v0.1.19: the inner walk recurses (was one level deep) so subagent
+/// transcripts at `<project>/<session-id>/subagents/agent-*.jsonl` are
+/// collected alongside top-level session files. Subagent token spend is
+/// real account usage that prior versions silently dropped. Stray `*.jsonl`
+/// sitting directly at the root level are still skipped: only direct child
+/// directories of the root (the project directories) are descended.
 pub async fn walk_claude_code_root(claude_code_root: &Path) -> Result<Vec<JsonlFile>> {
     if !claude_code_root.exists() {
         return Err(IngestError::RootNotFound(claude_code_root.to_path_buf()));
@@ -80,41 +90,74 @@ pub async fn walk_claude_code_root(claude_code_root: &Path) -> Result<Vec<JsonlF
     while let Some(entry) = project_directories.next_entry().await? {
         let project_path = entry.path();
         if !project_path.is_dir() {
+            // Files directly at the root level are Claude Code metadata,
+            // not session transcripts — skip them (matches pre-v0.1.19
+            // behavior). Only project directories are descended.
             continue;
         }
+        collect_jsonl_recursive(&project_path, &mut found_files).await?;
+    }
 
-        let mut session_files = match tokio::fs::read_dir(&project_path).await {
+    found_files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(found_files)
+}
+
+/// Iterative depth-first walk of a project directory's subtree, pushing
+/// every `*.jsonl` file into `found_files`. Iterative (explicit stack)
+/// rather than recursive-async to avoid boxing the recursive future.
+/// `DirEntry::file_type` does not follow symlinks, so symlinked
+/// subdirectories are not descended — there are none in the Claude Code
+/// transcript layout, and this rules out symlink cycles by construction.
+async fn collect_jsonl_recursive(
+    project_dir: &Path,
+    found_files: &mut Vec<JsonlFile>,
+) -> Result<()> {
+    let mut stack: Vec<PathBuf> = vec![project_dir.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let mut entries = match tokio::fs::read_dir(&dir).await {
             Ok(directory_iterator) => directory_iterator,
             Err(io_error) => {
-                warn!(path = %project_path.display(), error = %io_error, "skipping unreadable project directory");
+                warn!(path = %dir.display(), error = %io_error, "skipping unreadable directory");
                 continue;
             }
         };
 
-        while let Some(session_entry) = session_files.next_entry().await? {
-            let session_path = session_entry.path();
-            if session_path.extension().is_none_or(|ext| ext != "jsonl") {
+        while let Some(entry) = entries.next_entry().await? {
+            let entry_path = entry.path();
+            let file_type = match entry.file_type().await {
+                Ok(file_type) => file_type,
+                Err(io_error) => {
+                    warn!(path = %entry_path.display(), error = %io_error, "skipping unreadable entry");
+                    continue;
+                }
+            };
+
+            if file_type.is_dir() {
+                stack.push(entry_path);
                 continue;
             }
-            let metadata = match session_entry.metadata().await {
+            if entry_path.extension().is_none_or(|ext| ext != "jsonl") {
+                continue;
+            }
+            let metadata = match entry.metadata().await {
                 Ok(metadata) => metadata,
                 Err(io_error) => {
-                    warn!(path = %session_path.display(), error = %io_error, "skipping unreadable session file");
+                    warn!(path = %entry_path.display(), error = %io_error, "skipping unreadable session file");
                     continue;
                 }
             };
             let mtime_ns = system_time_to_unix_nanos(metadata.modified()?);
             let len = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
             found_files.push(JsonlFile {
-                path: session_path,
+                path: entry_path,
                 mtime_ns,
                 len,
             });
         }
     }
 
-    found_files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(found_files)
+    Ok(())
 }
 
 /// Convert a `SystemTime` to nanoseconds since the unix epoch, saturating
@@ -183,6 +226,40 @@ mod tests {
         fs::write(temp_root.path().join("stray.jsonl"), b"{}\n")?;
         let files = walk_claude_code_root(temp_root.path()).await?;
         assert!(files.is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn walker_recurses_into_subagent_subdirectories() -> Result<()> {
+        // v0.1.19 (D4): subagent transcripts live at
+        // <project>/<session-id>/subagents/agent-*.jsonl and must be ingested
+        // alongside the top-level session file. Pre-v0.1.19 the walker read
+        // only direct children of the project dir and silently dropped them.
+        // This test fails against the old one-level-deep walker and passes
+        // against the recursive one.
+        let temp_root = TempDir::new()?;
+        let project = temp_root.path().join("-Users-r-Dev-Mediacast");
+        let session_subagents = project.join("session-abc").join("subagents");
+        fs::create_dir_all(&session_subagents)?;
+        fs::write(project.join("session-abc.jsonl"), b"{}\n")?; // top-level
+        fs::write(session_subagents.join("agent-1.jsonl"), b"{}\n")?; // subagent
+        fs::write(session_subagents.join("agent-2.jsonl"), b"{}\n")?; // subagent
+        // A non-jsonl artifact deeper in the tree must still be ignored.
+        fs::write(session_subagents.join("notes.md"), b"ignore me")?;
+
+        let files = walk_claude_code_root(temp_root.path()).await?;
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.path.file_name().unwrap().to_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            files.len(),
+            3,
+            "top-level session + 2 subagent transcripts; got {names:?}"
+        );
+        assert!(names.contains(&"session-abc.jsonl".to_owned()));
+        assert!(names.contains(&"agent-1.jsonl".to_owned()));
+        assert!(names.contains(&"agent-2.jsonl".to_owned()));
         Ok(())
     }
 }

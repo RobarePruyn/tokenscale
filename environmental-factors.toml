@@ -27,8 +27,12 @@
 
 schema_version = 1
 file_status = "production"
-file_version = "0.3"
-file_published = "2026-05-12"
+file_version = "0.4"
+file_published = "2026-06-16"
+# v0.4 (2026-06-16): added claude-opus-4-8 (held flat to Opus 4.7 on the
+# pricing-unchanged proxy) and claude-fable-5 (pricing-as-proxy estimate,
+# 2x Opus, wide band, zero anchor). See
+# docs/roadmap-model-additions-fable-opus48.md D2.
 methodology = "google-comprehensive-aug-2025"
 methodology_source = "https://arxiv.org/abs/2508.15734"
 
@@ -58,6 +62,29 @@ inference_provider = "aws"
 disclosure_status = "not_disclosed"  # Anthropic does not publish per-query environmental data
 disclosure_status_source = "https://www.anthropic.com/transparency/voluntary-commitments"
 disclosure_status_accessed = "2026-04-28"
+
+# ---- Fable class ----
+# Fable 5 sat above Opus: 2x the price, "Mythos-class" frontier capability.
+# It was generally available for ~3 days (2026-06-09 to 2026-06-12) before a
+# US export-control directive pulled it, so there is ZERO energy anchor for
+# it (no Couch/Jegham analysis, no first-party disclosure) and none is
+# expected. Energy below is a pricing-as-proxy ESTIMATE only. See D2b in
+# docs/roadmap-model-additions-fable-opus48.md.
+
+[providers.anthropic.models."claude-fable-5"]
+display_name = "Claude Fable 5"
+released_at = "2026-06-09"
+valid_from = "2026-06-09"
+source_doc = "docs/sources.md#G.1"
+confidence = "estimated"  # weaker than the "secondary" Couch-derived rows: zero anchor, novel tier
+notes = "ESTIMATE (pricing-as-proxy, zero anchor). Fable 5 had no per-token, per-prompt, or third-party energy measurement; it was GA for ~3 days before a US export-control directive pulled it (2026-06-12), so no Couch/Jegham-style analysis exists and none is expected. Energy is set to 2x Opus 4.8 because Fable was priced 2x Opus (10/50 vs 5/25 USD per MTok), applying the same pricing-as-proxy heuristic this file uses for Haiku (Haiku = Sonnet/3 by price). The proxy is weaker projecting up-tier than Haiku's down-tier: a 2x price may reflect flagship positioning rather than 2x compute, so the true value could be materially lower. Wide band. Same new tokenizer as Opus 4.7+. Revisit only if a benchmark ever emerges (unlikely; the model is pulled)."
+wh_per_mtok_input = 720             # ESTIMATE: 2x Opus 4.8 (pricing-as-proxy; Fable priced 2x Opus)
+wh_per_mtok_output = 3600           # ESTIMATE: 2x Opus 4.8
+wh_per_mtok_cache_read = 72         # ESTIMATE: 2x Opus 4.8
+wh_per_mtok_cache_write_5m = 900    # ESTIMATE: 2x Opus 4.8
+wh_per_mtok_cache_write_1h = 1440   # ESTIMATE: 2x Opus 4.8
+uncertainty_range_pct = 55          # Zero anchor + novel tier + pricing-proxy weaker up-tier; wider than Opus 4.7's 40.
+tokenizer_token_count_inflation_factor = 1.175  # same new tokenizer as Opus 4.7+
 
 # ---- Opus class ----
 
@@ -104,6 +131,21 @@ wh_per_mtok_cache_write_1h = 720
 uncertainty_range_pct = 40          # Wider band reflecting tokenizer-change unknowns
 tokenizer_token_count_inflation_factor = 1.175  # midpoint of 1.0-1.35x range; for application-side compensation when comparing per-task figures across versions
 
+[providers.anthropic.models."claude-opus-4-8"]
+display_name = "Claude Opus 4.8"
+released_at = "2026-05-28"
+valid_from = "2026-05-28"
+source_doc = "docs/sources.md#G.1"
+confidence = "secondary"
+notes = "ESTIMATE: predecessor-equivalent on per-token energy, held flat versus Opus 4.7. Pricing unchanged from 4.6/4.7 (5/25 USD per MTok), the file's proxy for unchanged per-token compute. Opus 4.8 is a modest improvement (Simon Willison, 2026-05-28: 'a modest but tangible improvement') with no published per-token energy change; holding flat rather than guessing a further efficiency step is the honest no-evidence-of-change position. Same new tokenizer as 4.7. Estimate range: -5% to +5% versus Opus 4.7."
+wh_per_mtok_input = 360             # ESTIMATE: equal to Opus 4.7 (pricing-unchanged proxy)
+wh_per_mtok_output = 1800           # ESTIMATE: equal to Opus 4.7
+wh_per_mtok_cache_read = 36         # ESTIMATE: equal to Opus 4.7
+wh_per_mtok_cache_write_5m = 450
+wh_per_mtok_cache_write_1h = 720
+uncertainty_range_pct = 40          # Same extrapolation band as Opus 4.7
+tokenizer_token_count_inflation_factor = 1.175  # same new tokenizer as Opus 4.7+
+
 # ---- Sonnet class ----
 
 [providers.anthropic.models."claude-sonnet-4-5"]
@@ -145,6 +187,26 @@ confidence = "secondary"
 notes = "Direct empirical anchor from Couch's analysis (claude-haiku-4-5-20251001). Haiku 4.5 is approximately 1/3 the cost of Sonnet 4.5 per token and ~3x faster, supporting the ~1/3 per-token energy estimate (independent corroboration via pricing-as-proxy)."
 wh_per_mtok_input = 70              # ANCHOR-DERIVED: Sonnet 4.5 / 3 (pricing proxy + Couch's Haiku analysis)
 wh_per_mtok_output = 330            # ANCHOR-DERIVED: Sonnet 4.5 / 3
+wh_per_mtok_cache_read = 7
+wh_per_mtok_cache_write_5m = 88
+wh_per_mtok_cache_write_1h = 140
+uncertainty_range_pct = 30
+
+# Alias row for the dated Bedrock-style ID. Real-world Haiku 4.5 usage
+# (especially subagent transcripts) records the model as
+# claude-haiku-4-5-20251001, which must match a factor row or the usage
+# renders unfactored. Same model, same values as the undated row above.
+# Surfaced by v0.1.19 subagent ingest; general model-ID normalization
+# (strip -YYYYMMDD) is tracked as a follow-up issue.
+[providers.anthropic.models."claude-haiku-4-5-20251001"]
+display_name = "Claude Haiku 4.5"
+released_at = "2025-10-01"
+valid_from = "2025-10-01"
+source_doc = "docs/sources.md#G.1"
+confidence = "secondary"
+notes = "Alias of claude-haiku-4-5 for the dated Bedrock-style model ID (same model, same values). See the undated row above for the derivation."
+wh_per_mtok_input = 70
+wh_per_mtok_output = 330
 wh_per_mtok_cache_read = 7
 wh_per_mtok_cache_write_5m = 88
 wh_per_mtok_cache_write_1h = 140

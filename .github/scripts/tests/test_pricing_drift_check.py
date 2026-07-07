@@ -141,6 +141,39 @@ class ParseFailureGuardTests(unittest.TestCase):
             detector.parse_cache_multipliers(page)
 
 
+class RetiredModelGuardTests(unittest.TestCase):
+    """D5 (v0.1.19): a model marked status='retired' in pricing.toml that has
+    been delisted from the live page is skipped (logged, not flagged), so a
+    pull/delisting cannot cry-wolf the detector. Fable 5 is the case."""
+
+    def _page_without_fable(self) -> str:
+        return "\n".join(
+            line
+            for line in FIXTURE_PATH.read_text().splitlines()
+            if "Claude Fable 5" not in line
+        )
+
+    def test_retired_model_missing_from_page_raises_without_guard(self):
+        # Sanity: Fable is a tracked model, so absent-from-page is a
+        # ParseFailure when the retired set is empty (the default).
+        with self.assertRaises(detector.ParseFailure):
+            detector.parse_anthropic_page(self._page_without_fable())
+
+    def test_retired_model_missing_from_page_is_skipped_with_guard(self):
+        rates = detector.parse_anthropic_page(
+            self._page_without_fable(), retired_ids=frozenset({"claude-fable-5"})
+        )
+        self.assertNotIn("claude-fable-5", rates)
+        # Live (non-retired) models are still parsed normally.
+        self.assertIn("claude-opus-4-8", rates)
+        self.assertIn("claude-opus-4-7", rates)
+
+    def test_load_retired_model_ids_reads_fable_from_pricing_toml(self):
+        retired = detector.load_retired_model_ids()
+        self.assertIn("claude-fable-5", retired)
+        self.assertNotIn("claude-opus-4-8", retired)  # live model, not retired
+
+
 class DriftCheckTests(unittest.TestCase):
     """End-to-end drift detection against in-memory upstream + local."""
 

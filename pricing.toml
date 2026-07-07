@@ -45,8 +45,15 @@
 
 schema_version = 1
 file_status    = "production"
-file_version   = "1.0"
-file_published = "2026-05-18"
+file_version   = "1.1"
+file_published = "2026-06-16"
+# v1.1 (2026-06-16): added claude-opus-4-8 and claude-fable-5 rows. While
+# sourcing those, the full rate card was re-verified against the pricing
+# page on 2026-06-16; every pre-existing row is unchanged. Fable 5 carries
+# `status = "retired"` (pulled by a US export-control directive 2026-06-12,
+# ~3 days after its 2026-06-09 launch); the row is kept for historical
+# attribution and the drift detector treats its absence from the live page
+# as expected. See docs/roadmap-model-additions-fable-opus48.md.
 
 # ----------------------------------------------------------------------------
 # [[providers.<provider>.models.<model-id>]]   — array-of-tables form
@@ -79,11 +86,45 @@ file_published = "2026-05-18"
 [providers.anthropic]
 display_name = "Anthropic"
 
+# ---- Fable models ----
+# Fable 5 was Anthropic's most expensive GA model (2x Opus). Launched
+# 2026-06-09; disabled 2026-06-12 by a US-government export-control
+# directive (pulled alongside Mythos 5), about three days after launch.
+# The row is retained for historical attribution of usage during its live
+# window. `status = "retired"` is TOML-only provenance (ignored by the Rust
+# parser, same as launch_date_source) that tells the pricing-drift detector
+# to treat absence from the live pricing page as expected, not as drift.
+
+[[providers.anthropic.models."claude-fable-5"]]
+display_name              = "Claude Fable 5"
+valid_from                = "2026-06-09"
+status                    = "retired"
+input_usd_per_mtok        = 10.00
+output_usd_per_mtok       = 50.00
+cache_read_usd_per_mtok   = 1.00
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-06-16"
+launch_date_source        = "https://www.anthropic.com/news/claude-fable-5-mythos-5 (Anthropic launch announcement, 2026-06-09); disabled 2026-06-12 per https://www.infoq.com/news/2026/06/claude-5-release/ and https://thenewstack.io/us-gov-orders-anthropic-to-pull-fable-5-and-mythos-5-three-days-after-launch/. Sourced, exact launch date; D3 conservative-dating rule does not apply."
+
 # ---- Opus models ----
 # Anthropic dropped Opus pricing in the 4.5 generation from $15/$75 (Opus 4
 # and 4.1) to $5/$25 (4.5, 4.6, 4.7). Per-model rates from now on — no
 # cascading from family-level assumptions; every row gets verified against
 # Anthropic's pricing page.
+
+[[providers.anthropic.models."claude-opus-4-8"]]
+display_name              = "Claude Opus 4.8"
+valid_from                = "2026-05-28"
+input_usd_per_mtok        = 5.00
+output_usd_per_mtok       = 25.00
+cache_read_usd_per_mtok   = 0.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-06-16"
+launch_date_source        = "https://www.axios.com/2026/05/28/anthropic-opus-release-mythos (dated GA, 2026-05-28); corroborated by https://simonwillison.net/2026/May/28/claude-opus-4-8/. Sourced, exact date; D3 conservative-dating rule does not apply. Rates identical to Opus 4.6/4.7 ($5/$25), re-verified on the pricing page 2026-06-16."
 
 [[providers.anthropic.models."claude-opus-4-7"]]
 display_name              = "Claude Opus 4.7"
@@ -136,3 +177,22 @@ cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
 source_accessed_at        = "2026-05-18"
 launch_date_source        = "Bedrock model ID `claude-haiku-4-5-20251001` encodes the launch date. Exact — D3 conservative-dating rule does not apply."
+
+# Alias row for the dated Bedrock-style ID. Real-world Haiku 4.5 usage
+# (especially subagent transcripts) records the model as
+# `claude-haiku-4-5-20251001`, which must match a pricing row or the usage
+# renders unpriced. Same model, same rates as the undated row above. v0.1.19
+# smoke surfaced this when the recursive walker first ingested subagent Haiku
+# usage. A general model-ID normalization (strip -YYYYMMDD) is tracked as a
+# follow-up issue; see docs/roadmap-model-additions-fable-opus48.md.
+[[providers.anthropic.models."claude-haiku-4-5-20251001"]]
+display_name              = "Claude Haiku 4.5"
+valid_from                = "2025-10-01"
+input_usd_per_mtok        = 1.00
+output_usd_per_mtok       = 5.00
+cache_read_usd_per_mtok   = 0.10
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-06-16"
+launch_date_source        = "Dated Bedrock-style alias of claude-haiku-4-5 (same model, same rates). The -20251001 suffix encodes the 2025-10-01 launch date. Exact; D3 conservative-dating rule does not apply."

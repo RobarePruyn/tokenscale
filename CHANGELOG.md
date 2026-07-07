@@ -6,6 +6,49 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.19, 2026-06-16
+
+**Model additions (Fable 5 + Opus 4.8) plus subagent ingest.** Three changes that travel together: (1) pricing + environmental-factor coverage for two models that were used but unpriced/unfactored, (2) a walker fix so subagent transcripts are ingested at all, and (3) the bug that combination surfaced. See `docs/roadmap-model-additions-fable-opus48.md` for the full design pass (D1 through D5, sign-off, and the §8 smoke findings).
+
+### Two models added
+
+`claude-fable-5` and `claude-opus-4-8` are now in `pricing.toml` (file_version 1.0 to 1.1) and `environmental-factors.toml` (file_version 0.3 to 0.4). Rates web-sourced and verified against Anthropic's pricing page on 2026-06-16 (the same page the existing rows cite); while sourcing, the full rate card was re-verified and every pre-existing row is unchanged.
+
+- **Opus 4.8** ($5/$25 in/out, identical to Opus 4.6/4.7; launched 2026-05-28, sourced). Environmental factors held flat to Opus 4.7 on the pricing-unchanged proxy.
+- **Fable 5** ($10/$50 in/out, 2x Opus, the priciest GA model Anthropic shipped; launched 2026-06-09, disabled 2026-06-12 by a US export-control directive ~3 days later). Carries `status = "retired"`. Environmental factors are a pricing-as-proxy estimate (2x Opus 4.8) with a wide +/-55% band and an explicit zero-anchor note: Fable existed 3 days, so there is no Couch/Jegham analysis or first-party disclosure and none is expected. This is an honest estimate, not a measurement.
+
+### Subagent ingest (walker recursion)
+
+The walker (`crates/tokenscale-ingest-cc/src/walker.rs`) previously read only `<root>/<project>/*.jsonl` and never descended into `<project>/<session-id>/subagents/agent-*.jsonl`. Subagent token spend is real account usage that prior versions silently dropped. The walker now recurses within each project directory (stray root-level files are still skipped). **This shifts every model's historical totals upward** on the next scan as subagent usage is counted for the first time; it is a correctness improvement, not a regression. Backfills on the next scan (subagent files are simply new files the walker had never recorded); `--rebuild` remains the clean re-derivation path.
+
+In the maintainer's corpus this took the scan from 60 files seen to 264, and total events from 36,910 to 42,899.
+
+### Drift detector
+
+`claude-opus-4-8` and `claude-fable-5` added to the detector's tracked set, snapshot, and fixture. Fable carries a retired-model guard: a model marked `status = "retired"` in pricing.toml that is absent from the live pricing page is logged and skipped rather than raising a ParseFailure, so a future delisting cannot cry-wolf (the v0.1.14 "cry-wolf kills trust" lesson). The live detector run is clean: pricing.toml matches Anthropic's page for all 6 tracked models.
+
+### Smoke-test-surfaced fix during build (§8 release gate)
+
+The gate held its five-for-five-plus pattern. Subagent ingest surfaced Haiku 4.5 usage under the dated Bedrock-style ID `claude-haiku-4-5-20251001` (1,202 events), which did not match the assumed-shortened `claude-haiku-4-5` key on the pricing and factor rows, so the usage rendered both unpriced and unfactored. Root cause: the rows were keyed on a convenience-shortened ID that real usage never emits.
+
+Fixed with explicit `claude-haiku-4-5-20251001` alias rows (identical rates/factors) in both data files. Post-fix, the live `/usage/daily` reports `modelsWithoutPricing: []` and `modelsWithoutFactors: []` for the full window: every model in the corpus is now both priced and factored. General model-ID normalization (strip `-YYYYMMDD`, resolve variant forms) is the proper fix, tracked in [Issue #7](https://github.com/RobarePruyn/tokenscale/issues/7).
+
+**Principle reinforced:** unpriced is not unfactored. Environmental impact (energy / water / CO2e) is captured for every model actually used, for every Anthropic model ever released, regardless of billability. A bare `sonnet` string (7 mentions) was investigated and is an `Agent` tool-call argument, not a usage event; the subagent that runs on Sonnet records its own usage under the resolved ID and factors normally, so no impact is lost.
+
+### Tests
+
+- Walker: `walker_recurses_into_subagent_subdirectories` (discriminating; fails against the old one-level walker).
+- Drift detector: 3 new tests for the retired-model guard and `load_retired_model_ids` (20 Python tests green; live run clean).
+- Factor + pricing rows validated through the real Rust parsers (the embedded-file load tests parse the actual on-disk files with the new rows).
+
+Workspace tests green; no clippy warnings in changed Rust files (pre-existing lint debt, Issue #1, untouched).
+
+### Data-sync posture
+
+`pricing.toml` and `environmental-factors.toml` are replace-on-startup synced (not forward-only migrations): edit the file, restart, the next sync rewrites the table. No schema migration in this release. Subagent history ingests on the next scan.
+
+---
+
 ## v0.1.18, 2026-05-26
 
 **Phase 2, Tier 1 commit attribution.** First user-visible attribution layer on top of v0.1.17's tool-use ingest: a new `session_commits` table populated at scan time captures every `git commit` Bash invocation per session, with the SHA extracted from the tool_result content. A new endpoint `GET /api/v1/sessions/{session_id}/commits` returns those commits with per-row resolution status against the current tree.

@@ -1,9 +1,25 @@
 {
   "schema_version": 1,
-  "captured_at": "2026-05-18",
+  "captured_at": "2026-06-16",
   "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
   "purpose": "Offline-fallback fixture for the pricing-drift-check detector. The detector primarily fetches the live page; this snapshot lets it (a) stay useful when the live fetch fails — fail-open — and (b) detect when the snapshot itself has gone stale (> 90 days = warning, prompts re-capture). Re-capture and commit this file whenever you confirm Anthropic's published rates against the dashboard, AND whenever the detector reports drift that resolves to a real Anthropic price change.",
   "models": {
+    "claude-fable-5": {
+      "display_name": "Claude Fable 5",
+      "base_input_per_mtok": 10.00,
+      "output_per_mtok": 50.00,
+      "cache_read_per_mtok": 1.00,
+      "cache_write_5m_per_mtok": 12.50,
+      "cache_write_1h_per_mtok": 20.00
+    },
+    "claude-opus-4-8": {
+      "display_name": "Claude Opus 4.8",
+      "base_input_per_mtok": 5.00,
+      "output_per_mtok": 25.00,
+      "cache_read_per_mtok": 0.50,
+      "cache_write_5m_per_mtok": 6.25,
+      "cache_write_1h_per_mtok": 10.00
+    },
     "claude-opus-4-7": {
       "display_name": "Claude Opus 4.7",
       "base_input_per_mtok": 5.00,

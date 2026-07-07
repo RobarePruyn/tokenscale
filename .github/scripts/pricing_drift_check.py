@@ -65,10 +65,18 @@ SNAPSHOT_STALE_AFTER_DAYS = 90
 # means: (1) update pricing.toml with verified rates, (2) re-capture
 # pricing-rate-card.snapshot.json, (3) add the model ID here.
 TRACKED_MODELS = {
+    "claude-opus-4-8": "Claude Opus 4.8",
     "claude-opus-4-7": "Claude Opus 4.7",
     "claude-opus-4-6": "Claude Opus 4.6",
     "claude-sonnet-4-6": "Claude Sonnet 4.6",
     "claude-haiku-4-5": "Claude Haiku 4.5",
+    # Fable 5 is retired (pulled 2026-06-12 by a US export-control
+    # directive, ~3 days after launch). It is still on the pricing page
+    # today, so we verify its rates while they last. Once Anthropic
+    # delists it, `status = "retired"` in pricing.toml tells the detector
+    # to skip it rather than raise ParseFailure. See load_retired_model_ids
+    # and the retired-skip guard in parse_anthropic_page.
+    "claude-fable-5": "Claude Fable 5",
 }
 
 # Anthropic's published cache multipliers (per ### Prompt caching prose).
@@ -127,7 +135,9 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", stripped).strip()
 
 
-def parse_anthropic_page(markdown_or_html: str) -> dict[str, ModelRates]:
+def parse_anthropic_page(
+    markdown_or_html: str, retired_ids: "frozenset[str]" = frozenset()
+) -> dict[str, ModelRates]:
     """Parse the page content and extract base-rate rows from the
     Model pricing section only.
 
@@ -194,6 +204,18 @@ def parse_anthropic_page(markdown_or_html: str) -> dict[str, ModelRates]:
         )
         m = re.search(pattern, section)
         if not m:
+            if model_id in retired_ids:
+                # Retired model (e.g. a pulled model marked status="retired"
+                # in pricing.toml) is no longer on the page. Expected, not
+                # drift: log and skip rather than failing the build. This is
+                # the D5 guard — keeps a delisting from crying wolf (the
+                # v0.1.14 "cry-wolf kills trust" lesson).
+                print(
+                    f"::notice::{display_name} ({model_id}) is marked retired and is "
+                    "no longer on the pricing page; skipping (expected, not drift).",
+                    file=sys.stderr,
+                )
+                continue
             raise ParseFailure(
                 f"could not find row for {display_name!r} in Model pricing table. "
                 "Either the model was removed upstream or the parser regex needs to update."
@@ -305,6 +327,27 @@ def load_pricing_toml() -> dict[str, dict[str, float]]:
                 "cache_write_1h_multiplier": float(latest["cache_write_1h_multiplier"]),
             }
     return out
+
+
+def load_retired_model_ids() -> "frozenset[str]":
+    """Model IDs whose latest pricing.toml row carries `status = "retired"`.
+
+    A retired model (a pulled model like Fable 5) may vanish from the live
+    pricing page at any time. The detector treats its absence as expected
+    rather than as a parse failure — see the guard in parse_anthropic_page.
+    Reads the same `status` field the Rust parser ignores (TOML-only
+    provenance, like launch_date_source).
+    """
+    with PRICING_TOML.open("rb") as f:
+        data = tomllib.load(f)
+    retired: set[str] = set()
+    for provider in data.get("providers", {}).values():
+        for model_id, model in provider.get("models", {}).items():
+            rows = model if isinstance(model, list) else [model]
+            latest = max(rows, key=lambda row: row.get("valid_from", ""))
+            if latest.get("status") == "retired":
+                retired.add(model_id)
+    return frozenset(retired)
 
 
 def load_snapshot() -> dict:
@@ -423,7 +466,7 @@ def main() -> int:
         return 3
 
     try:
-        upstream_rates = parse_anthropic_page(page)
+        upstream_rates = parse_anthropic_page(page, load_retired_model_ids())
         upstream_multipliers = parse_cache_multipliers(page)
     except ParseFailure as e:
         print(f"::warning::Parse failure: {e}", file=sys.stderr)
