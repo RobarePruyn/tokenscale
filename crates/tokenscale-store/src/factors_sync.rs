@@ -19,7 +19,7 @@
 //! one place to swap in upsert semantics.
 
 use tokenscale_core::EnvironmentalFactorsFile;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::error::Result;
 use crate::Database;
@@ -56,6 +56,17 @@ pub async fn sync_environmental_factors(
 
     for (provider_id, provider) in &factors_file.providers {
         for (model_id, model) in &provider.models {
+            // A factor row with no valid_from becomes "always in effect"
+            // (1970 epoch), which can shadow correct time-anchoring for a
+            // model with a real launch date. Loud, not silent: every
+            // historical-backfill row should carry an explicit valid_from.
+            if model.valid_from.is_none() {
+                warn!(
+                    provider = %provider_id,
+                    model = %model_id,
+                    "env factor row has no valid_from; defaulting to 1970-01-01 (always in effect)"
+                );
+            }
             let valid_from = model.valid_from.as_deref().unwrap_or("1970-01-01");
             sqlx::query(
                 "INSERT INTO env_factors (
@@ -94,6 +105,13 @@ pub async fn sync_environmental_factors(
     }
 
     for (region_id, grid) in &factors_file.grid_factors {
+        // Same loud-default rule as model rows above.
+        if grid.valid_from.is_none() {
+            warn!(
+                region = %region_id,
+                "grid factor row has no valid_from; defaulting to 1970-01-01 (always in effect)"
+            );
+        }
         let valid_from = grid.valid_from.as_deref().unwrap_or("1970-01-01");
         // Phase 2: `grid_factors.co2e_kg_per_kwh` and `pue` are nullable
         // in the schema (migration 0002), so we pass through `Option<f64>`

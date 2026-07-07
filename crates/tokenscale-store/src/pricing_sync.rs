@@ -157,6 +157,61 @@ source_accessed_at        = "2026-05-18"
         assert_eq!(count.0, 3);
     }
 
+    /// Quick-pass hardening (2026-06-16): two rows sharing the same
+    /// (provider, model, valid_from) would each satisfy the aggregate
+    /// join's `valid_from = (SELECT MAX(valid_from) ...)` equality and
+    /// silently double-count every cost/energy SUM. The UNIQUE index
+    /// added in migration 20260616000001 makes such a TOML fail the
+    /// sync loudly (transaction rollback, serve refuses to start)
+    /// instead. This test pins the fail-loud behavior.
+    #[tokio::test]
+    async fn sync_rejects_duplicate_model_valid_from_rows() {
+        const DUPLICATE_VALID_FROM_TOML: &str = r#"
+schema_version = 1
+file_status = "production"
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+[[providers.anthropic.models."claude-opus-4-7"]]
+display_name              = "Claude Opus 4.7"
+valid_from                = "2026-01-15"
+input_usd_per_mtok        = 5.00
+output_usd_per_mtok       = 25.00
+cache_read_usd_per_mtok   = 0.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-05-18"
+
+[[providers.anthropic.models."claude-opus-4-7"]]
+display_name              = "Claude Opus 4.7"
+valid_from                = "2026-01-15"
+input_usd_per_mtok        = 6.00
+output_usd_per_mtok       = 30.00
+cache_read_usd_per_mtok   = 0.60
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-05-18"
+"#;
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let pricing = PricingFile::parse(DUPLICATE_VALID_FROM_TOML).unwrap();
+
+        let result = sync_pricing(&database, &pricing).await;
+        assert!(
+            result.is_err(),
+            "duplicate (provider, model, valid_from) must fail the sync loudly, not double-count"
+        );
+
+        // The transaction rolled back: nothing landed.
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM pricing")
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+        assert_eq!(count.0, 0, "failed sync must leave the table untouched");
+    }
+
     #[tokio::test]
     async fn sync_is_idempotent() {
         let database = Database::open_in_memory_for_tests().await.unwrap();

@@ -29,12 +29,26 @@ impl BillableMultipliers {
     /// Cache-write multipliers come straight from the pricing file —
     /// Anthropic publishes them as input-price ratios already. Output and
     /// cache-read are derived by dividing through the input price.
+    ///
+    /// A row with a non-positive input price cannot express relative
+    /// weights (the reference unit is zero), so the derived multipliers
+    /// collapse to 0.0 rather than dividing through to NaN/inf and
+    /// poisoning every downstream sum. No production row is expected to
+    /// carry input = 0; the guard exists so a bad backfill row degrades
+    /// to "weightless" instead of NaN.
     #[must_use]
     pub fn from_pricing(pricing: &ModelPricing) -> Self {
+        let per_input = |rate: f64| {
+            if pricing.input_usd_per_mtok > 0.0 {
+                rate / pricing.input_usd_per_mtok
+            } else {
+                0.0
+            }
+        };
         Self {
             input: 1.0,
-            output: pricing.output_usd_per_mtok / pricing.input_usd_per_mtok,
-            cache_read: pricing.cache_read_usd_per_mtok / pricing.input_usd_per_mtok,
+            output: per_input(pricing.output_usd_per_mtok),
+            cache_read: per_input(pricing.cache_read_usd_per_mtok),
             cache_write_5m: pricing.cache_write_5m_multiplier,
             cache_write_1h: pricing.cache_write_1h_multiplier,
         }
@@ -117,6 +131,22 @@ source_accessed_at = "2026-04-28"
         // = 1000 + 500 + 1000 + 125 + 100 = 2725
         let total = multipliers.weight_total(1000, 100, 10_000, 100, 50);
         assert!((total - 2725.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn zero_input_price_yields_zero_derived_multipliers_not_nan() {
+        // Guard regression: a (hypothetical, disallowed-by-authoring-rule)
+        // row with input = 0 must not produce NaN/inf multipliers that
+        // would poison every downstream billable sum.
+        let mut pricing = opus_pricing();
+        pricing.input_usd_per_mtok = 0.0;
+        let multipliers = BillableMultipliers::from_pricing(&pricing);
+        assert!(multipliers.output.is_finite());
+        assert!(multipliers.cache_read.is_finite());
+        assert!(multipliers.output.abs() < f64::EPSILON);
+        assert!(multipliers.cache_read.abs() < f64::EPSILON);
+        let total = multipliers.weight_total(1000, 1000, 1000, 0, 0);
+        assert!(total.is_finite(), "billable total must stay finite");
     }
 
     #[test]

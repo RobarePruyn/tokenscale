@@ -6,6 +6,20 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## Unreleased
+
+**Quick-pass hardening** from the 2026-06-16 full-codebase assessment (`docs/assessment-full-codebase-2026-06.md`); mechanical, verified fixes only, ahead of the full-model-coverage workstream (`docs/roadmap-full-model-coverage.md`).
+
+- **UNIQUE fan-out guard** (`migrations/20260616000001_unique_pricing_factor_rows.sql`): UNIQUE indexes on `pricing (provider, model, valid_from)`, `env_factors (provider, model, valid_from)`, `grid_factors (region, valid_from)`. Closes the silent double-count risk in the aggregate joins (two rows sharing a valid_from both matched the MAX-equality join). A TOML with duplicate rows now fails sync loudly instead; pinned by `sync_rejects_duplicate_model_valid_from_rows`. Real DB checked for existing duplicates before the migration was written (zero found).
+- **Billable div-by-zero guard** (`crates/tokenscale-core/src/billable.rs`): a pricing row with non-positive input price now yields 0.0 derived multipliers instead of NaN/inf poisoning every billable sum. Pinned by `zero_input_price_yields_zero_derived_multipliers_not_nan`.
+- **Seed-marker gate message fix** (`crates/tokenscale-cli/src/main.rs`): the bail message now lists the exact phrases the gate checks ("seed value", "assumed unchanged", "needs_review", "unverified") instead of a wrong superset that would mislead row authors.
+- **Loud default warning** (`crates/tokenscale-store/src/factors_sync.rs`): a factor row missing `valid_from` still defaults to 1970-01-01 but now logs a per-row WARN instead of silently becoming "always in effect".
+- **Drift-detector docstring** updated from the stale "four models tracked" scope note to the current TRACKED_MODELS + retired-skip reality.
+- **Frontend display names** (`frontend/src/App.tsx`): `modelDisplayName` now handles single-part versions and dated pinned-snapshot IDs, so `claude-fable-5` renders "Claude Fable 5" and `claude-haiku-4-5-20251001` renders "Claude Haiku 4.5" instead of raw machine IDs. Version-first historical IDs stay raw pending the model-coverage workstream (D9).
+- **Docs**: `docs/cost-methodology.md` assumption 2 rewritten; it still described the pre-v0.1.13 "current pricing applied retroactively" state that the same file's corrections log documents as fixed. Both cost lookup paths are per-event time-anchored; the remaining assumption is launch-date accuracy.
+
+---
+
 ## v0.1.19, 2026-06-16
 
 **Model additions (Fable 5 + Opus 4.8) plus subagent ingest.** Three changes that travel together: (1) pricing + environmental-factor coverage for two models that were used but unpriced/unfactored, (2) a walker fix so subagent transcripts are ingested at all, and (3) the bug that combination surfaced. See `docs/roadmap-model-additions-fable-opus48.md` for the full design pass (D1 through D5, sign-off, and the §8 smoke findings).

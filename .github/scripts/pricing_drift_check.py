@@ -35,8 +35,12 @@ re-asking):
   * Live fetch primary; snapshot at pricing-rate-card.snapshot.json is
     the offline-fallback. Snapshot > 90d emits a "snapshot is stale"
     warning regardless of fetch success.
-  * Scope: the four models actually tracked in pricing.toml. New-model
-    alerting is out-of-scope for V1.
+  * Scope: the models in TRACKED_MODELS (see that constant for the
+    current set; it grows as pricing.toml gains live models). Models
+    marked status="retired" in pricing.toml are verified while still
+    listed on the page and skipped once delisted. Alerting on brand-new
+    upstream models (present on the page, absent from pricing.toml
+    entirely) remains out of scope.
 """
 
 from __future__ import annotations

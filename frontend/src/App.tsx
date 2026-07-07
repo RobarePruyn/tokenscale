@@ -692,16 +692,29 @@ function selectionSummary(
   return `${selection.size} of ${total} ${pluralLabel}`
 }
 
-/** Map Anthropic's machine identifier (`claude-opus-4-7`) to the marketing
- *  label (`Claude Opus 4.7`). Unknown identifiers pass through unchanged.
+/** Map Anthropic's machine identifier to the marketing label. Handles
+ *  family-first IDs across their observed shapes: two-part versions
+ *  (`claude-opus-4-7` -> `Claude Opus 4.7`), single-part versions
+ *  (`claude-fable-5` -> `Claude Fable 5`, `claude-sonnet-5` -> `Claude
+ *  Sonnet 5`), and dated pinned snapshots (`claude-haiku-4-5-20251001`
+ *  -> `Claude Haiku 4.5`; the date suffix is a snapshot marker, not part
+ *  of the marketing name). Version segments are capped at two digits so
+ *  an 8-digit date can never be misread as a minor version
+ *  (`claude-opus-4-20250514` -> `Claude Opus 4`).
+ *
+ *  Version-first historical IDs (`claude-3-5-sonnet-20241022`) and
+ *  non-numeric variants (`claude-mythos-preview`, `claude-2.1`) pass
+ *  through raw for now; the full historical display mapping is part of
+ *  the model-coverage workstream (roadmap-full-model-coverage.md D9).
  */
 function modelDisplayName(modelIdentifier: string): string {
   const claudeFamilyMatch = modelIdentifier.match(
-    /^claude-(opus|sonnet|haiku)-(\d+)-(\d+)$/,
+    /^claude-(opus|sonnet|haiku|fable|mythos)-(\d{1,2})(?:-(\d{1,2}))?(?:-(\d{8}))?$/,
   )
   if (claudeFamilyMatch) {
     const [, family, major, minor] = claudeFamilyMatch
-    return `Claude ${family.charAt(0).toUpperCase() + family.slice(1)} ${major}.${minor}`
+    const familyLabel = family.charAt(0).toUpperCase() + family.slice(1)
+    return `Claude ${familyLabel} ${major}${minor ? `.${minor}` : ''}`
   }
   return modelIdentifier
 }

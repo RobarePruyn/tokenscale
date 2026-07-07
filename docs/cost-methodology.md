@@ -2,7 +2,7 @@
 
 Companion to [`methodology.md`](methodology.md). That page covers the **environmental** side in depth; this one is the **cost** side. Shorter because the cost math is simpler — but the assumptions baked into it are load-bearing for the headline "Estimated savings vs raw API rates" number, so they need to be visible, not buried.
 
-If you want full audit-trail parity between cost and environmental data — versioned `pricing.toml`, per-event time-anchored pricing, sweep cycle — see [request-for-research.md](request-for-research.md)'s "Cost-side time-anchoring + audit trail" entry.
+Cost and environmental data now have audit-trail parity: versioned `pricing.toml` with `file_version`/`file_published`, per-event time-anchored pricing (v0.1.13), the corrections log below, and the nightly drift detector. The original gap analysis lives in [request-for-research.md](request-for-research.md)'s "Cost-side time-anchoring + audit trail" entry for the historical record.
 
 ---
 
@@ -27,11 +27,13 @@ Counterfactual cost uses the per-million-token rates published in [`pricing.toml
 
 If you have an enterprise contract that gives you a different rate, the counterfactual over-states what the API would actually cost you, which in turn over-states your subscription savings. The number is still a defensible upper bound — your real API cost is at most the list-rate counterfactual, often less.
 
-### 2. **Current pricing is applied retroactively to all historical events** ← the big one
+### 2. Per-event time-anchored pricing, only as good as its launch dates
 
-The environmental side resolves each event against the env_factors row whose `valid_from` is the latest date `≤ event.occurred_at`. **The cost side does not do this today.** `pricing.toml` rows carry `valid_from` fields, but `PricingFile::lookup()` ignores them — it returns whatever single row matches `(provider, model)`, applied uniformly to every event in history.
+Since v0.1.13 the cost side resolves each event against the pricing row whose `valid_from` is the latest date at or before `event.occurred_at`, symmetric with the environmental side. This holds on both code paths: the DB aggregation (per-event correlated subquery in `aggregate_impact_by_bucket` and the sessions rollup) and the in-memory `PricingFile::lookup(provider, model, as_of_date)`. A future Anthropic rate change adds a new dated row rather than rewriting history, so historical counterfactual numbers stay stable across pricing sweeps.
 
-Practical consequence: when Anthropic next changes a model's per-token price, every counterfactual number in your dashboard silently shifts. The April-2026 cost number you screenshotted will read differently after the next pricing sweep. This is a known asymmetry between the environmental and cost sides; closing it is on the open research queue with a **hard trigger**: it has to land before the next Anthropic pricing change.
+The assumption that remains: **the `valid_from` dates are only as accurate as their sources.** Sourced rows carry exact launch dates; conservative-estimate rows are deliberately biased earlier (the D3 dating rule), which can only under-split rate eras, never silently drop events. An event predating every row for its model resolves to no price and renders as the missing-value placeholder rather than a wrong dollar figure. Data corrections to rates themselves (as in the 2026-05-18 entry below) still shift history, because fixing a wrong number is the point.
+
+(This section previously described the pre-v0.1.13 state, where a single window-wide rate applied retroactively to all events. That gap was closed by v0.1.13; see the corrections log below for the audit trail. Section rewritten 2026-06-16.)
 
 ### 3. Subscription pro-rating: flat daily
 
@@ -47,7 +49,6 @@ The "Cache hits" strip's `~$Y saved` figure assumes Anthropic's published cache-
 
 ## What's NOT in the cost picture
 
-- **Time-anchored historical pricing** (see assumption 2). On the open queue.
 - **Volume / enterprise / batch discount modeling** — list rates only.
 - **Anthropic Admin API ingest** — designed but unbuilt; would let users with org-tier accounts cross-check imported billing against actual API spend.
 - **Multi-currency** — USD only. CSV imports in other currencies are not converted.

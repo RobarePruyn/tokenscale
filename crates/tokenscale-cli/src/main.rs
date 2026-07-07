@@ -252,11 +252,12 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
     if pricing.has_seed_markers() {
         anyhow::bail!(
             "pricing.toml contains a row whose `notes` field still has a seed / assumption \
-             marker (one of: \"seed\", \"assumed\", \"verify\", \"needs_review\", \
-             \"unverified\"). This is the v0.1.0–v0.1.10 failure mode — the file shipped \
-             with verified-looking file_status but unverified per-row data. Verify each \
-             flagged row against Anthropic's pricing page, then rewrite or remove the \
-             notes field before starting."
+             marker (one of the exact phrases: \"seed value\", \"assumed unchanged\", \
+             \"needs_review\", \"unverified\"). This is the v0.1.0–v0.1.10 failure mode — \
+             the file shipped with verified-looking file_status but unverified per-row \
+             data. Verify each flagged row against Anthropic's pricing page, then rewrite \
+             or remove the notes field before starting. (Bare \"assumed\", \"verify\", or \
+             \"seed\" do NOT trip the gate; legitimate methodology prose may use them.)"
         );
     }
     // v0.1.13: pricing also lives in a DB table now (the table was
