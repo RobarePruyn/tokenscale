@@ -18,12 +18,12 @@ Launch = date the model became available (ID-encoded snapshot date used when ear
 
 | API model ID | Launch (valid_from) | In/Out $ | Rate provenance | Deprecated | Retired |
 |---|---|---|---|---|---|
-| claude-opus-5 | 2026-07-24 | 5 / 25 | live pricing page 2026-08-02 | N/A | active |
-| claude-sonnet-5 (intro row) | 2026-06-30 | 2 / 10 | live page: "through August 31, 2026" row | N/A | active |
-| claude-sonnet-5 (standard row) | 2026-09-01 | 3 / 15 | live page: "starting September 1, 2026" row | N/A | active |
-| claude-fable-5 | 2026-06-09 | 10 / 50 | live page (v0.1.19, re-verified 2026-08-02) | N/A | pulled 2026-06-12, still listed |
-| claude-mythos-5 | 2026-06-09 | 10 / 50 | live page (limited availability) | N/A | active (Glasswing) |
-| claude-mythos-preview | 2026-04-07 | ESTIMATE 10 / 50 | Glasswing launch 2026-04-07 sourced; rates never published, Fable-family ESTIMATE | N/A | retires 2026-06-30 |
+| claude-opus-5 | 2026-07-24 | 5 / 25 | live pricing page 2026-08-02; GA all platforms 2026-07-24 (Anthropic/Axios/TechCrunch) | N/A | active; NST 2027-07-24 |
+| claude-sonnet-5 (intro row) | 2026-06-30 | 2 / 10 | live page: "through August 31, 2026" row | N/A | active; NST 2027-06-30 |
+| claude-sonnet-5 (standard row) | 2026-09-01 | 3 / 15 | live page: "starting September 1, 2026" row | N/A | same |
+| claude-fable-5 | 2026-06-09 | 10 / 50 | live page (v0.1.19, re-verified 2026-08-02) | N/A | ACTIVE, restored; NST 2027-06-09 (see 1.4) |
+| claude-mythos-5 | 2026-06-09 | 10 / 50 | live page (limited availability) | N/A | active (Glasswing); restored with Fable |
+| claude-mythos-preview | 2026-04-07 | ESTIMATE 10 / 50 | Glasswing launch 2026-04-07 sourced; rates never published, Fable-family ESTIMATE | deprecated (page, 2026-08-02) | retirement TBD; the scheduled 2026-06-30 retirement did NOT occur |
 | claude-opus-4-8 | 2026-05-28 | 5 / 25 | v0.1.19 sourced | N/A | active |
 | claude-opus-4-7 | 2026-04-16 | 5 / 25 | v0.1.13 sourced | N/A | active |
 | claude-sonnet-4-6 | 2026-02-17 | 3 / 15 | launch date now sourced (was conservative 2025-09-01; correction, see D8) | N/A | active |
@@ -60,6 +60,16 @@ Per Anthropic's model docs: every model ID is a pinned snapshot; 4.6-generation 
 2. Extract per-model Claude energy anchors from Jegham et al. (arXiv:2505.09598) for the 3-era models it covers directly; docs/sources.md already frames this (older generations are direct evidence). Era-scaled estimates with wide bands for 2.x/1.x/Instant.
 3. Enumerate pre-4.6 `-latest` aliases from archived docs for the D1 alias table (claude-3-5-sonnet-latest and kin).
 
+### 1.4 Fable 5 restoration (supplemental research, 2026-08-02)
+
+Fable 5 is **permanently back**. The US Commerce Department lifted the export controls on Fable 5 and Mythos 5 on 2026-06-30 (CNBC; Anthropic's "Redeploying Claude Fable 5" post); Anthropic restored global access on 2026-07-01 across the Claude Platform, claude.ai, Claude Code, and Cowork, an 18-day suspension in total (2026-06-12 to 2026-07-01). The trigger was a jailbreak surfaced during Amazon security testing; Anthropic shipped a new safety classifier as part of redeployment. The deprecations page now carries a normal lifecycle row: claude-fable-5, Active, tentative retirement not sooner than 2027-06-09.
+
+Build implications:
+1. **Remove `status = "retired"` from the Fable pricing row** (with a comment preserving the suspension window as provenance history). The rates and `valid_from = 2026-06-09` are unchanged; no corrections-log entry needed since no number moves.
+2. **The detector retired-skip guard keeps zero active users.** The mechanism, its tests, and the `load_retired_model_ids` plumbing stay (cheap, proven, and the Fable episode shows pulls really happen), but no row carries the marker after this release.
+3. **Soften the Fable factor-row note**: "no anchor is expected (model pulled)" is no longer true; with Fable live again, Couch-style or Jegham-style measurements may emerge. The pricing-proxy estimate and the wide band stay until one does; the note should say "revisit when a benchmark emerges" without the finality.
+4. New Fable usage (including the sessions building this feature) ingests and prices via the existing 2026-06-09 row; the suspension window needs no schema representation since rates never changed.
+
 ---
 
 ## 2. D-decisions (options, recommendation, reasoning); sign-off gate
@@ -82,7 +92,7 @@ Models predating prompt caching (beta 2024-08-14): Claude 1.x, Instant, 2.0, 2.1
 
 ### D4. Drift-detector scope
 
-**Recommendation: page-presence becomes the tracking axis.** TRACKED_MODELS holds only live-pricing-page models (add claude-opus-5 now); historical models are never tracked, get no snapshot or fixture entries, and cannot flip the nightly run to exit-2. The retired-skip stays reserved for the pulled-while-listed case (Fable). Two sub-calls:
+**Recommendation: page-presence becomes the tracking axis.** TRACKED_MODELS holds only live-pricing-page models (add claude-opus-5 now); historical models are never tracked, get no snapshot or fixture entries, and cannot flip the nightly run to exit-2. The retired-skip mechanism stays (tests and plumbing intact) but has zero active users after Fable's restoration per §1.4; it is the standing defense for the next pull. Two sub-calls:
 - **D4a Sonnet 5**: the live page currently renders Sonnet 5 as two qualifier-suffixed rows ("through August 31, 2026" / "starting September 1, 2026") that the row regex will not match. Track claude-sonnet-5 starting 2026-09-01 when the page collapses to a single standard row; until then it is priced-but-untracked with a dated note in TRACKED_MODELS. Zero parser risk during the intro window.
 - **D4b**: detector docstring and cost-methodology detector-scope prose updated to the page-listed model.
 
