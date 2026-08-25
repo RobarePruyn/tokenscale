@@ -71,3 +71,7 @@ Temporary Items
 /config.local.toml
 /.env
 /.env.local
+
+# --- Python bytecode (detector scripts) ---
+__pycache__/
+*.pyc
