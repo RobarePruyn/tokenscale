@@ -104,7 +104,8 @@ pub async fn sync_environmental_factors(
         }
     }
 
-    for (region_id, grid) in &factors_file.grid_factors {
+    for (region_id, rows) in &factors_file.grid_factors {
+        for grid in rows {
         // Same loud-default rule as model rows above.
         if grid.valid_from.is_none() {
             warn!(
@@ -143,6 +144,7 @@ pub async fn sync_environmental_factors(
         .execute(&mut *transaction)
         .await?;
         summary.grid_factor_rows += 1;
+        }
     }
 
     transaction.commit().await?;
@@ -176,7 +178,7 @@ valid_from = "2026-04-28"
 source_doc = "docs/sources.md#G.1"
 wh_per_mtok_input = 0.5
 
-[grid_factors."us-east-1"]
+[[grid_factors."us-east-1"]]
 display_name = "AWS US East"
 valid_from = "2026-04-28"
 source_accessed_at = "2026-04-28"

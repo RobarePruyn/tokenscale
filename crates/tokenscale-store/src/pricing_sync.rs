@@ -356,7 +356,7 @@ wh_per_mtok_cache_write_5m = 88
 wh_per_mtok_cache_write_1h = 140
 uncertainty_range_pct = 30
 confidence = "secondary"
-[grid_factors."us-east-1"]
+[[grid_factors."us-east-1"]]
 display_name = "AWS US East"
 valid_from = "2026-01-01"
 source_accessed_at = "2026-01-01"

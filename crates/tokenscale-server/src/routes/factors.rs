@@ -114,7 +114,8 @@ pub async fn active_handler(
     }
 
     let mut regions = Vec::new();
-    for (region_id, grid) in &factors.grid_factors {
+    for (region_id, rows) in &factors.grid_factors {
+        for grid in rows {
         regions.push(GridFactorEntry {
             region_id: region_id.clone(),
             display_name: grid.display_name.clone(),
@@ -133,6 +134,7 @@ pub async fn active_handler(
             source_accessed_at: grid.source_accessed_at.clone(),
             notes: grid.notes.clone(),
         });
+        }
     }
 
     Ok(Json(ActiveFactorsResponse {

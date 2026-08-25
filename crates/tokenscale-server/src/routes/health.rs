@@ -133,12 +133,10 @@ pub async fn handler(State(state): State<AppState>) -> Result<Json<HealthRespons
             accessed_at: factors.most_recent_grid_accessed_at().map(str::to_owned),
             configured_region: state.inference_region.clone(),
             configured_region_egrid_subregion: factors
-                .grid_factors
-                .get(&state.inference_region)
+                .lookup_grid(&state.inference_region)
                 .and_then(|grid| grid.egrid_subregion.clone()),
             configured_region_egrid_subregion_full_name: factors
-                .grid_factors
-                .get(&state.inference_region)
+                .lookup_grid(&state.inference_region)
                 .and_then(|grid| grid.egrid_subregion_full_name.clone()),
         },
         ingest: IngestStatus { last_scanned_at },

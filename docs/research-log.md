@@ -6,6 +6,60 @@ Newest entries appear at the top.
 
 ---
 
+## 2026-08-25 — Sweep #3: per-model energy anchors for historical Claude models (Issue #8)
+
+### Question
+
+Can the interim pricing-as-proxy energy values for pre-4.5 Claude models (shipped in v0.1.20's full-coverage backfill) be replaced or corrected with direct measurements, and has any new evidence emerged for the current generation (Fable 5, Opus 5, Sonnet 5, Opus 4.8)?
+
+### Methodology
+
+Two parallel evidence passes: (1) a deep-read of Jegham et al. arXiv:2505.09598 at its latest version, extracting every Claude number and the exact prompt-size conventions from the v6 full text (HTML and PDF cross-checked); (2) a survey for post-April-2026 evidence: Anthropic disclosures, third-party measurements of new models, Google anchor revisions, methodology critiques, and datacenter-efficiency disclosures. Every load-bearing claim from the survey was re-verified against its primary source before ingestion (the Oviedo and Llopis numbers against their arXiv abstracts, the AWS values against the AWS sustainability page).
+
+### Source corpus (this cycle)
+
+Jegham et al. v6 (2025-11-24); Oviedo et al., Joule (2026) 102430 / arXiv:2509.20241; Llopis arXiv:2606.10660; TokenPowerBench arXiv:2512.03024; Hausfather (The Climate Brink, 2026-08-05); mdodkins gist (2026-03-09); gwittebolle/claude-carbon; Bloomberg (2026-08-12); AWS sustainability per-region PUE/WUE disclosure; Anthropic voluntary-commitments page; Google Cloud Gemini disclosure (unchanged). Full citations in docs/sources.md A.4, C.1.1, C.4-C.6, D.5, G.4-G.6.
+
+### Findings
+
+1. **Jegham v6 covers exactly three Claude models** (3.7 Sonnet, 3.5 Sonnet, 3.5 Haiku), nothing older, nothing newer than Feb 2025. The "may cover this model directly" hedges on Claude 3-era rows resolve to no.
+2. **Prompt-size convention corrected**: long prompt = 10,000 input + 1,500 output = 11,500 tokens, not the ~10,300 previously recorded. `[defaults].long_prompt_token_count_assumption` and sources.md C.1.1 both corrected.
+3. **Per-token 3-point solves** from the paper's three prompt configurations: 3.7 Sonnet 146.6 in / 2,724.3 out Wh/MTok; 3.5 Sonnet 266.9 / 3,464.0; 3.5 Haiku 126.1 / 4,822.2.
+4. **Level conflict resolved in favor of Couch/Google**: Jegham absolutes run ~4x the file's Couch-derived level, and Oviedo et al. (Joule 2026, Microsoft; verified verbatim) find such estimates "overstated by 4-20x", with a 0.31 Wh/query frontier median that corroborates Google's 0.24 Wh anchor. Decision (D-R1, signed off 2026-08-25): keep the Couch-scale level, import Jegham's relative structure, pinned at 3.7 Sonnet.
+5. **The material correction is 3.5 Haiku**: measured LESS efficient per output token than 3.5 Sonnet, overturning the 1/3-of-Sonnet pricing proxy. Row moves 70/330 to 170/1,750 Wh/MTok (in/out). Claude 3 Haiku rescales off the corrected sibling: 18/83 to 43/440.
+6. **3.5 Sonnet rows move** 200/990 to 365/1,260 (both snapshots; Jegham does not distinguish them). 3.7 Sonnet stays 200/990 as the pin, band narrowed 50 to 40.
+7. **No measurement exists for any current-generation model** (Fable 5, Opus 5, Sonnet 5, Opus 4.8, Mythos). The only source naming Fable (claude-carbon) uses the same 2x-Opus pricing extrapolation this file does. Rows unchanged.
+8. **Anthropic still discloses nothing** through 2026-08 (Bloomberg 2026-08-12; transparency page re-checked). Google's 0.24 Wh anchor is unrevised.
+9. **AWS now publishes per-region PUE/WUE** (data years 2024 and 2025). Grid factors became array-of-tables with time-anchored per-region rows; on-site water band narrowed 50 to 25 percent; defaults updated to the 2025 globals (PUE 1.14, WUE 0.12).
+10. **Serving mix has shifted**: Google TPU deal (up to 1M TPUs, more than 1 GW during 2026) and xAI Colossus capacity mean the AWS-only assumption increasingly misstates Claude serving. No traffic split is disclosed; caveat recorded in the file, apportionment question filed in request-for-research.md.
+
+### Methodology decisions worth recording
+
+1. **Relative structure over absolute levels when methodologies conflict.** When a benchmark's absolute scale is disputed (Oviedo) but its internal ratios come from a uniform procedure, import the ratios against the file's anchored level rather than mixing scales. Applied via the 3.7 Sonnet pin.
+2. **Verification discipline paid for itself twice**: the survey's framing of Llopis as a "10-40x overestimate" critique of physical modeling was wrong (it targets spend-based EEIO factors); and the recorded Jegham long-prompt token count was paraphrase drift. Both caught by re-reading primary sources before ingestion.
+3. **Pin choice biases toward the present**: pinning at 3.7 Sonnet (nearest to the Couch 4.5-generation anchor) preserves the predecessor-equivalence chain and lets older models get worse, matching the measured direction of serving-efficiency improvement.
+
+### What changed in `environmental-factors.toml`
+
+file_version 0.5 to 0.6. Model rows: claude-3-5-sonnet (both snapshots) 200/990 to 365/1,260; claude-3-5-haiku 70/330 to 170/1,750; claude-3-haiku 18/83 to 43/440 (all Wh/MTok in/out, cache fields rescaled on the file's input-derived convention); claude-3-7-sonnet values unchanged, band 50 to 40. Grid factors: array-of-tables migration; six new time-anchored per-region rows (2024 and 2025 data years for us-east-1/us-east-2/us-west-2); water bands 50 to 25 on disclosed rows; defaults to 2025 globals. `long_prompt_token_count_assumption` 10,300 to 11,500. Serving-mix caveat on the Anthropic provider block.
+
+### What this changes for users
+
+Environmental figures for 3.5-era Sonnet and Haiku usage rise materially (output-token energy 1.3x and 5.3x respectively); 2024-onward events in modeled AWS regions get slightly lower facility water. Cost figures do not move; no pricing value changed, so no corrections-log entry lands in docs/cost-methodology.md (Issue #8 anticipated one, but that log is the audit trail for `pricing.toml`; factor-side changes are recorded here, per each document's own charter).
+
+### Resolved from `request-for-research.md`
+
+None closed this sweep; two added (serving-mix apportionment; Jegham live-dashboard monitoring).
+
+### Carry-forward
+
+- Fable 5 / Opus 5 / Sonnet 5 / Opus 4.8 measurements: nothing exists; re-check quarterly.
+- Jegham's companion live dashboard reportedly ingests new models daily; check for post-Feb-2025 Claude entries next sweep.
+- eGRID2024: still pending; all CO2e rows remain eGRID2023.
+- Serving-mix apportionment (AWS vs Google TPU vs xAI Colossus): blocked on any disclosure of traffic split.
+
+---
+
 ## 2026-05-15 — Sweep #2: indirect (off-site / power-plant) water
 
 ### Question

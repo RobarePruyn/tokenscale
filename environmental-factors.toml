@@ -27,8 +27,18 @@
 
 schema_version = 1
 file_status = "production"
-file_version = "0.5"
-file_published = "2026-08-02"
+file_version = "0.6"
+file_published = "2026-08-25"
+# v0.6 (2026-08-25): Sweep #3 (research-log entry of the same date; Issue #8).
+# Jegham et al. v6 direct measurements imported as RELATIVE structure for the
+# three Claude models the paper covers (3.7 Sonnet, 3.5 Sonnet, 3.5 Haiku),
+# pinned at 3.7 Sonnet on the Couch-scale level; the absolute level stays
+# Couch/Google-anchored because Oviedo et al. (Joule 2026) find latency-based
+# per-query estimates overstated 4-20x, and Jegham's Claude absolutes sit ~4x
+# above the Couch level, inside that band. Claude 3 Haiku rescaled from the
+# corrected 3.5 Haiku. Grid factors are now array-of-tables with per-region
+# time-anchored rows from AWS's 2025 disclosure of per-region PUE/WUE.
+# Serving-mix caveat added (Google TPU and xAI Colossus capacity).
 # v0.5 (2026-08-02): full Anthropic coverage per docs/roadmap-full-model-coverage.md.
 # Row keys are the model IDs real data emits (dated snapshots before the 4.6
 # generation, dateless from 4.6 on); undated aliases resolve through the D1
@@ -68,7 +78,14 @@ display_name = "Anthropic"
 inference_provider = "aws"
 disclosure_status = "not_disclosed"  # Anthropic does not publish per-query environmental data
 disclosure_status_source = "https://www.anthropic.com/transparency/voluntary-commitments"
-disclosure_status_accessed = "2026-04-28"
+disclosure_status_accessed = "2026-08-25"  # re-verified Sweep #3; still nothing (Bloomberg 2026-08-12 confirms no Scope 1/2/3 disclosure)
+# Serving-mix caveat (Sweep #3, 2026-08-25): inference_provider = "aws" is
+# increasingly incomplete. Anthropic's October 2025 Google deal (up to 1M
+# TPUs, more than a gigawatt online during 2026) and 2026 xAI Colossus
+# capacity mean a growing share of Claude inference runs outside AWS, on
+# grids and PUE profiles this file does not model. No traffic split is
+# disclosed, so the AWS assumption stays, flagged. See
+# docs/request-for-research.md "Claude serving-mix apportionment".
 
 # ---- Claude 5 generation ----
 
@@ -113,7 +130,7 @@ released_at = "2026-06-09"
 valid_from = "2026-06-09"
 source_doc = "docs/sources.md#G.1"
 confidence = "estimated"
-notes = "ESTIMATE (pricing-as-proxy, zero anchor). No per-token, per-prompt, or third-party energy measurement exists yet. Energy is set to 2x Opus 4.8 because Fable was priced 2x Opus (10/50 vs 5/25 USD per MTok), the same pricing-as-proxy heuristic this file uses for Haiku (Haiku = Sonnet/3 by price). The proxy is weaker projecting up-tier than Haiku's down-tier: a 2x price may reflect flagship positioning rather than 2x compute, so the true value could be materially lower. Wide band. Same new tokenizer as Opus 4.7+. Revisit when a benchmark emerges (Issue #8)."
+notes = "ESTIMATE (pricing-as-proxy, zero anchor). No per-token, per-prompt, or third-party energy measurement exists yet. Energy is set to 2x Opus 4.8 because Fable was priced 2x Opus (10/50 vs 5/25 USD per MTok), the same pricing-as-proxy heuristic this file uses for Haiku (Haiku = Sonnet/3 by price). The proxy is weaker projecting up-tier than Haiku's down-tier: a 2x price may reflect flagship positioning rather than 2x compute, so the true value could be materially lower. Wide band. Same new tokenizer as Opus 4.7+. Sweep #3 (2026-08-25) re-checked: still no measurement anywhere; the independent claude-carbon tool arrived at the same 2x-Opus extrapolation, which corroborates the heuristic choice, not the value. Revisit next quarterly sweep."
 wh_per_mtok_input = 720
 wh_per_mtok_output = 3600
 wh_per_mtok_cache_read = 72
@@ -308,13 +325,13 @@ released_at = "2025-02-19"
 valid_from = "2025-02-19"
 source_doc = "docs/sources.md#G.1"
 confidence = "estimated"
-notes = "ESTIMATE (interim, Issue #8): pricing-as-proxy from the Sonnet 4.5 anchor; identical rate card (3/15), two eras removed. Retired 2026-02-19."
+notes = "ESTIMATE (Sweep #3, 2026-08-25): Couch-scale level retained; this row is the pin for Jegham et al. v6's measured relative structure. Jegham v6 measures this model directly (0.950 / 2.989 / 5.671 Wh short/medium/long; per-token 3-point solve 146.6 in / 2,724.3 out Wh/MTok) but its absolute level runs ~4x the Couch-derived level, consistent with the 4-20x overstatement Oviedo et al. (Joule 2026, 102430) attribute to per-query estimates of this style, so the file keeps the Couch/Google level and imports only the ratios. Band narrowed from 50: the row now carries a direct measurement as cross-check. Retired 2026-02-19."
 wh_per_mtok_input = 200
 wh_per_mtok_output = 990
 wh_per_mtok_cache_read = 20
 wh_per_mtok_cache_write_5m = 250
 wh_per_mtok_cache_write_1h = 400
-uncertainty_range_pct = 50
+uncertainty_range_pct = 40
 
 [providers.anthropic.models."claude-3-5-sonnet-20241022"]
 display_name = "Claude Sonnet 3.5 (2024-10-22)"
@@ -322,13 +339,13 @@ released_at = "2024-10-22"
 valid_from = "2024-10-22"
 source_doc = "docs/sources.md#G.1"
 confidence = "estimated"
-notes = "ESTIMATE (interim, Issue #8): pricing-as-proxy from the Sonnet 4.5 anchor (3/15), three eras removed; older serving stacks likely make this an underestimate, hence the band. Retired 2025-10-28."
-wh_per_mtok_input = 200
-wh_per_mtok_output = 990
-wh_per_mtok_cache_read = 20
-wh_per_mtok_cache_write_5m = 250
-wh_per_mtok_cache_write_1h = 400
-uncertainty_range_pct = 55
+notes = "ESTIMATE (Sweep #3, 2026-08-25): rescaled from the flat Sonnet proxy using Jegham et al. v6 measured relative structure. Per-token 3-point solve: 3.5 Sonnet 266.9 in / 3,464.0 out Wh/MTok vs 3.7 Sonnet 146.6 / 2,724.3; pinning 3.7 Sonnet at Couch-scale 200/990 scales this row to 365 / 1,260. Replaces the prior proxy that held 3.5 = 3.7 = 4.5 flat; measurement says the older serving stack was materially less efficient per token. The prior note's suspicion of an underestimate is confirmed. Retired 2025-10-28."
+wh_per_mtok_input = 365
+wh_per_mtok_output = 1260
+wh_per_mtok_cache_read = 37
+wh_per_mtok_cache_write_5m = 456
+wh_per_mtok_cache_write_1h = 730
+uncertainty_range_pct = 50
 
 [providers.anthropic.models."claude-3-5-sonnet-20240620"]
 display_name = "Claude Sonnet 3.5 (2024-06-20)"
@@ -336,13 +353,13 @@ released_at = "2024-06-20"
 valid_from = "2024-06-20"
 source_doc = "docs/sources.md#G.1"
 confidence = "estimated"
-notes = "ESTIMATE (interim, Issue #8): same proxy as the 2024-10-22 snapshot; caching arrived 2024-08-14, after launch. Retired 2025-10-28."
-wh_per_mtok_input = 200
-wh_per_mtok_output = 990
-wh_per_mtok_cache_read = 20
-wh_per_mtok_cache_write_5m = 250
-wh_per_mtok_cache_write_1h = 400
-uncertainty_range_pct = 55
+notes = "ESTIMATE (Sweep #3, 2026-08-25): same Jegham-rescaled values as the 2024-10-22 snapshot (Jegham v6 lists a single Jun-2024 3.5 Sonnet entry and does not distinguish the snapshots); caching arrived 2024-08-14, after launch. Retired 2025-10-28."
+wh_per_mtok_input = 365
+wh_per_mtok_output = 1260
+wh_per_mtok_cache_read = 37
+wh_per_mtok_cache_write_5m = 456
+wh_per_mtok_cache_write_1h = 730
+uncertainty_range_pct = 50
 
 [providers.anthropic.models."claude-3-sonnet-20240229"]
 display_name = "Claude Sonnet 3"
@@ -380,13 +397,13 @@ released_at = "2024-10-22"
 valid_from = "2024-10-22"
 source_doc = "docs/sources.md#G.1"
 confidence = "estimated"
-notes = "ESTIMATE (interim, Issue #8): pricing-as-proxy from the Haiku 4.5 anchor using the LAUNCH rate (1/5, identical to Haiku 4.5); the 2024-12-03 cut to 0.80/4 was commercial, not a compute change, so it does not scale energy. Three eras removed. Retired 2026-02-19."
-wh_per_mtok_input = 70
-wh_per_mtok_output = 330
-wh_per_mtok_cache_read = 7
-wh_per_mtok_cache_write_5m = 88
-wh_per_mtok_cache_write_1h = 140
-uncertainty_range_pct = 55
+notes = "ESTIMATE (Sweep #3, 2026-08-25): the sweep's material correction. Jegham et al. v6 measures 3.5 Haiku as LESS efficient per token than 3.5 Sonnet (3-point solve 126.1 in / 4,822.2 out Wh/MTok vs Sonnet's 266.9 / 3,464.0), overturning the pricing proxy that put it at 1/3 of Sonnet by price. Scaled via the 3.7 Sonnet pin: 200 x 126.1/146.6 = 170 in, 990 x 4,822.2/2,724.3 = 1,750 out. The prior proxy underestimated output energy ~5x; small models are not proportionally cheap to serve per token. The 2024-12-03 price cut remains commercial, not a compute signal. Retired 2026-02-19."
+wh_per_mtok_input = 170
+wh_per_mtok_output = 1750
+wh_per_mtok_cache_read = 17
+wh_per_mtok_cache_write_5m = 213
+wh_per_mtok_cache_write_1h = 340
+uncertainty_range_pct = 50
 
 [providers.anthropic.models."claude-3-haiku-20240307"]
 display_name = "Claude Haiku 3"
@@ -394,12 +411,12 @@ released_at = "2024-03-07"
 valid_from = "2024-03-07"
 source_doc = "docs/sources.md#G.1"
 confidence = "estimated"
-notes = "ESTIMATE (interim, Issue #8): pricing-as-proxy from the Haiku 4.5 anchor; priced 0.25/1.25, one quarter of Haiku 4.5's 1/5, applied as 0.25x energy. Caching reached Haiku 3 with the 2024-08-14 beta. Jegham et al. may cover this model directly. Retired 2026-04-20."
-wh_per_mtok_input = 18
-wh_per_mtok_output = 83
-wh_per_mtok_cache_read = 2
-wh_per_mtok_cache_write_5m = 22
-wh_per_mtok_cache_write_1h = 35
+notes = "ESTIMATE (Sweep #3, 2026-08-25): rescaled off the corrected 3.5 Haiku row (one era removed, measured sibling) instead of Haiku 4.5 (three eras). Price ratio 0.25/1.25 vs 3.5 Haiku's launch 1/5 = 0.25x on both axes: 170 x 0.25 = 43 in, 1,750 x 0.25 = 440 out (rounded). Jegham v6 coverage question resolved: the paper does NOT cover any Claude 3-era model, so this stays a proxy, now anchored nearer. Caching reached Haiku 3 with the 2024-08-14 beta. Retired 2026-04-20."
+wh_per_mtok_input = 43
+wh_per_mtok_output = 440
+wh_per_mtok_cache_read = 4
+wh_per_mtok_cache_write_5m = 54
+wh_per_mtok_cache_write_1h = 86
 uncertainty_range_pct = 60
 
 # ---- Claude 2 and earlier (no prompt caching existed; cache fields null) ----
@@ -723,16 +740,17 @@ water_ml_per_400_token_response = 45    # ANCHOR (Mistral disclosure)
 # Subregion-level annual CO2e output emission rates, converted lb/MWh → kg/kWh
 # at 0.4536 kg/lb. State-level values noted as a cross-reference.
 #
-# WUE values: AWS published a global 2024 figure of 0.15 L/kWh at
-# https://aws.amazon.com/sustainability/data-centers/. AWS does NOT publish
-# per-region WUE. We apply 0.15 L/kWh uniformly with a # UNKNOWN flag for
-# region-specific values; next research cycle should check for updates.
-#
-# PUE values: AWS global 2024 PUE is 1.15. AWS publishes region best-case
-# (Americas best site 1.05, APAC 1.07) but not per-region averages. We use
-# 1.15 as the conservative default for all regions, with a note.
+# WUE and PUE values: as of Sweep #3 (2026-08-25) AWS DOES publish
+# per-region annual PUE and WUE for data years 2024 and 2025 at
+# https://sustainability.aboutamazon.com/products-services/aws-cloud
+# (global 2025: PUE 1.14, WUE 0.12 L/kWh). Each region below is an
+# array of time-anchored rows: the original 2023-01-01 best-effort row
+# (global 2024 figures applied retroactively), a 2024-01-01 row with the
+# per-region 2024 data-year values, and a 2025-01-01 row with the 2025
+# values. Per-event resolution picks the row authoritative at the event
+# date. CO2e stays eGRID2023 in every row until eGRID2024 lands.
 
-[grid_factors."us-east-1"]
+[[grid_factors."us-east-1"]]
 display_name = "AWS US East (N. Virginia)"
 valid_from = "2023-01-01"  # eGRID2023 covers calendar year 2023; this row is the v0.1 best-effort applied retroactively to all events for which we don't have a finer-grained measurement.
 egrid_subregion = "SRVC"
@@ -753,7 +771,47 @@ source_url_pue = "https://aws.amazon.com/sustainability/data-centers/"
 source_accessed_at = "2026-04-28"
 notes = "us-east-1 hosts the largest share of Anthropic's US inference (per AWS Bedrock cross-region docs). 18 Loudoun County data centers use recycled wastewater for cooling — directly relevant to actual water draw, but not yet quantified in our factor model."
 
-[grid_factors."us-east-2"]
+[[grid_factors."us-east-1"]]
+display_name = "AWS US East (N. Virginia)"
+valid_from = "2024-01-01"  # AWS per-region disclosure, data year 2024
+egrid_subregion = "SRVC"
+egrid_subregion_full_name = "SERC Virginia/Carolina"
+egrid_subregion_co2e_lb_per_mwh = 596.3   # ANCHOR: eGRID2023 summary tables (unchanged; no newer eGRID release)
+co2e_kg_per_kwh = 0.270              # ANCHOR: carried from the 2023 row
+co2e_uncertainty_range_pct = 15
+water_l_per_kwh = 0.12               # ANCHOR: AWS per-region WUE, N. Virginia, data year 2024
+water_uncertainty_range_pct = 25     # Sweep #3: per-region disclosure closes the global-to-regional gap; residual band covers site-to-site spread within the region and year-boundary attribution.
+indirect_water_l_per_kwh = 2.39      # carried from the 2023 row (Ren et al. Virginia EWIF)
+indirect_water_uncertainty_range_pct = 35
+pue = 1.15                           # ANCHOR: AWS per-region PUE, N. Virginia, data year 2024
+source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
+source_url_water = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+source_url_indirect_water = "https://arxiv.org/abs/2304.03271"
+source_url_pue = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+source_accessed_at = "2026-08-25"
+notes = "Sweep #3 row: AWS began publishing per-region annual PUE/WUE; this row carries the N. Virginia data-year-2024 values (PUE 1.15, WUE 0.12). ISO-principles PUE methodology per the AWS page."
+
+[[grid_factors."us-east-1"]]
+display_name = "AWS US East (N. Virginia)"
+valid_from = "2025-01-01"  # AWS per-region disclosure, data year 2025
+egrid_subregion = "SRVC"
+egrid_subregion_full_name = "SERC Virginia/Carolina"
+egrid_subregion_co2e_lb_per_mwh = 596.3   # ANCHOR: eGRID2023 summary tables (unchanged; no newer eGRID release)
+co2e_kg_per_kwh = 0.270
+co2e_uncertainty_range_pct = 15
+water_l_per_kwh = 0.06               # ANCHOR: AWS per-region WUE, N. Virginia, data year 2025 (halved vs 2024)
+water_uncertainty_range_pct = 25
+indirect_water_l_per_kwh = 2.39
+indirect_water_uncertainty_range_pct = 35
+pue = 1.15                           # ANCHOR: AWS per-region PUE, N. Virginia, data year 2025
+source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
+source_url_water = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+source_url_indirect_water = "https://arxiv.org/abs/2304.03271"
+source_url_pue = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+source_accessed_at = "2026-08-25"
+notes = "Sweep #3 row: N. Virginia data-year-2025 values (PUE 1.15, WUE 0.06). The region PUE has not improved with the global average; N. Virginia runs at the fleet ceiling."
+
+[[grid_factors."us-east-2"]]
 display_name = "AWS US East (Ohio)"
 valid_from = "2023-01-01"
 egrid_subregion = "RFCW"
@@ -774,7 +832,47 @@ source_url_pue = "https://aws.amazon.com/sustainability/data-centers/"
 source_accessed_at = "2026-04-28"
 notes = "RFCW grid is materially more carbon-intensive than SRVC (us-east-1) due to greater coal share (25% coal vs 10.5% in SRVC, per eGRID2023 resource mix). Material implication: Claude usage routed to us-east-2 has ~54% higher CO2e than us-east-1 for the same energy."
 
-[grid_factors."us-west-2"]
+[[grid_factors."us-east-2"]]
+display_name = "AWS US East (Ohio)"
+valid_from = "2024-01-01"  # AWS per-region disclosure, data year 2024
+egrid_subregion = "RFCW"
+egrid_subregion_full_name = "RFC West"
+egrid_subregion_co2e_lb_per_mwh = 916.1
+co2e_kg_per_kwh = 0.416
+co2e_uncertainty_range_pct = 20
+water_l_per_kwh = 0.10               # ANCHOR: AWS per-region WUE, Ohio, data year 2024
+water_uncertainty_range_pct = 25     # Sweep #3: per-region disclosure; see us-east-1 2024 row.
+indirect_water_l_per_kwh = 1.85
+indirect_water_uncertainty_range_pct = 35
+pue = 1.13                           # ANCHOR: AWS per-region PUE, Ohio, data year 2024
+source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
+source_url_water = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+source_url_indirect_water = "https://arxiv.org/abs/2304.03271"
+source_url_pue = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+source_accessed_at = "2026-08-25"
+notes = "Sweep #3 row: Ohio data-year-2024 values (PUE 1.13, WUE 0.10)."
+
+[[grid_factors."us-east-2"]]
+display_name = "AWS US East (Ohio)"
+valid_from = "2025-01-01"  # AWS per-region disclosure, data year 2025
+egrid_subregion = "RFCW"
+egrid_subregion_full_name = "RFC West"
+egrid_subregion_co2e_lb_per_mwh = 916.1
+co2e_kg_per_kwh = 0.416
+co2e_uncertainty_range_pct = 20
+water_l_per_kwh = 0.06               # ANCHOR: AWS per-region WUE, Ohio, data year 2025
+water_uncertainty_range_pct = 25
+indirect_water_l_per_kwh = 1.85
+indirect_water_uncertainty_range_pct = 35
+pue = 1.12                           # ANCHOR: AWS per-region PUE, Ohio, data year 2025
+source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
+source_url_water = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+source_url_indirect_water = "https://arxiv.org/abs/2304.03271"
+source_url_pue = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+source_accessed_at = "2026-08-25"
+notes = "Sweep #3 row: Ohio data-year-2025 values (PUE 1.12, WUE 0.06)."
+
+[[grid_factors."us-west-2"]]
 display_name = "AWS US West (Oregon)"
 valid_from = "2023-01-01"
 egrid_subregion = "NWPP"
@@ -784,7 +882,7 @@ co2e_kg_per_kwh = 0.288              # ANCHOR: 635.3 × 0.4536 / 1000 = 0.2882
 co2e_uncertainty_range_pct = 20      # Sweep #1 (2026-05-12): NWPP observed range 17.9% across eGRID 2019/2020/2022/2023 (range 604-719 lb/MWh, std dev 7.3%). Pacific NW hydro generation varies with precipitation, hence the higher year-to-year variance vs SRVC.
 co2e_state_check_or_kg_per_kwh = 0.166   # cross-reference: OR state = 365.0 lb/MWh = 0.1656 kg/kWh — STATE much cleaner than SUBREGION because Oregon-specific is hydro-heavy whereas NWPP includes ID/MT/WY parts
 water_l_per_kwh = 0.15               # ANCHOR: AWS 2024 global WUE
-water_uncertainty_range_pct = 50     # Same global-to-regional gap. Pacific NW datacenters often use cooler ambient air → likely below global average, but unverified.
+water_uncertainty_range_pct = 50     # Same global-to-regional gap as the other 2023 rows. Sweep #3 answered the old open question here: the disclosed 2024 Oregon WUE (0.16) runs slightly ABOVE the global average, not below as this row once guessed.
 indirect_water_l_per_kwh = 9.50      # Sweep #2 (2026-05-15): Ren et al. 2024 Table 1 Washington EWIF = 9.501 L/kWh. Hydro-dominated grid (38.7% hydro in NWPP per eGRID2023) → reservoir evaporation is the load-bearing term. Note: Macknick's hydro median (4,491 gal/MWh = 17 L/kWh) attributes ALL reservoir evaporation to power; this is contested in literature (reservoirs serve multi-purpose: irrigation, drinking water, flood control).
 indirect_water_uncertainty_range_pct = 60  # Higher band reflects the hydro-attribution methodology dispute. Different conventions give 5x-10x range in hydro water consumption; this dominates the regional total.
 pue = 1.15                           # ANCHOR: AWS 2024 global PUE
@@ -795,9 +893,49 @@ source_url_pue = "https://aws.amazon.com/sustainability/data-centers/"
 source_accessed_at = "2026-04-28"
 notes = "Oregon grid (state-level) is significantly cleaner than NWPP subregion average due to Pacific Northwest hydro. Per eGRID convention we use subregion (canonical for grid-interconnection accounting); state value is shown for sanity-check. Umatilla AWS DCs share 96% of cooling water with local farmers, but this re-use is not currently captured in WUE factor."
 
+[[grid_factors."us-west-2"]]
+display_name = "AWS US West (Oregon)"
+valid_from = "2024-01-01"  # AWS per-region disclosure, data year 2024
+egrid_subregion = "NWPP"
+egrid_subregion_full_name = "WECC Northwest"
+egrid_subregion_co2e_lb_per_mwh = 635.3
+co2e_kg_per_kwh = 0.288
+co2e_uncertainty_range_pct = 20
+water_l_per_kwh = 0.16               # ANCHOR: AWS per-region WUE, Oregon, data year 2024 (slightly above the global 0.15 the 2023 row assumed)
+water_uncertainty_range_pct = 25     # Sweep #3: per-region disclosure; see us-east-1 2024 row.
+indirect_water_l_per_kwh = 9.50
+indirect_water_uncertainty_range_pct = 60
+pue = 1.12                           # ANCHOR: AWS per-region PUE, Oregon, data year 2024
+source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
+source_url_water = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+source_url_indirect_water = "https://arxiv.org/abs/2304.03271"
+source_url_pue = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+source_accessed_at = "2026-08-25"
+notes = "Sweep #3 row: Oregon data-year-2024 values (PUE 1.12, WUE 0.16). The prior 2023 row's note guessed Pacific NW draw runs below the global average; the disclosed 2024 value says slightly above."
+
+[[grid_factors."us-west-2"]]
+display_name = "AWS US West (Oregon)"
+valid_from = "2025-01-01"  # AWS per-region disclosure, data year 2025
+egrid_subregion = "NWPP"
+egrid_subregion_full_name = "WECC Northwest"
+egrid_subregion_co2e_lb_per_mwh = 635.3
+co2e_kg_per_kwh = 0.288
+co2e_uncertainty_range_pct = 20
+water_l_per_kwh = 0.12               # ANCHOR: AWS per-region WUE, Oregon, data year 2025
+water_uncertainty_range_pct = 25
+indirect_water_l_per_kwh = 9.50
+indirect_water_uncertainty_range_pct = 60
+pue = 1.12                           # ANCHOR: AWS per-region PUE, Oregon, data year 2025
+source_url_co2e = "https://www.epa.gov/system/files/documents/2025-06/summary_tables_rev2.pdf"
+source_url_water = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+source_url_indirect_water = "https://arxiv.org/abs/2304.03271"
+source_url_pue = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+source_accessed_at = "2026-08-25"
+notes = "Sweep #3 row: Oregon data-year-2025 values (PUE 1.12, WUE 0.12)."
+
 # ---- Reference subregions (cited for breadth, not used by AWS Anthropic regions) ----
 
-[grid_factors."reference-camx"]
+[[grid_factors."reference-camx"]]
 display_name = "WECC California (CAMX) — reference only"
 valid_from = "2023-01-01"
 egrid_subregion = "CAMX"
@@ -816,17 +954,17 @@ source_accessed_at = "2026-04-28"
 # ----------------------------------------------------------------------------
 
 [defaults]
-fallback_pue = 1.15
-fallback_pue_source = "https://aws.amazon.com/sustainability/data-centers/"
-fallback_pue_accessed = "2026-04-28"
-fallback_wue_l_per_kwh = 0.15
-fallback_wue_source = "https://aws.amazon.com/sustainability/data-centers/"
-fallback_wue_accessed = "2026-04-28"
+fallback_pue = 1.14                  # AWS global average PUE, data year 2025 (was 1.15 for 2024)
+fallback_pue_source = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+fallback_pue_accessed = "2026-08-25"
+fallback_wue_l_per_kwh = 0.12        # AWS global WUE, data year 2025 (was 0.15 for 2024)
+fallback_wue_source = "https://sustainability.aboutamazon.com/products-services/aws-cloud"
+fallback_wue_accessed = "2026-08-25"
 methodology = "google-comprehensive-aug-2025"
 methodology_source = "https://arxiv.org/abs/2508.15734"
 methodology_summary = "Energy includes active accelerator + host CPU/RAM + idle capacity + PUE-weighted facility overhead. Carbon = facility energy × grid CO2e intensity for the configured region. Water = facility energy × WUE for the configured region. Per-token rates anchor on either (a) measured per-prompt rates with assumed token counts, (b) third-party benchmarks (Jegham et al. v6), or (c) extrapolations from measured predecessors with documented relative-efficiency adjustments. Every value carries an uncertainty_range_pct."
 median_prompt_token_count_assumption = 1500   # used to convert per-prompt to per-MTok for Google and OpenAI median anchors
-long_prompt_token_count_assumption = 10300    # used to convert Jegham per-long-prompt values to per-MTok
+long_prompt_token_count_assumption = 11500    # Jegham et al. v6 long prompt = 10,000 input + 1,500 output tokens (Section 4.2). Corrected Sweep #3 from 10,300, which was a paraphrase drift; see docs/sources.md#C.1.1.
 input_output_ratio_chat = 0.6                 # 60/40 for typical chat-style apps usage
 input_output_ratio_long_prompt = 0.4          # 40/60 for Jegham's "long prompt" definition (input-heavy but output substantial)
 input_output_ratio_reasoning = 0.3            # 30/70 for reasoning models like o3 (output-dominant due to internal CoT)

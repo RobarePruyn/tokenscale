@@ -207,7 +207,7 @@ valid_from = "2026-01-01"
 source_doc = "docs/sources.md#G.1"
 wh_per_mtok_input = 0.5
 
-[grid_factors."us-east-1"]
+[[grid_factors."us-east-1"]]
 display_name = "AWS US East"
 valid_from = "2026-01-01"
 source_accessed_at = "2026-01-01"

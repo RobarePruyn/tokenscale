@@ -67,9 +67,13 @@ pub struct EnvironmentalFactorsFile {
     #[serde(default)]
     pub providers: BTreeMap<String, ProviderFactors>,
 
-    /// Indexed by region identifier — e.g., `"us-east-1"`.
+    /// Indexed by region identifier — e.g., `"us-east-1"`. Each region
+    /// carries one or more time-anchored rows (array-of-tables in the
+    /// TOML, Sweep #3); per-event resolution picks the row with the
+    /// greatest `valid_from` at or before the event date, mirroring the
+    /// model-factor rows. Single-row regions are a one-element array.
     #[serde(default)]
-    pub grid_factors: BTreeMap<String, GridFactors>,
+    pub grid_factors: BTreeMap<String, Vec<GridFactors>>,
 
     #[serde(default)]
     pub defaults: FactorDefaults,
@@ -275,9 +279,16 @@ impl EnvironmentalFactorsFile {
         self.providers.get(provider)?.models.get(model)
     }
 
+    /// The region's latest row by `valid_from` (rows without a
+    /// `valid_from` sort earliest). Per-event time anchoring lives in
+    /// the store queries; this helper serves surfaces that want the
+    /// current values (health, in-memory compute defaults).
     #[must_use]
     pub fn lookup_grid(&self, region: &str) -> Option<&GridFactors> {
-        self.grid_factors.get(region)
+        self.grid_factors
+            .get(region)?
+            .iter()
+            .max_by_key(|row| row.valid_from.as_deref().unwrap_or(""))
     }
 
     /// `true` when the file is explicitly a placeholder. Phase 1 ships
@@ -321,7 +332,7 @@ impl EnvironmentalFactorsFile {
                 }
             }
         }
-        for grid in self.grid_factors.values() {
+        for grid in self.grid_factors.values().flatten() {
             if contains_marker(&grid.notes) {
                 return true;
             }
@@ -337,6 +348,7 @@ impl EnvironmentalFactorsFile {
     pub fn most_recent_grid_accessed_at(&self) -> Option<&str> {
         self.grid_factors
             .values()
+            .flatten()
             .filter_map(|grid| grid.source_accessed_at.as_deref())
             .max()
     }
@@ -440,7 +452,7 @@ wh_per_mtok_cache_read = null
 wh_per_mtok_cache_write_5m = null
 wh_per_mtok_cache_write_1h = null
 
-[grid_factors."us-east-1"]
+[[grid_factors."us-east-1"]]
 display_name = "AWS US East (N. Virginia)"
 valid_from = "2026-04-28"
 egrid_subregion = "SRVC"
@@ -450,7 +462,7 @@ water_l_per_kwh = null
 pue = null
 source_accessed_at = "2026-04-28"
 
-[grid_factors."us-west-2"]
+[[grid_factors."us-west-2"]]
 display_name = "AWS US West (Oregon)"
 co2e_kg_per_kwh = null
 source_accessed_at = "2026-03-15"

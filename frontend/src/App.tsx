@@ -2690,9 +2690,18 @@ function FactorProvenancePanel({
   const visibleModels = activeFactors.models.filter((model) =>
     visibleModelSet.has(model.model_id),
   )
-  const configuredRegion = activeFactors.regions.find(
-    (region) => region.region_id === activeFactors.configured_region,
-  )
+  // Grid factors are time-anchored (Sweep #3): a region can carry several
+  // rows. Surface the latest one by valid_from for the "current factors"
+  // panel; per-event math resolves its own row server-side.
+  const configuredRegion = activeFactors.regions
+    .filter((region) => region.region_id === activeFactors.configured_region)
+    .reduce<GridFactorEntry | null>(
+      (latest, region) =>
+        latest === null || (region.valid_from ?? '') > (latest.valid_from ?? '')
+          ? region
+          : latest,
+      null,
+    )
 
   if (visibleModels.length === 0 && !configuredRegion) {
     return null

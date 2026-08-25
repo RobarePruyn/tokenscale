@@ -6,6 +6,32 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.21, 2026-08-25
+
+**Sweep #3: per-model energy anchors for historical Claude models (closes Issue #8).** The dedicated research pass the v0.1.20 sign-off deferred. Full audit trail in `docs/research-log.md` (Sweep #3 entry); sources in `docs/sources.md` A.4, C.1.1, C.4-C.6, D.5, G.4-G.6.
+
+### Factor corrections from measurement (environmental-factors.toml 0.5 to 0.6)
+
+Jegham et al. v6 directly measures three Claude models (3.7 Sonnet, 3.5 Sonnet, 3.5 Haiku); its absolute levels run ~4x this file's Couch/Google-anchored level, inside the 4-20x overstatement Oviedo et al. (Joule 2026) document for that estimate style, so the sweep imports the measured relative structure pinned at 3.7 Sonnet and keeps the file's level. Value moves (Wh/MTok in/out): 3.5 Sonnet (both snapshots) 200/990 to 365/1,260; 3.5 Haiku 70/330 to 170/1,750 (the material correction: measured less efficient per output token than Sonnet, overturning the 1/3-by-price proxy); Claude 3 Haiku 43/440, rescaled off the corrected nearer sibling. 3.7 Sonnet unchanged at 200/990 with its band narrowed 50 to 40. No measurement exists for any current-generation model (Fable 5, Opus 5, Sonnet 5, Opus 4.8); those rows are unchanged.
+
+### Time-anchored per-region grid factors
+
+AWS now publishes per-region annual PUE/WUE (data years 2024 and 2025), closing a gap flagged since v0.1. `grid_factors` becomes array-of-tables: each region carries its original 2023 best-effort row plus 2024 and 2025 data-year rows, resolved per event by the same `valid_from` anchoring the model factors use (the store queries already resolved grid rows this way; only the file format and in-memory struct were single-row). On-site water bands narrow 50 to 25 percent on disclosed rows; defaults move to the 2025 globals (PUE 1.14, WUE 0.12). Code: `EnvironmentalFactorsFile.grid_factors` is now `BTreeMap<String, Vec<GridFactors>>`, `lookup_grid` returns the latest row, sync writes one DB row per entry, and the dashboard picks the latest row per region for its current-factors panel.
+
+### Corrections
+
+- Jegham long-prompt convention was recorded as ~10,300 tokens; the paper defines 10,000 input + 1,500 output = 11,500. Corrected in `docs/sources.md` C.1.1 and `[defaults].long_prompt_token_count_assumption`.
+- `docs/sources.md` C.1 claimed the paper "directly benchmarks older Sonnet/Opus generations"; it covers no Claude 3-era model. Corrected with verified coverage.
+- A survey-stage framing of Llopis (arXiv:2606.10660) as a 10-40x critique of physical modeling was caught at verification: the claim targets spend-based EEIO factors. Recorded with that caveat in C.5.
+
+### Serving-mix caveat
+
+Anthropic's Google TPU deal (up to 1M TPUs, more than 1 GW during 2026) and xAI Colossus capacity mean the file's AWS-only serving assumption is increasingly incomplete. Caveat recorded on the provider block; apportionment filed as an open research question. No numeric change (no traffic split is disclosed).
+
+No pricing value moves in this release, so no `docs/cost-methodology.md` corrections-log entry lands; factor-side changes are recorded in the research log per each document's charter.
+
+---
+
 ## v0.1.20, 2026-08-25
 
 **Full historical and current model coverage, model-ID normalization (D1), and nullable energy (D7).** The largest data change in the project's history: `pricing.toml` and `environmental-factors.toml` now carry every Anthropic model from Claude 1 through Opus 5 and Fable 5, each rate traced to a source or carrying a labeled estimate; model IDs normalize through an alias table so a form mismatch can no longer silently drop a model from cost and impact; and energy now distinguishes "zero" from "not disclosed". Design pass, sign-off, and smoke findings in `docs/roadmap-full-model-coverage.md` (D1 through D9, §5 release gate); codebase audit that scoped the code-side work in `docs/assessment-full-codebase-2026-06.md`.

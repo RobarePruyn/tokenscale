@@ -44,6 +44,14 @@ All access dates are the date the URL was last loaded by the research agent. URL
 
 ---
 
+### A.4 Continued non-disclosure through August 2026 (Bloomberg; grid-cost commitment)
+
+- **URLs:** https://www.bloomberg.com/news/features/2026-08-12/spacex-openai-anthropic-quiet-on-emissions-in-post-esg-era (2026-08-12); https://www.anthropic.com/transparency/voluntary-commitments (fetched 2026-08-25); https://simonwillison.net/2026/Feb/12/covering-electricity-price-increases/
+- **Access date:** 2026-08-25 (Sweep #3)
+- **Confidence:** `secondary` (press) over `primary` (the transparency page itself)
+- **Summary:** As of August 2026 Anthropic has published no audited sustainability report and no Scope 1/2/3 emissions data (Bloomberg; June 2026 confidential IPO filings carry none). The transparency page added one energy-adjacent commitment (2026-02-12): covering consumer electricity price increases from its data centers and paying for interconnection grid upgrades. No PUE/WUE/carbon/per-query figures anywhere.
+- **Contribution to factor model:** Extends the A.1 non-disclosure baseline through 2026-08; the load-bearing gap stands.
+
 ## B. Comparable vendor disclosures (anchor points)
 
 ### B.1 Google: "Measuring the environmental impact of AI inference" (Gemini per-prompt disclosure)
@@ -146,7 +154,8 @@ All access dates are the date the URL was last loaded by the research agent. URL
 - **Access date:** 2026-04-28
 - **Confidence:** `primary` (preprint, but methodology is transparent and benchmarks are reproducible from public API data)
 - **Summary:** An infrastructure-aware benchmarking framework that estimates per-prompt energy, water, and carbon for 30 frontier LLMs by combining public API performance data with company-specific environmental multipliers and inferred hardware configurations. Per the v6 abstract, the most energy-intensive models exceed 29 Wh per long prompt, and the framework includes Claude-family models in the comparison cohort.
-- **Contribution to factor model:** The richest cross-vendor inference benchmark we have. Use it to sanity-check ranges for Claude models (especially older Sonnet/Opus generations the paper directly benchmarks) and to import its methodology — particularly its treatment of inferred hardware and company-specific PUE/WUE multipliers — into our own derivation. Older Claude models in this paper are direct evidence; for current-generation models (Opus 4.6/4.7, Sonnet 4.6) we extrapolate, with ranges explicitly noted.
+- **Contribution to factor model:** The richest cross-vendor inference benchmark we have. Use it for the measured relative structure among the Claude models it covers and to import its methodology treatment of inferred hardware and company-specific PUE/WUE multipliers.
+- **Claude coverage (verified against v6 full text, Sweep #3 2026-08-25):** exactly three models: Claude 3.7 Sonnet, Claude 3.5 Sonnet (single Jun-2024 entry; snapshots not distinguished), Claude 3.5 Haiku (Table 4). The paper does NOT cover Claude 3 Opus/Sonnet/Haiku or anything after Feb 2025 from Anthropic; a prior revision of this entry claimed direct coverage of "older Sonnet/Opus generations", which was wrong. Absolute levels carry the Oviedo et al. (C.4) overstatement caveat; see C.1.1 for how the factor model uses these numbers.
 - **Note:** Multiple revisions through v6 — the model cohort and absolute numbers shift between versions, so any value cited from this paper must reference a specific arXiv version (e.g., v6) rather than the unversioned identifier.
 
 ### C.2 Fernandez et al. (2025), "Energy Considerations of Large Language Model Inference and Efficiency Optimizations" (ACL 2025)
@@ -158,9 +167,21 @@ All access dates are the date the URL was last loaded by the research agent. URL
 - **Summary:** Argues that FLOP-based and theoretical-GPU-utilization estimates of inference energy underestimate real-world consumption by 2–6× due to memory, I/O, and kernel-launch overheads. Reports up to 73% energy reduction from inference optimizations applied appropriately, with strong context-dependence (batch size, draft-model speculation tradeoffs).
 - **Contribution to factor model:** Methodological warning. Any factor value we derive from FLOPs or theoretical GPU utilization should be flagged as a likely under-estimate. This paper is the basis for our preference for empirical, vendor-disclosed, or API-token-based methods over derived-from-FLOPs methods.
 
-### C.1.1 Specific Wh-per-long-prompt values from Jegham et al. v6 used in this factor model
+### C.1.1 Specific values from Jegham et al. v6 used in this factor model
 
-The following per-long-prompt energy values are extracted from Jegham et al. v6 (long prompt = ~7,000-word input + ~1,000-word output, roughly 10,300 tokens total) and used as anchors in `environmental-factors.toml`:
+**Prompt-size conventions (corrected Sweep #3, 2026-08-25):** the paper's Section 4.2 defines short = 100 input + 300 output tokens, medium = 1,000 + 1,000, long = 10,000 input + 1,500 output = 11,500 total tokens. An earlier revision of this section stated "roughly 10,300 tokens" for the long prompt; that was paraphrase drift from the paper's word-count gloss (~7,000 words in, ~1,000 out) and is wrong as a token count.
+
+**Claude per-query energy, Table 4 (mean Wh):**
+
+| Model | Short | Medium | Long |
+| --- | --- | --- | --- |
+| Claude 3.7 Sonnet | 0.950 | 2.989 | 5.671 |
+| Claude 3.5 Sonnet | 0.973 | 3.638 | 7.772 |
+| Claude 3.5 Haiku | 0.975 | 4.464 | 8.010 |
+
+**Per-token derivation (Sweep #3):** with three (input, output, energy) points per model, solve E = fixed + b x input + c x output exactly. Results: 3.7 Sonnet 146.6 in / 2,724.3 out Wh/MTok; 3.5 Sonnet 266.9 / 3,464.0; 3.5 Haiku 126.1 / 4,822.2. The negative fixed terms for 3.5 Sonnet/Haiku show the underlying relationship is nonlinear, so these are interpolations across the 100-10,000 input-token range, not physical marginal costs. The factor model imports only the RATIOS between these models, pinned at 3.7 Sonnet on the Couch-scale level (see G.1 and C.4); Jegham's absolute levels run ~4x the Couch level, inside the 4-20x overstatement band Oviedo et al. document for this estimate style.
+
+**Non-Claude reference values (per long prompt) retained from the earlier revision:**
 
 | Model | Wh per long prompt | Notes |
 | --- | --- | --- |
@@ -186,6 +207,30 @@ The following per-long-prompt energy values are extracted from Jegham et al. v6 
 - **Contribution to factor model:** Methodological backbone for thinking about which factors actually matter. Older (2021) and training-focused, but the general factor-decomposition framework — energy × grid carbon intensity × datacenter PUE × WUE — is what we apply.
 
 ---
+
+### C.4 Oviedo et al. (2026), "Energy Use of AI Inference, Efficiency Pathways, and Test-Time Scaling" (Microsoft; Joule)
+
+- **URL:** https://arxiv.org/abs/2509.20241 (v1 2025-09-24, v2 2026-06-09); Joule (2026) 102430
+- **Access date:** 2026-08-25 (verified against the arXiv abstract, not a secondary summary)
+- **Confidence:** `primary` (peer-reviewed, Joule; Microsoft infrastructure authors)
+- **Summary:** Bottom-up estimate of production-scale inference energy. Verbatim: "widely cited estimates are overstated by 4-20x"; "For frontier-scale models (>200B parameters) on H100 nodes, we estimate a median energy of 0.31 Wh/query"; test-time scaling at 15x typical query length raises the median 13x to 3.91 Wh; "8-20x line-of-sight energy reductions" across models, serving systems, and hardware.
+- **Contribution to factor model:** The load-bearing counterweight to Jegham-style absolute levels. Its 0.31 Wh/query frontier median corroborates Google's 0.24 Wh comprehensive median (B.1), which is the level this file's Couch-derived Claude anchors scale from. Sweep #3 used it to justify importing Jegham's relative structure while rejecting Jegham's absolute level.
+
+### C.5 Llopis (2026), "Accounting for AI Inference in Corporate GHG Inventories" (four-tier Scope 3 methodology)
+
+- **URL:** https://arxiv.org/abs/2606.10660 (submitted 2026-06-09)
+- **Access date:** 2026-08-25
+- **Confidence:** `secondary` (single-author preprint, SOMA AI)
+- **Summary:** Four-tier corporate accounting framework from token-based physical estimation down to spend-based EEIO fallback. Claims spend-based EEIO factors overestimate AI inference emissions "by 10-40x relative to physically derived alternatives."
+- **Caveat recorded at ingestion:** the 10-40x claim targets generic EEIO spend-based factors, NOT physical per-query modeling; it is not a critique of Jegham or Elsworth and must not be cited as one. Uses ML.ENERGY Leaderboard v3, EPA eGRID 2023, Ember 2023.
+
+### C.6 Jegham et al. TokenPowerBench-adjacent scaling prior (2025, AAAI'26)
+
+- **URL:** https://arxiv.org/abs/2512.03024 (Dec 2025)
+- **Access date:** 2026-08-25
+- **Confidence:** `secondary` for Claude purposes (open models only; no Anthropic measurement)
+- **Summary:** First open benchmark decomposing LLM inference power across prefill/decode at GPU/node/system level; LLaMA-3 energy per token grows ~7.3x across a 70x parameter growth (1B to 70B).
+- **Contribution to factor model:** A measured prior for how sublinearly energy scales with parameter count; relevant when reasoning about up-tier extrapolations like the Fable 2x-Opus pricing proxy (a 2x price need not mean 2x energy).
 
 ## D. Datacenter infrastructure references
 
@@ -234,6 +279,14 @@ The following per-long-prompt energy values are extracted from Jegham et al. v6 
 - **Contribution to factor model:** Establishes that Claude inference for US users runs in us-east-1 (N. Virginia), us-east-2 (Ohio), and us-west-2 (Oregon) — the regions whose grid carbon intensity values we should be tracking.
 
 ---
+
+### D.5 AWS per-region PUE/WUE disclosure (data years 2024 and 2025)
+
+- **URL:** https://sustainability.aboutamazon.com/products-services/aws-cloud
+- **Access date:** 2026-08-25 (Sweep #3)
+- **Confidence:** `primary` (first-party operator disclosure; ISO-principles PUE methodology stated on page)
+- **Summary:** AWS now publishes per-region annual PUE and WUE. Global 2025: PUE 1.14 (2024: 1.15), WUE 0.12 L/kWh (2024: 0.15). Regions this file models: N. Virginia PUE 1.15/1.15 and WUE 0.12/0.06 (2024/2025); Ohio 1.13/1.12 and 0.10/0.06; Oregon 1.12/1.12 and 0.16/0.12.
+- **Contribution to factor model:** Closes the "per-region NOT disclosed" gap flagged since v0.1. Sweep #3 added time-anchored 2024 and 2025 rows per region in `environmental-factors.toml` and narrowed the on-site water band from 50 to 25 percent.
 
 ## E. Grid carbon intensity references
 
@@ -383,11 +436,35 @@ A specific finding worth surfacing in the water section: Jegham et al. v6 report
 
 ---
 
+### G.4 Zeke Hausfather, "The real energy use of agentic AI" (2026-08-05)
+
+- **URL:** https://www.theclimatebrink.com/p/the-real-energy-use-of-agentic-ai
+- **Access date:** 2026-08-25 (Sweep #3)
+- **Confidence:** `secondary` (credentialed climate scientist; own measured token counts, third-party conversion factors)
+- **Summary:** Eight weeks of the author's own Claude Code transcripts (exact token counts) converted through three factor sets (Watershed tiers, Couch per-token, claude-carbon pricing-inferred). Roughly 150 Wh per prompt (60-290), median session ~600 Wh at ~10M tokens, daily use ~3.0 kWh (1.2-5.9), ~1.1 MWh/year (0.4-2.2).
+- **Contribution to factor model:** Session-scale corroboration that agentic use multiplies per-interaction energy by orders of magnitude over chat. Model versions unattributed in the post; context only, not a factor input.
+
+### G.5 mdodkins, "Claude Code Energy Use Estimate" gist (2026-03-09)
+
+- **URL:** https://gist.github.com/mdodkins/9b49624855cc41570c9d1012e0d5d157
+- **Access date:** 2026-08-25 (Sweep #3)
+- **Confidence:** `secondary` (synthesis gist over Couch, Google, Jegham)
+- **Summary:** Per-token factors in the Couch lineage: ~390 Wh/MTok input, ~1,950 Wh/MTok output, ~39 Wh/MTok cache read; median Claude Code session ~41 Wh. Matches this file's 4.5-class Opus values because it draws the same anchors.
+- **Contribution to factor model:** Independent replication of the Couch-scale numbers; no new measurement.
+
+### G.6 gwittebolle/claude-carbon (emission-factor tool; Fable extrapolation)
+
+- **URL:** https://github.com/gwittebolle/claude-carbon
+- **Access date:** 2026-08-25 (Sweep #3)
+- **Confidence:** `secondary`, and explicitly self-described as order-of-magnitude
+- **Summary:** gCO2e/MTok factors from a Jegham v6 3-point fit for Sonnet-class, with Opus = 2x Sonnet, Haiku = 0.5x Sonnet, and Fable = 2x Opus, all pricing-ratio extrapolations. The only source found anywhere that names Fable, and it guesses exactly the way this file does.
+- **Contribution to factor model:** Corroborates the Fable 2x-Opus heuristic choice (not the value). Also independent confirmation that no Fable/Opus 5 measurement exists.
+
 ## What I didn't find / known gaps
 
 - **No Anthropic-published per-query, per-token, per-model, or per-AWS-region environmental data** at access date. This is the load-bearing gap that drives why so many tokenscale factors have to be estimates.
 - **No peer-reviewed Claude-4.x-family inference benchmark.** Jegham et al. covers older Claude generations directly; current generations are extrapolated.
-- **No public AWS region-specific PUE/WUE breakdown for the specific compute hosting Claude.** AWS publishes a global PUE and best-region figures but doesn't publish per-region PUE for every region. We use global PUE 1.15 as a conservative default and flag this gap.
+- **AWS per-region PUE/WUE: closed as of Sweep #3 (2026-08-25).** AWS now publishes per-region annual values for data years 2024 and 2025 (see D.5); `environmental-factors.toml` carries time-anchored per-region rows. The residual gap is which regions (and now which providers: AWS vs Google TPU vs xAI Colossus) actually serve a given Claude request.
 - **No vendor disclosure of model-specific kWh-per-token at any precision** for any model from any vendor. Even Google's disclosure is per "median text prompt," not per token.
 
 These gaps directly inform the `# UNKNOWN` and `# ESTIMATE:` flags in `environmental-factors.toml`.

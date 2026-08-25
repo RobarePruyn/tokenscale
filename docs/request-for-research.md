@@ -10,6 +10,30 @@ Format: each entry has a status, the question, why it matters, what good answers
 
 ## Open
 
+### Claude serving-mix apportionment (AWS vs Google TPU vs xAI Colossus)
+
+**Status**: Open (filed Sweep #3, 2026-08-25).
+
+**Question**: What fraction of Claude inference runs on AWS vs Google TPU infrastructure vs xAI's Colossus capacity, and how should grid/PUE factors be apportioned across them?
+
+**Why it matters**: The factor model assumes `inference_provider = "aws"` for all Anthropic usage. Anthropic's October 2025 Google deal (up to 1M TPUs, more than a gigawatt online during 2026) and 2026 Colossus bookings make that assumption increasingly wrong in both directions: Google's fleet PUE (~1.09) is better than AWS's (1.14), while Colossus's Memphis-area gas-heavy supply is worse than either. No traffic split is disclosed.
+
+**What good answers look like**: any Anthropic or partner disclosure of capacity or traffic share; failing that, credible capacity-based estimates (announced TPU/GPU counts x utilization assumptions) with explicit uncertainty.
+
+---
+
+### Jegham et al. live dashboard: post-Feb-2025 Claude entries
+
+**Status**: Open (filed Sweep #3, 2026-08-25).
+
+**Question**: Does the Jegham et al. companion dashboard (scraped daily from Artificial Analysis per the paper's Figure 2) carry per-query energy entries for Claude models newer than Feb 2025 that the paper itself lacks?
+
+**Why it matters**: The paper stops at Claude 3.7 Sonnet, but the dashboard reportedly ingests new models as released. A dashboard entry for any 4.x/5-generation Claude model would be the first third-party per-query number for the current fleet, usable as relative structure the same way Sweep #3 used Table 4.
+
+**Starting points**: the paper's Figure 2 caption names the dashboard; it is a Power BI embed, so scraping may need manual reading.
+
+---
+
 ### Anthropic tokenizer-change inflation factor verification
 
 **Status**: Open. v0.1 file estimates the factor from third-party analysis; we'd like a primary source.

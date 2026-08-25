@@ -153,7 +153,7 @@ file_status = "placeholder"
 display_name = "Anthropic"
 [providers.anthropic.models."claude-opus-4-7"]
 display_name = "Claude Opus 4.7"
-[grid_factors."us-east-1"]
+[[grid_factors."us-east-1"]]
 display_name = "AWS US East"
 [defaults]
 fallback_pue = 1.15
@@ -823,7 +823,7 @@ wh_per_mtok_cache_write_1h = 0.5
 uncertainty_range_pct = 35
 confidence = "secondary"
 
-[grid_factors."us-east-1"]
+[[grid_factors."us-east-1"]]
 display_name = "AWS US East"
 valid_from = "2026-01-01"
 co2e_kg_per_kwh = 0.30
