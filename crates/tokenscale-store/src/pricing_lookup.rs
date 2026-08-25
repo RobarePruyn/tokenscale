@@ -49,7 +49,7 @@ pub async fn lookup_pricing(
                 notes
              FROM pricing
              WHERE provider = ?
-               AND model = ?
+               AND model = COALESCE((SELECT canonical FROM model_aliases WHERE provider = ? AND raw = ?), ?)
                AND valid_from <= ?
                AND (valid_to IS NULL OR ? < valid_to)
              ORDER BY valid_from DESC
@@ -57,6 +57,8 @@ pub async fn lookup_pricing(
          )",
     )
     .bind(provider)
+    .bind(provider)
+    .bind(model)
     .bind(model)
     .bind(as_of_date)
     .bind(as_of_date)

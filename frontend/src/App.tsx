@@ -51,8 +51,8 @@ type BillableBreakdown = {
 }
 
 type ModelImpact = {
-  energy_wh: number
-  facility_wh: number
+  energy_wh: number | null
+  facility_wh: number | null
   co2eG: number | null
   // Direct (on-site / DC cooling) water — scope-1 in Ren et al. framing.
   waterL: number | null
@@ -147,8 +147,8 @@ type SessionRow = {
   cacheRead: number
   cacheWrite5m: number
   cacheWrite1h: number
-  energyWh: number
-  facilityWh: number
+  energyWh: number | null
+  facilityWh: number | null
   co2eG: number | null
   waterL: number | null
   indirectWaterL: number | null
@@ -448,14 +448,20 @@ const CHART_COLORS = [
  *  else." Different shades inside the family separate the versions.
  *  Falls back to a misc palette for unknown families. */
 const FAMILY_PALETTES: Record<string, string[]> = {
-  opus: ['#1d4ed8', '#60a5fa', '#1e3a8a', '#93c5fd'],
-  sonnet: ['#15803d', '#86efac', '#14532d', '#bbf7d0'],
-  haiku: ['#b45309', '#fcd34d', '#78350f', '#fde68a'],
-  other: ['#9333ea', '#c084fc', '#dc2626', '#fb923c', '#0891b2', '#db2777'],
+  // Eight shades per family so the full model history (Opus alone has 7+
+  // versions) gets distinct hues before the modulo wraps.
+  fable: ['#7c3aed', '#a78bfa', '#5b21b6', '#c4b5fd', '#4c1d95', '#ddd6fe', '#6d28d9', '#ede9fe'],
+  mythos: ['#be185d', '#f472b6', '#831843', '#f9a8d4', '#9d174d', '#fbcfe8', '#db2777', '#fce7f3'],
+  opus: ['#1d4ed8', '#60a5fa', '#1e3a8a', '#93c5fd', '#2563eb', '#bfdbfe', '#172554', '#3b82f6'],
+  sonnet: ['#15803d', '#86efac', '#14532d', '#bbf7d0', '#16a34a', '#dcfce7', '#052e16', '#22c55e'],
+  haiku: ['#b45309', '#fcd34d', '#78350f', '#fde68a', '#d97706', '#fef3c7', '#451a03', '#f59e0b'],
+  other: ['#0891b2', '#67e8f9', '#164e63', '#a5f3fc', '#dc2626', '#fca5a5', '#6b7280', '#d1d5db'],
 }
 
 function modelFamily(modelId: string): keyof typeof FAMILY_PALETTES {
   const lower = modelId.toLowerCase()
+  if (lower.includes('fable')) return 'fable'
+  if (lower.includes('mythos')) return 'mythos'
   if (lower.includes('opus')) return 'opus'
   if (lower.includes('sonnet')) return 'sonnet'
   if (lower.includes('haiku')) return 'haiku'
@@ -708,15 +714,79 @@ function selectionSummary(
  *  the model-coverage workstream (roadmap-full-model-coverage.md D9).
  */
 function modelDisplayName(modelIdentifier: string): string {
-  const claudeFamilyMatch = modelIdentifier.match(
-    /^claude-(opus|sonnet|haiku|fable|mythos)-(\d{1,2})(?:-(\d{1,2}))?(?:-(\d{8}))?$/,
+  const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1)
+  // Family-first IDs: claude-opus-4-8, claude-fable-5, claude-sonnet-5,
+  // dated snapshots claude-haiku-4-5-20251001, claude-opus-4-20250514.
+  // Version segments capped at two digits so an 8-digit date is never
+  // misread as a minor version.
+  const familyFirst = modelIdentifier.match(
+    /^claude-(opus|sonnet|haiku|fable|mythos)-(\d{1,2})(?:-(\d{1,2}))?(?:-\d{8})?$/,
   )
-  if (claudeFamilyMatch) {
-    const [, family, major, minor] = claudeFamilyMatch
-    const familyLabel = family.charAt(0).toUpperCase() + family.slice(1)
-    return `Claude ${familyLabel} ${major}${minor ? `.${minor}` : ''}`
+  if (familyFirst) {
+    const [, family, major, minor] = familyFirst
+    return `Claude ${cap(family)} ${major}${minor ? `.${minor}` : ''}`
+  }
+  // Named non-numeric variants: claude-mythos-preview.
+  const named = modelIdentifier.match(/^claude-(opus|sonnet|haiku|fable|mythos)-(preview)$/)
+  if (named) {
+    const [, family, tag] = named
+    return `Claude ${cap(family)} ${cap(tag)}`
+  }
+  // Version-first IDs (pre-4.6 form): claude-3-5-sonnet-20241022,
+  // claude-3-opus-20240229, claude-3-7-sonnet, claude-3-haiku.
+  const versionFirst = modelIdentifier.match(
+    /^claude-(\d{1,2})(?:-(\d{1,2}))?-(opus|sonnet|haiku)(?:-\d{8})?$/,
+  )
+  if (versionFirst) {
+    const [, major, minor, family] = versionFirst
+    return `Claude ${cap(family)} ${major}${minor ? `.${minor}` : ''}`
+  }
+  // Claude Instant 1.x.
+  const instant = modelIdentifier.match(/^claude-instant-(\d+)(?:\.(\d+))?$/)
+  if (instant) {
+    const [, major, minor] = instant
+    return `Claude Instant ${major}${minor ? `.${minor}` : ''}`
+  }
+  // Bare early generations: claude-2.1, claude-2, claude-1.3, claude-1.
+  const bare = modelIdentifier.match(/^claude-(\d+)(?:\.(\d+))?$/)
+  if (bare) {
+    const [, major, minor] = bare
+    return `Claude ${major}${minor ? `.${minor}` : ''}`
   }
   return modelIdentifier
+}
+
+/** Sort key for deterministic model ordering in legends, chips, stacks,
+ *  and (via that order) color assignment. Groups by family, then newest
+ *  version first, so a model's color no longer depends on which other
+ *  models happen to be in the window. */
+const MODEL_FAMILY_RANK: Record<string, number> = {
+  fable: 0, mythos: 1, opus: 2, sonnet: 3, haiku: 4, other: 5,
+}
+function modelVersionNum(modelId: string): number {
+  const noDate = modelId.replace(/-\d{8}$/, '')
+  const m = noDate.match(/(\d+)[-.](\d+)/) ?? noDate.match(/(\d+)/)
+  if (!m) return 0
+  const major = Number(m[1])
+  const minor = m[2] !== undefined ? Number(m[2]) : 0
+  return major * 100 + minor
+}
+function compareModelsForDisplay(a: string, b: string): number {
+  const fa = MODEL_FAMILY_RANK[modelFamily(a)] ?? 5
+  const fb = MODEL_FAMILY_RANK[modelFamily(b)] ?? 5
+  if (fa !== fb) return fa - fb
+  const va = modelVersionNum(a)
+  const vb = modelVersionNum(b)
+  if (va !== vb) return vb - va
+  return a.localeCompare(b)
+}
+
+/** Join display names with a cap so a 25-model window does not render a
+ *  wall of text in the coverage footnotes. */
+function joinCappedModelNames(ids: string[], cap = 8): string {
+  const names = ids.map(modelDisplayName)
+  if (names.length <= cap) return names.join(', ')
+  return `${names.slice(0, cap).join(', ')} and ${names.length - cap} more`
 }
 
 function tokenTypeDisplayName(tokenType: string): string {
@@ -1268,7 +1338,7 @@ export default function App() {
     const visibleTokenTypes = new Set(
       data.tokenTypes.filter((t) => isSelected(selectedTokenTypes, t)),
     )
-    let visibleModels = data.models.filter((m) => isSelected(selectedModels, m))
+    let visibleModels = data.models.filter((m) => isSelected(selectedModels, m)).sort(compareModelsForDisplay)
     // Both 'billable' and 'cost' need a pricing entry — same gating, hide
     // any unpriced model from the chart and surface the list as a footnote.
     const hiddenInPricedView: string[] = []
@@ -1402,7 +1472,7 @@ export default function App() {
     const visibleTokenTypes = new Set(
       data.tokenTypes.filter((t) => isSelected(selectedTokenTypes, t)),
     )
-    const visibleModels = data.models.filter((m) => isSelected(selectedModels, m))
+    const visibleModels = data.models.filter((m) => isSelected(selectedModels, m)).sort(compareModelsForDisplay)
     let total = 0
     for (const row of data.rows) {
       for (const modelId of visibleModels) {
@@ -1441,7 +1511,7 @@ export default function App() {
   const cacheStats = useMemo(() => {
     if (dailyState.status !== 'ok') return null
     const data = dailyState.data
-    const visibleModels = data.models.filter((m) => isSelected(selectedModels, m))
+    const visibleModels = data.models.filter((m) => isSelected(selectedModels, m)).sort(compareModelsForDisplay)
     let inputSum = 0
     let cacheReadSum = 0
     let cacheWrite5mSum = 0
@@ -1556,7 +1626,7 @@ export default function App() {
   const windowImpact = useMemo(() => {
     if (dailyState.status !== 'ok') return null
     const data = dailyState.data
-    const visibleModels = data.models.filter((m) => isSelected(selectedModels, m))
+    const visibleModels = data.models.filter((m) => isSelected(selectedModels, m)).sort(compareModelsForDisplay)
     let energyWh = 0
     let facilityWh = 0
     let co2eG = 0
@@ -1568,6 +1638,7 @@ export default function App() {
     let indirectWaterUncertaintyPct = 0
     let eventsMissingFactor = 0
     let eventsCount = 0
+    let anyEnergy = false
     let anyCo2 = false
     let anyWater = false
     let anyIndirectWater = false
@@ -1576,8 +1647,11 @@ export default function App() {
         const cell = row.byModel[modelId]
         if (!cell) continue
         const impact = cell.impact
-        energyWh += impact.energy_wh
-        facilityWh += impact.facility_wh
+        if (impact.energy_wh !== null) {
+          energyWh += impact.energy_wh
+          facilityWh += impact.facility_wh ?? 0
+          anyEnergy = true
+        }
         if (impact.co2eG !== null) {
           co2eG += impact.co2eG
           anyCo2 = true
@@ -1607,8 +1681,8 @@ export default function App() {
       }
     }
     return {
-      energyWh,
-      facilityWh,
+      energyWh: anyEnergy ? energyWh : null,
+      facilityWh: anyEnergy ? facilityWh : null,
       co2eG: anyCo2 ? co2eG : null,
       waterL: anyWater ? waterL : null,
       indirectWaterL: anyIndirectWater ? indirectWaterL : null,
@@ -1621,7 +1695,10 @@ export default function App() {
     }
   }, [dailyState, selectedModels])
 
-  const allModels = dailyState.status === 'ok' ? dailyState.data.models : []
+  const allModels =
+    dailyState.status === 'ok'
+      ? [...dailyState.data.models].sort(compareModelsForDisplay)
+      : []
   const allTokenTypes = dailyState.status === 'ok' ? dailyState.data.tokenTypes : []
   const allProjectIds = projectsState.status === 'ok'
     ? projectsState.data.projects.map((p) => p.project_id)
@@ -2085,7 +2162,7 @@ export default function App() {
           {chartConfig.hiddenInPricedView.length > 0 && (
             <div className="text-xs text-slate-500">
               Hidden ({viewMode === 'cost' ? 'no pricing entry → no cost' : 'no pricing entry'}):{' '}
-              {chartConfig.hiddenInPricedView.map((m) => modelDisplayName(m)).join(', ')}
+              {joinCappedModelNames(chartConfig.hiddenInPricedView)}
             </div>
           )}
 
@@ -2441,8 +2518,8 @@ function StatRow({
 
 type EnvironmentalStatRowProps = {
   impact: {
-    energyWh: number
-    facilityWh: number
+    energyWh: number | null
+    facilityWh: number | null
     co2eG: number | null
     waterL: number | null
     indirectWaterL: number | null
@@ -2486,11 +2563,14 @@ function EnvironmentalStatRow({
   // Each KPI's value gets a bracketed display "~rounded (low–high) ± pct%"
   // so the band is the primary cue and the precision is honest to the
   // uncertainty (no more "499.92 kWh ± 40%" false precision).
-  const energyValue = formatBracketedWithUncertainty(
-    impact.facilityWh,
-    impact.energyUncertaintyPct,
-    formatEnergy,
-  )
+  const energyValue =
+    impact.facilityWh === null
+      ? '\u2014'
+      : formatBracketedWithUncertainty(
+          impact.facilityWh,
+          impact.energyUncertaintyPct,
+          formatEnergy,
+        )
   const co2eValue =
     impact.co2eG === null
       ? '—'
@@ -2576,7 +2656,7 @@ function EnvironmentalStatRow({
       {modelsWithoutFactors.length > 0 && (
         <div className="text-xs text-slate-500">
           Factor data unavailable:{' '}
-          {modelsWithoutFactors.map((m) => modelDisplayName(m)).join(', ')}
+          {joinCappedModelNames(modelsWithoutFactors)}
         </div>
       )}
     </div>
@@ -4205,8 +4285,8 @@ function SessionsTable({
           bv = b.costUsdTotal ?? Number.NEGATIVE_INFINITY
           break
         case 'energyWh':
-          av = a.energyWh
-          bv = b.energyWh
+          av = a.energyWh ?? Number.NEGATIVE_INFINITY
+          bv = b.energyWh ?? Number.NEGATIVE_INFINITY
           break
         case 'project':
           av = a.projectId ?? ''
@@ -4335,7 +4415,7 @@ function SessionsTable({
                   {projectLabel}
                 </td>
                 <td className="px-2 py-1 text-slate-600">
-                  {s.models.map(modelDisplayName).join(', ') || '—'}
+                  {s.models.length ? joinCappedModelNames(s.models, 6) : '\u2014'}
                 </td>
                 <td className="px-2 py-1 text-slate-600 whitespace-nowrap">
                   {s.firstEventAt.slice(0, 16).replace('T', ' ')}
@@ -4355,7 +4435,7 @@ function SessionsTable({
                     : formatRoundedDollars(s.costUsdTotal)}
                 </td>
                 <td className="px-2 py-1 text-right tabular-nums">
-                  {formatCompactNumber(Math.round(s.energyWh))}
+                  {s.energyWh === null ? '\u2014' : formatCompactNumber(Math.round(s.energyWh))}
                 </td>
                 <td className="px-2 py-1 text-right tabular-nums">
                   {s.co2eG === null ? '—' : formatCompactNumber(Math.round(s.co2eG))}

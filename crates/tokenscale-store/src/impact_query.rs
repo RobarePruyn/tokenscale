@@ -52,12 +52,12 @@ pub struct ImpactByBucketRow {
     /// per-event-resolved `wh_per_mtok_*`. Events with a null factor
     /// for a token type contribute zero — same convention as
     /// `compute_impact`.
-    pub energy_wh: f64,
+    pub energy_wh: Option<f64>,
 
     /// Energy after PUE multiplier. Per event, `COALESCE(gf.pue,
     /// ?fallback_pue)` — so events whose region has no published PUE
     /// fall back to the configured default.
-    pub facility_wh: f64,
+    pub facility_wh: Option<f64>,
 
     /// `None` when *no* event in the bucket had a non-null
     /// `co2e_kg_per_kwh`. Otherwise the sum, in grams.
@@ -312,13 +312,18 @@ pub async fn aggregate_impact_by_bucket(
         COUNT(*)                                         AS events_count
        FROM events
        JOIN sources ON sources.kind = events.source
+       -- D1: map alias model IDs to their canonical row key. events.model
+       -- stays raw for grouping/display; only resolution uses the mapping.
+       LEFT JOIN model_aliases ma
+              ON ma.provider = sources.provider
+             AND ma.raw = events.model
        LEFT JOIN env_factors ef
               ON ef.provider = sources.provider
-             AND ef.model = events.model
+             AND ef.model = COALESCE(ma.canonical, events.model)
              AND ef.valid_from = (
                  SELECT MAX(valid_from) FROM env_factors
                   WHERE provider = sources.provider
-                    AND model = events.model
+                    AND model = COALESCE(ma.canonical, events.model)
                     AND valid_from <= date(events.occurred_at)
              )
        -- Phase C: per-event time-anchored pricing join, same shape as
@@ -329,11 +334,11 @@ pub async fn aggregate_impact_by_bucket(
        -- and the events_missing_pricing counter tracks the count.
        LEFT JOIN pricing pr
               ON pr.provider = sources.provider
-             AND pr.model = events.model
+             AND pr.model = COALESCE(ma.canonical, events.model)
              AND pr.valid_from = (
                  SELECT MAX(valid_from) FROM pricing
                   WHERE provider = sources.provider
-                    AND model = events.model
+                    AND model = COALESCE(ma.canonical, events.model)
                     AND valid_from <= date(events.occurred_at)
              )
        LEFT JOIN grid_factors gf
@@ -474,8 +479,12 @@ impl RawImpactByBucketRow {
             cache_read_tokens: self.cache_read_tokens,
             cache_write_5m_tokens: self.cache_write_5m_tokens,
             cache_write_1h_tokens: self.cache_write_1h_tokens,
-            energy_wh: self.energy_wh,
-            facility_wh: self.facility_wh,
+            // D7 (v0.1.20): energy follows the same missingness convention
+            // as co2e / water. None when NO event in the cell had a factor
+            // row, so an unfactored model renders as missing rather than a
+            // silent 0 Wh next to real dollar figures.
+            energy_wh: if self.events_missing_env_factor < self.events_count { Some(self.energy_wh) } else { None },
+            facility_wh: if self.events_missing_env_factor < self.events_count { Some(self.facility_wh) } else { None },
             co2e_g,
             water_l,
             indirect_water_l,
@@ -603,10 +612,11 @@ egrid_subregion_full_name = "SERC Virginia/Carolina"
         assert_eq!(row.model, "claude-sonnet-4-6");
         assert_eq!(row.input_tokens, 1_000_000);
         assert_eq!(row.output_tokens, 100_000);
-        assert!((row.energy_wh - 0.7).abs() < 1e-9, "energy_wh={}", row.energy_wh);
+        let energy_wh = row.energy_wh.expect("energy populated");
+        assert!((energy_wh - 0.7).abs() < 1e-9, "energy_wh={energy_wh}");
         assert!(
-            (row.facility_wh - 0.805).abs() < 1e-9,
-            "facility_wh={}",
+            (row.facility_wh.expect("facility populated") - 0.805).abs() < 1e-9,
+            "facility_wh={:?}",
             row.facility_wh
         );
         let co2e = row.co2e_g.expect("co2e populated");
@@ -1103,7 +1113,8 @@ source_accessed_at        = "2026-05-18"
         let row = &rows[0];
         assert_eq!(row.events_missing_env_factor, 1);
         // No env_factor → all wh_per_mtok_* COALESCE to 0 → energy 0.
-        assert!(row.energy_wh.abs() < 1e-9);
+        // D7: the only event has no factor row, so energy is MISSING, not 0.
+        assert!(row.energy_wh.is_none(), "unfactored cell must report None energy, got {:?}", row.energy_wh);
         assert_eq!(row.max_uncertainty_pct, 0);
     }
 
@@ -1163,7 +1174,7 @@ source_accessed_at        = "2026-05-18"
         assert_eq!(rows[0].bucket, "2026-04-20");
         assert_eq!(rows[0].input_tokens, 2_000_000);
         // 2_000_000 * 0.5 / 1e6 = 1.0 Wh (pre-PUE).
-        assert!((rows[0].energy_wh - 1.0).abs() < 1e-9);
+        assert!((rows[0].energy_wh.unwrap() - 1.0).abs() < 1e-9);
     }
 
     #[tokio::test]
@@ -1195,7 +1206,7 @@ source_accessed_at        = "2026-05-18"
         assert_eq!(rows.len(), 1);
         let row = &rows[0];
         // facility_wh = 0.5 * 1.15 = 0.575
-        assert!((row.facility_wh - 0.575).abs() < 1e-9);
+        assert!((row.facility_wh.unwrap() - 0.575).abs() < 1e-9);
         assert_eq!(row.events_using_fallback_pue, 1);
     }
 

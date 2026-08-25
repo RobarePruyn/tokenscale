@@ -622,8 +622,8 @@ source_accessed_at = "2026-05-24"
         assert_eq!(b.cache_read_tokens, a.cache_read_tokens);
         assert_eq!(b.cache_write_5m_tokens, a.cache_write_5m_tokens);
         assert_eq!(b.cache_write_1h_tokens, a.cache_write_1h_tokens);
-        assert!((b.energy_wh - a.energy_wh).abs() < 1e-9);
-        assert!((b.facility_wh - a.facility_wh).abs() < 1e-9);
+        assert!((b.energy_wh.unwrap() - a.energy_wh.unwrap()).abs() < 1e-9);
+        assert!((b.facility_wh.unwrap() - a.facility_wh.unwrap()).abs() < 1e-9);
         assert_eq!(b.cost_usd_total, a.cost_usd_total);
         assert_eq!(b.events_count, a.events_count);
         assert_eq!(b.events_missing_pricing, a.events_missing_pricing);

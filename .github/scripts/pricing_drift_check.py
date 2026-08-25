@@ -69,6 +69,7 @@ SNAPSHOT_STALE_AFTER_DAYS = 90
 # means: (1) update pricing.toml with verified rates, (2) re-capture
 # pricing-rate-card.snapshot.json, (3) add the model ID here.
 TRACKED_MODELS = {
+    "claude-opus-5": "Claude Opus 5",
     "claude-opus-4-8": "Claude Opus 4.8",
     "claude-opus-4-7": "Claude Opus 4.7",
     "claude-opus-4-6": "Claude Opus 4.6",
@@ -81,6 +82,15 @@ TRACKED_MODELS = {
     # to skip it rather than raise ParseFailure. See load_retired_model_ids
     # and the retired-skip guard in parse_anthropic_page.
     "claude-fable-5": "Claude Fable 5",
+    # D4a: claude-sonnet-5 is intentionally NOT tracked yet. The live page
+    # renders it as two qualifier-suffixed rows ("through August 31, 2026" /
+    # "starting September 1, 2026") that the row regex does not match; adding
+    # it now would flip the run to exit-2. Add it after 2026-09-01 when the
+    # page collapses to a single standard Sonnet 5 row. Priced + factored
+    # meanwhile; only drift-tracking is deferred.
+    # Historical models (Claude 1 through 4.x snapshots, Mythos) are priced
+    # and factored but never tracked here: most were never on the live page,
+    # and a missing tracked model degrades the whole run to exit-2 (D4).
 }
 
 # Anthropic's published cache multipliers (per ### Prompt caching prose).

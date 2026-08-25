@@ -45,74 +45,180 @@
 
 schema_version = 1
 file_status    = "production"
-file_version   = "1.1"
-file_published = "2026-06-16"
-# v1.1 (2026-06-16): added claude-opus-4-8 and claude-fable-5 rows. While
-# sourcing those, the full rate card was re-verified against the pricing
-# page on 2026-06-16; every pre-existing row is unchanged. Fable 5 carries
-# `status = "retired"` (pulled by a US export-control directive 2026-06-12,
-# ~3 days after its 2026-06-09 launch); the row is kept for historical
-# attribution and the drift detector treats its absence from the live page
-# as expected. See docs/roadmap-model-additions-fable-opus48.md.
+file_version   = "1.2"
+file_published = "2026-08-02"
+# v1.2 (2026-08-02): full model coverage, every Anthropic model ever
+# released, plus the D1 alias table. Every rate below traces to a source
+# named in launch_date_source; rows labeled ESTIMATE in notes say so and why.
+# Sources used for this version (all accessed 2026-08-02 unless noted):
+#   - live pricing page: https://platform.claude.com/docs/en/about-claude/pricing
+#   - Anthropic Model Pricing PDF (Claude Instant / 2.0 / 2.1):
+#     https://www-cdn.anthropic.com/90df03aed08b794ab03c5a7bf28b2ad9cf26cf3c/model_pricing_july2023.pdf
+#     (the CDN path may rotate; a July 2023 snapshot also lives at
+#     https://www-cdn.anthropic.com/31021aea87c30ccaecbd2e966e49a03834bfd1d2/pricing.pdf)
+#   - launch posts: claude-3-family, claude-3-5-sonnet, 3-5-models-and-computer-use,
+#     claude-3-7-sonnet (anthropic.com/news), plus dated launch coverage for the
+#     4.6 through 5 generations (TechCrunch, Axios, Simon Willison)
+#   - lifecycle: https://platform.claude.com/docs/en/about-claude/model-deprecations
+# Two genuine mid-life price changes exist in the whole history and are
+# expressed as second valid_from rows: Claude 3.5 Haiku (2024-12-03) and
+# Claude Sonnet 5 (2026-09-01, pre-announced intro window).
+# See docs/roadmap-full-model-coverage.md for the design pass.
 
 # ----------------------------------------------------------------------------
-# [[providers.<provider>.models.<model-id>]]   — array-of-tables form
+# [[providers.<provider>.models.<model-id>]]   (array-of-tables form)
 # ----------------------------------------------------------------------------
-# Each model entry is an array; v0.1.13 ships one row per model. Future
-# rate corrections add a NEW row with a later `valid_from` rather than
-# overwriting the existing one — that's the time-anchoring guarantee.
+# Each model entry is an array. Rate corrections and pre-announced changes
+# add a NEW row with a later valid_from rather than overwriting the old one;
+# that is the time-anchoring guarantee.
+#
+# Row keys are the model IDs real data emits (D1): dated pinned snapshots
+# for models before the 4.6 generation, dateless IDs from 4.6 on. Undated
+# convenience names and -latest pointers live in the aliases table below.
 #
 # Each row carries:
-#   * `input_usd_per_mtok`        — fresh input tokens, USD per million.
-#   * `output_usd_per_mtok`       — output tokens, USD per million.
-#   * `cache_read_usd_per_mtok`   — replayed cached input tokens (typically
-#                                    10% of input price for Anthropic).
-#   * `cache_write_5m_multiplier` — 5-minute prompt-cache write tokens, as
-#                                    a multiplier on the input price (typically 1.25x).
-#   * `cache_write_1h_multiplier` — 1-hour prompt-cache write tokens, as
-#                                    a multiplier on the input price (typically 2.0x).
-#   * `valid_from`                 — ISO date these prices became effective
-#                                    (the model's launch date or the date
-#                                    Anthropic published a rate change).
-#   * `launch_date_source`         — URL or rationale backing the date.
-#                                    Sourced rows cite primary then secondary
-#                                    URLs; conservative-estimate rows say so
-#                                    explicitly per D3 in the time-anchoring
-#                                    roadmap.
-#   * `source_url` / `source_accessed_at` — rate-card provenance.
-#
+#   * input_usd_per_mtok / output_usd_per_mtok
+#   * cache_read_usd_per_mtok        (0.1x input for every era with caching)
+#   * cache_write_5m_multiplier / cache_write_1h_multiplier  (1.25x / 2.0x)
+#   * valid_from                     (ISO date the rate took effect)
+#   * launch_date_source             (URL or rationale backing the date)
+#   * source_url / source_accessed_at (rate-card provenance)
+#   * notes (optional)               (ESTIMATE labels and caveats)
+# Prompt caching launched in beta on 2024-08-14. Rows for models that
+# predate it (Claude 1.x, Instant, 2.x, and the Claude 3 family at launch)
+# carry the standard multipliers NOMINALLY (D3): no cache tokens can exist
+# for those eras, so the nominal values multiply zero and never surface a
+# dollar. They satisfy the schema; they are not a claim that the price
+# existed.
 # ----------------------------------------------------------------------------
 
 [providers.anthropic]
 display_name = "Anthropic"
 
-# ---- Fable models ----
-# Fable 5 was Anthropic's most expensive GA model (2x Opus). Launched
-# 2026-06-09; disabled 2026-06-12 by a US-government export-control
-# directive (pulled alongside Mythos 5), about three days after launch.
-# The row is retained for historical attribution of usage during its live
-# window. `status = "retired"` is TOML-only provenance (ignored by the Rust
-# parser, same as launch_date_source) that tells the pricing-drift detector
-# to treat absence from the live pricing page as expected, not as drift.
+# ----------------------------------------------------------------------------
+# D1 alias table: raw emitted or convenience ID -> canonical row key.
+# ----------------------------------------------------------------------------
+# Per Anthropic's model-ID docs, pre-4.6 undated names are convenience
+# pointers to the most recent dated snapshot for that minor version; the
+# -latest names were the same idea for the 3.x generation. Real emitted
+# usage carries the dated form (empirically confirmed in the maintainer
+# corpus), so these mappings are a safety net, not the primary key path.
+# An alias key must never also be a model row key (startup gate).
+[providers.anthropic.aliases]
+"claude-haiku-4-5"          = "claude-haiku-4-5-20251001"
+"claude-sonnet-4-5"         = "claude-sonnet-4-5-20250929"
+"claude-opus-4-5"           = "claude-opus-4-5-20251101"
+"claude-opus-4-1"           = "claude-opus-4-1-20250805"
+"claude-opus-4-0"           = "claude-opus-4-20250514"
+"claude-opus-4"             = "claude-opus-4-20250514"
+"claude-sonnet-4-0"         = "claude-sonnet-4-20250514"
+"claude-sonnet-4"           = "claude-sonnet-4-20250514"
+"claude-3-7-sonnet-latest"  = "claude-3-7-sonnet-20250219"
+"claude-3-7-sonnet"         = "claude-3-7-sonnet-20250219"
+"claude-3-5-sonnet-latest"  = "claude-3-5-sonnet-20241022"
+"claude-3-5-sonnet"         = "claude-3-5-sonnet-20241022"
+"claude-3-5-haiku-latest"   = "claude-3-5-haiku-20241022"
+"claude-3-5-haiku"          = "claude-3-5-haiku-20241022"
+"claude-3-opus-latest"      = "claude-3-opus-20240229"
+"claude-3-opus"             = "claude-3-opus-20240229"
+"claude-3-sonnet"           = "claude-3-sonnet-20240229"
+"claude-3-haiku"            = "claude-3-haiku-20240307"
+# claude-2 pointed at the newest 2.x; 2.0 and 2.1 share a rate card.
+"claude-2"                  = "claude-2.1"
+# Instant 1.0 / 1.1 predate the 1.2 snapshot on the same rate card.
+"claude-instant-1"          = "claude-instant-1.2"
+"claude-instant-1.0"        = "claude-instant-1.2"
+"claude-instant-1.1"        = "claude-instant-1.2"
+# Claude 1.x: one canonical row (1.3) with the earlier snapshots aliased.
+"claude-1"                  = "claude-1.3"
+"claude-1.0"                = "claude-1.3"
+"claude-1.1"                = "claude-1.3"
+"claude-1.2"                = "claude-1.3"
 
+# ---- Claude 5 generation ----
+
+[[providers.anthropic.models."claude-opus-5"]]
+display_name              = "Claude Opus 5"
+valid_from                = "2026-07-24"
+input_usd_per_mtok        = 5.00
+output_usd_per_mtok       = 25.00
+cache_read_usd_per_mtok   = 0.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "GA on all platforms 2026-07-24: https://www.axios.com/2026/07/24/anthropic-releases-new-model-opus-5 and https://techcrunch.com/2026/07/24/anthropic-launches-opus-5/. Sourced, exact; rates identical to Opus 4.8 on the live page."
+
+# Sonnet 5 ships with a pre-announced introductory window. Anthropic's own
+# pricing page publishes it as two rows ("through August 31, 2026" and
+# "starting September 1, 2026"); both are encoded here as time-anchored rows.
+[[providers.anthropic.models."claude-sonnet-5"]]
+display_name              = "Claude Sonnet 5"
+valid_from                = "2026-06-30"
+input_usd_per_mtok        = 2.00
+output_usd_per_mtok       = 10.00
+cache_read_usd_per_mtok   = 0.20
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Launch 2026-06-30: https://www.anthropic.com/news/claude-sonnet-5 and https://techcrunch.com/2026/06/30/anthropic-launches-claude-sonnet-5/. Introductory rate per the live pricing page's 'through August 31, 2026' row. Sourced, exact."
+
+[[providers.anthropic.models."claude-sonnet-5"]]
+display_name              = "Claude Sonnet 5"
+valid_from                = "2026-09-01"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Standard rate per the live pricing page's 'starting September 1, 2026' row, pre-announced with the launch. Sourced, exact."
+
+# Fable 5 was suspended 2026-06-12 to 2026-07-01 under a US export-control
+# directive (lifted 2026-06-30; access restored 2026-07-01 per
+# https://www.anthropic.com/news/redeploying-fable-5). It is Active again
+# with a normal lifecycle row; the rate never changed, so the suspension
+# needs no row. Historical note only.
 [[providers.anthropic.models."claude-fable-5"]]
 display_name              = "Claude Fable 5"
 valid_from                = "2026-06-09"
-status                    = "retired"
 input_usd_per_mtok        = 10.00
 output_usd_per_mtok       = 50.00
 cache_read_usd_per_mtok   = 1.00
 cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
-source_accessed_at        = "2026-06-16"
-launch_date_source        = "https://www.anthropic.com/news/claude-fable-5-mythos-5 (Anthropic launch announcement, 2026-06-09); disabled 2026-06-12 per https://www.infoq.com/news/2026/06/claude-5-release/ and https://thenewstack.io/us-gov-orders-anthropic-to-pull-fable-5-and-mythos-5-three-days-after-launch/. Sourced, exact launch date; D3 conservative-dating rule does not apply."
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "https://www.anthropic.com/news/claude-fable-5-mythos-5 (Anthropic launch announcement, 2026-06-09). Sourced, exact."
 
-# ---- Opus models ----
-# Anthropic dropped Opus pricing in the 4.5 generation from $15/$75 (Opus 4
-# and 4.1) to $5/$25 (4.5, 4.6, 4.7). Per-model rates from now on — no
-# cascading from family-level assumptions; every row gets verified against
-# Anthropic's pricing page.
+[[providers.anthropic.models."claude-mythos-5"]]
+display_name              = "Claude Mythos 5"
+valid_from                = "2026-06-09"
+input_usd_per_mtok        = 10.00
+output_usd_per_mtok       = 50.00
+cache_read_usd_per_mtok   = 1.00
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Launched alongside Fable 5 on 2026-06-09 in limited availability (Project Glasswing); listed on the live pricing page with Fable-identical rates. Sourced, exact."
+
+[[providers.anthropic.models."claude-mythos-preview"]]
+display_name              = "Claude Mythos Preview"
+valid_from                = "2026-04-07"
+input_usd_per_mtok        = 10.00
+output_usd_per_mtok       = 50.00
+cache_read_usd_per_mtok   = 1.00
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Project Glasswing launch 2026-04-07 (Anthropic announcement). Invitation-only; the model never appeared on the public rate card."
+notes                     = "ESTIMATE (D6): rates never published for the invitation-only preview. Set equal to Fable 5 / Mythos 5, the same model family it previewed. Deprecated per the model-deprecations page as of 2026-08-02, retirement date not announced."
+
+# ---- Opus 4.x ----
 
 [[providers.anthropic.models."claude-opus-4-8"]]
 display_name              = "Claude Opus 4.8"
@@ -123,8 +229,8 @@ cache_read_usd_per_mtok   = 0.50
 cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
-source_accessed_at        = "2026-06-16"
-launch_date_source        = "https://www.axios.com/2026/05/28/anthropic-opus-release-mythos (dated GA, 2026-05-28); corroborated by https://simonwillison.net/2026/May/28/claude-opus-4-8/. Sourced, exact date; D3 conservative-dating rule does not apply. Rates identical to Opus 4.6/4.7 ($5/$25), re-verified on the pricing page 2026-06-16."
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "https://www.axios.com/2026/05/28/anthropic-opus-release-mythos (dated GA, 2026-05-28); corroborated by https://simonwillison.net/2026/May/28/claude-opus-4-8/. Sourced, exact."
 
 [[providers.anthropic.models."claude-opus-4-7"]]
 display_name              = "Claude Opus 4.7"
@@ -135,56 +241,103 @@ cache_read_usd_per_mtok   = 0.50
 cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
-source_accessed_at        = "2026-05-18"
-launch_date_source        = "https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7 (Anthropic, first-party); https://github.blog/changelog/2026-04-16-claude-opus-4-7-is-generally-available/ (dated GA confirmation). Sourced — exact date, D3 conservative-dating rule does not apply."
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7 (Anthropic, first-party); https://github.blog/changelog/2026-04-16-claude-opus-4-7-is-generally-available/. Sourced, exact."
 
+# valid_from corrected 2026-08-02 from the v0.1.13 conservative estimate
+# (2025-09-01) to the sourced launch date. Rates identical on both sides of
+# the boundary and every observed event postdates the new date, so no
+# number moves; see the corrections log in docs/cost-methodology.md.
 [[providers.anthropic.models."claude-opus-4-6"]]
 display_name              = "Claude Opus 4.6"
-valid_from                = "2025-09-01"
+valid_from                = "2026-02-05"
 input_usd_per_mtok        = 5.00
 output_usd_per_mtok       = 25.00
 cache_read_usd_per_mtok   = 0.50
 cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
-source_accessed_at        = "2026-05-18"
-launch_date_source        = "Conservative estimate, not exact. ~Sep 2025 per Bedrock ID convention `anthropic.claude-opus-4-6-v1`; start-of-month per D3 conservative-dating rule (bias earlier than best guess, never later). Replace with first-party Anthropic source if/when one becomes available."
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Launch 2026-02-05: https://techcrunch.com/2026/02/05/anthropic-launches-claude-opus-4-6/; the deprecations page's 'not sooner than February 5, 2027' retirement floor corroborates. Sourced, exact (replaces the v0.1.13 conservative estimate)."
 
-# ---- Sonnet models ----
+[[providers.anthropic.models."claude-opus-4-5-20251101"]]
+display_name              = "Claude Opus 4.5"
+valid_from                = "2025-11-01"
+input_usd_per_mtok        = 5.00
+output_usd_per_mtok       = 25.00
+cache_read_usd_per_mtok   = 0.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20251101); announced 2025-11-24. Bias-earlier rule picks the ID date. Sourced, exact."
 
+[[providers.anthropic.models."claude-opus-4-1-20250805"]]
+display_name              = "Claude Opus 4.1"
+valid_from                = "2025-08-05"
+input_usd_per_mtok        = 15.00
+output_usd_per_mtok       = 75.00
+cache_read_usd_per_mtok   = 1.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20250805); announced the same day. Deprecated 2026-06-05, retiring 2026-08-05 per the deprecations page. Sourced, exact."
+
+[[providers.anthropic.models."claude-opus-4-20250514"]]
+display_name              = "Claude Opus 4"
+valid_from                = "2025-05-14"
+input_usd_per_mtok        = 15.00
+output_usd_per_mtok       = 75.00
+cache_read_usd_per_mtok   = 1.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20250514); announced 2025-05-22. Retired 2026-06-15 (still listed on the rate card as retired-except-cloud). Sourced, exact."
+
+# ---- Sonnet 4.x ----
+
+# valid_from corrected 2026-08-02 from the v0.1.13 conservative estimate
+# (2025-09-01) to the sourced launch date; no number moves.
 [[providers.anthropic.models."claude-sonnet-4-6"]]
 display_name              = "Claude Sonnet 4.6"
-valid_from                = "2025-09-01"
+valid_from                = "2026-02-17"
 input_usd_per_mtok        = 3.00
 output_usd_per_mtok       = 15.00
 cache_read_usd_per_mtok   = 0.30
 cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
-source_accessed_at        = "2026-05-18"
-launch_date_source        = "Conservative estimate, not exact. ~Sep 2025 per docs/roadmap-cost-time-anchoring.md §3; start-of-month per D3 conservative-dating rule (bias earlier than best guess, never later). Replace with first-party Anthropic source if/when one becomes available."
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Launch 2026-02-17 (Anthropic announcement; the deprecations page's 'not sooner than February 17, 2027' retirement floor corroborates). Sourced, exact (replaces the v0.1.13 conservative estimate)."
 
-# ---- Haiku models ----
-
-[[providers.anthropic.models."claude-haiku-4-5"]]
-display_name              = "Claude Haiku 4.5"
-valid_from                = "2025-10-01"
-input_usd_per_mtok        = 1.00
-output_usd_per_mtok       = 5.00
-cache_read_usd_per_mtok   = 0.10
+[[providers.anthropic.models."claude-sonnet-4-5-20250929"]]
+display_name              = "Claude Sonnet 4.5"
+valid_from                = "2025-09-29"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
 cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
-source_accessed_at        = "2026-05-18"
-launch_date_source        = "Bedrock model ID `claude-haiku-4-5-20251001` encodes the launch date. Exact — D3 conservative-dating rule does not apply."
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20250929); announced the same day. Sourced, exact."
 
-# Alias row for the dated Bedrock-style ID. Real-world Haiku 4.5 usage
-# (especially subagent transcripts) records the model as
-# `claude-haiku-4-5-20251001`, which must match a pricing row or the usage
-# renders unpriced. Same model, same rates as the undated row above. v0.1.19
-# smoke surfaced this when the recursive walker first ingested subagent Haiku
-# usage. A general model-ID normalization (strip -YYYYMMDD) is tracked as a
-# follow-up issue; see docs/roadmap-model-additions-fable-opus48.md.
+[[providers.anthropic.models."claude-sonnet-4-20250514"]]
+display_name              = "Claude Sonnet 4"
+valid_from                = "2025-05-14"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20250514); announced 2025-05-22. Retired 2026-06-15 (still listed as retired-except-cloud). Sourced, exact."
+
+# ---- Haiku 4.x ----
+
 [[providers.anthropic.models."claude-haiku-4-5-20251001"]]
 display_name              = "Claude Haiku 4.5"
 valid_from                = "2025-10-01"
@@ -194,5 +347,164 @@ cache_read_usd_per_mtok   = 0.10
 cache_write_5m_multiplier = 1.25
 cache_write_1h_multiplier = 2.00
 source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
-source_accessed_at        = "2026-06-16"
-launch_date_source        = "Dated Bedrock-style alias of claude-haiku-4-5 (same model, same rates). The -20251001 suffix encodes the 2025-10-01 launch date. Exact; D3 conservative-dating rule does not apply."
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20251001); announced 2025-10-15. This dated form is what real usage emits; the undated claude-haiku-4-5 is an alias (D1). Sourced, exact."
+
+# ---- Claude 3.7 ----
+
+[[providers.anthropic.models."claude-3-7-sonnet-20250219"]]
+display_name              = "Claude Sonnet 3.7"
+valid_from                = "2025-02-19"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://www.anthropic.com/news/claude-3-7-sonnet"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20250219); announced 2025-02-24 with rates stated unchanged from 3.5 Sonnet ($3 / $15). Retired 2026-02-19. Sourced, exact."
+
+# ---- Claude 3.5 ----
+
+# Claude 3.5 Haiku carries the only historical price CUT: launched at
+# $1 / $5 (2024-11-04 API availability per Anthropic's launch post as
+# reported that day), revised to $0.80 / $4 on 2024-12-03 (update appended
+# to the same Anthropic post; the live rate card still shows $0.80 / $4).
+[[providers.anthropic.models."claude-3-5-haiku-20241022"]]
+display_name              = "Claude Haiku 3.5"
+valid_from                = "2024-10-22"
+input_usd_per_mtok        = 1.00
+output_usd_per_mtok       = 5.00
+cache_read_usd_per_mtok   = 0.10
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://www.anthropic.com/news/3-5-models-and-computer-use"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20241022); announced 2024-10-22, API availability 2024-11-04. Launch rate $1 / $5 per Anthropic's post as reported 2024-11-04 (https://simonwillison.net/2024/Nov/4/claude-3-5-haiku/). Sourced."
+
+[[providers.anthropic.models."claude-3-5-haiku-20241022"]]
+display_name              = "Claude Haiku 3.5"
+valid_from                = "2024-12-03"
+input_usd_per_mtok        = 0.80
+output_usd_per_mtok       = 4.00
+cache_read_usd_per_mtok   = 0.08
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Price revision dated 2024-12-03 in the update appended to https://www.anthropic.com/news/3-5-models-and-computer-use; the live rate card shows $0.80 / $4 with $0.08 cache read. Sourced, exact."
+
+[[providers.anthropic.models."claude-3-5-sonnet-20241022"]]
+display_name              = "Claude Sonnet 3.5 (2024-10-22)"
+valid_from                = "2024-10-22"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://www.anthropic.com/news/3-5-models-and-computer-use"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20241022); announced the same day 'at the same price and speed as its predecessor' ($3 / $15). Retired 2025-10-28. Sourced, exact."
+
+[[providers.anthropic.models."claude-3-5-sonnet-20240620"]]
+display_name              = "Claude Sonnet 3.5 (2024-06-20)"
+valid_from                = "2024-06-20"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://www.anthropic.com/news/claude-3-5-sonnet"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20240620); launch post states $3 / $15. Prompt caching (2024-08-14) postdates launch; cache columns are the standard multipliers, live from 2024-08-14. Retired 2025-10-28. Sourced, exact."
+
+# ---- Claude 3 (launch 2024-03-04; caching arrived later, 2024-08-14+) ----
+
+[[providers.anthropic.models."claude-3-opus-20240229"]]
+display_name              = "Claude Opus 3"
+valid_from                = "2024-02-29"
+input_usd_per_mtok        = 15.00
+output_usd_per_mtok       = 75.00
+cache_read_usd_per_mtok   = 1.50
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://www.anthropic.com/news/claude-3-family"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20240229); announced 2024-03-04 at $15 / $75. Cache columns are the standard multipliers, nominal until caching reached Opus 3. Retired 2026-01-05. Sourced, exact."
+
+[[providers.anthropic.models."claude-3-sonnet-20240229"]]
+display_name              = "Claude Sonnet 3"
+valid_from                = "2024-02-29"
+input_usd_per_mtok        = 3.00
+output_usd_per_mtok       = 15.00
+cache_read_usd_per_mtok   = 0.30
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://www.anthropic.com/news/claude-3-family"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20240229); announced 2024-03-04 at $3 / $15. Cache columns nominal (D3): caching never shipped for Sonnet 3 before its 2025-07-21 retirement. Sourced, exact."
+
+[[providers.anthropic.models."claude-3-haiku-20240307"]]
+display_name              = "Claude Haiku 3"
+valid_from                = "2024-03-07"
+input_usd_per_mtok        = 0.25
+output_usd_per_mtok       = 1.25
+cache_read_usd_per_mtok   = 0.03
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://www.anthropic.com/news/claude-3-family"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Snapshot date encoded in the model ID (20240307); available 2024-03-13 at $0.25 / $1.25 per the family launch post. Cache read $0.03 is the published 0.1x rate once caching reached Haiku 3 (2024-08-14 beta). Retired 2026-04-20. Sourced, exact."
+
+# ---- Claude 2 (no prompt caching existed; cache columns nominal, D3) ----
+
+[[providers.anthropic.models."claude-2.1"]]
+display_name              = "Claude 2.1"
+valid_from                = "2023-11-21"
+input_usd_per_mtok        = 8.00
+output_usd_per_mtok       = 24.00
+cache_read_usd_per_mtok   = 0.80
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://www-cdn.anthropic.com/90df03aed08b794ab03c5a7bf28b2ad9cf26cf3c/model_pricing_july2023.pdf"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Launch 2023-11-21 (Anthropic announcement; first 200K context). Rates from Anthropic's official Model Pricing PDF (July 2023): prompt $8.00 / completion $24.00 per million tokens. Cache columns nominal; caching did not exist. Retired 2025-07-21. PRIMARY source."
+
+[[providers.anthropic.models."claude-2.0"]]
+display_name              = "Claude 2"
+valid_from                = "2023-07-11"
+input_usd_per_mtok        = 8.00
+output_usd_per_mtok       = 24.00
+cache_read_usd_per_mtok   = 0.80
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://www-cdn.anthropic.com/90df03aed08b794ab03c5a7bf28b2ad9cf26cf3c/model_pricing_july2023.pdf"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Launch 2023-07-11 (Anthropic announcement; public claude.ai). Rates from Anthropic's official Model Pricing PDF (July 2023): $8.00 / $24.00 per million tokens. Cache columns nominal; caching did not exist. Retired 2025-07-21. PRIMARY source."
+
+# ---- Claude 1 and Instant (2023; no caching; cache columns nominal, D3) ----
+
+[[providers.anthropic.models."claude-instant-1.2"]]
+display_name              = "Claude Instant 1.2"
+valid_from                = "2023-03-14"
+input_usd_per_mtok        = 1.63
+output_usd_per_mtok       = 5.51
+cache_read_usd_per_mtok   = 0.163
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://www-cdn.anthropic.com/90df03aed08b794ab03c5a7bf28b2ad9cf26cf3c/model_pricing_july2023.pdf"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Claude Instant launched 2023-03-14 alongside Claude 1 (Anthropic API early access); Instant 1.0 / 1.1 are aliased to this row. Rates from Anthropic's official Model Pricing PDF (July 2023): prompt $1.63 / completion $5.51 per million tokens. Cache columns nominal. Retired 2024-11-06. PRIMARY source for the rate; the family launch date is from the release timeline."
+
+[[providers.anthropic.models."claude-1.3"]]
+display_name              = "Claude 1"
+valid_from                = "2023-03-14"
+input_usd_per_mtok        = 8.00
+output_usd_per_mtok       = 24.00
+cache_read_usd_per_mtok   = 0.80
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://www-cdn.anthropic.com/90df03aed08b794ab03c5a7bf28b2ad9cf26cf3c/model_pricing_july2023.pdf"
+source_accessed_at        = "2026-08-02"
+launch_date_source        = "Claude 1 launched 2023-03-14 (Anthropic API early access); 1.3 shipped 2023-05-11 with 100K context; 1.0 / 1.1 / 1.2 are aliased to this row. Retired 2024-11-06."
+notes                     = "ESTIMATE (D8a): no primary rate card for Claude 1.x survives; the July 2023 Anthropic pricing PDF already lists only Instant, 2.0 and 2.1. Rates set equal to Claude 2.0 (the adjacent era's primary-sourced flagship rate) as a labeled estimate. Claude Code did not exist in this era, so the practical exposure is hypothetical API imports."

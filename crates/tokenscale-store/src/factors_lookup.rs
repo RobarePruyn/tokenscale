@@ -52,13 +52,15 @@ pub async fn lookup_environmental_factors(
             uncertainty_range_pct, confidence
          FROM env_factors
          WHERE provider = ?
-           AND model = ?
+           AND model = COALESCE((SELECT canonical FROM model_aliases WHERE provider = ? AND raw = ?), ?)
            AND valid_from <= ?
            AND (valid_to IS NULL OR ? < valid_to)
          ORDER BY valid_from DESC
          LIMIT 1",
     )
     .bind(provider)
+    .bind(provider)
+    .bind(model)
     .bind(model)
     .bind(as_of_date)
     .bind(as_of_date)

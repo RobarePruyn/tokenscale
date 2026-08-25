@@ -979,7 +979,9 @@ fallback_wue_l_per_kwh = 0.15
             serde_json::json!(["claude-haiku-99"])
         );
         let impact = &body["rows"][0]["byModel"]["claude-haiku-99"]["impact"];
-        assert!((impact["energy_wh"].as_f64().unwrap()).abs() < 1e-9);
+        // D7: unfactored model reports null energy, not 0.
+        assert!(impact["energy_wh"].is_null(), "unfactored energy must be null, got {}", impact["energy_wh"]);
+        assert!(impact["facility_wh"].is_null());
         assert_eq!(impact["eventsMissingEnvFactor"], 1);
     }
 

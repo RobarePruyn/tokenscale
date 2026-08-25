@@ -81,13 +81,13 @@ pub async fn audit_pricing_launch_dates(
                      WHEN (SELECT MIN(valid_from)
                              FROM pricing
                             WHERE provider = sources.provider
-                              AND model    = events.model) IS NULL
+                              AND model    = COALESCE(ma.canonical, events.model)) IS NULL
                        THEN 1
                      WHEN date(events.occurred_at) <
                           (SELECT MIN(valid_from)
                              FROM pricing
                             WHERE provider = sources.provider
-                              AND model    = events.model)
+                              AND model    = COALESCE(ma.canonical, events.model))
                        THEN 1
                      ELSE 0
                  END)         AS events_pre_launch,
@@ -95,11 +95,16 @@ pub async fn audit_pricing_launch_dates(
              (SELECT MIN(valid_from)
                 FROM pricing
                WHERE provider = sources.provider
-                 AND model    = events.model) AS earliest_valid_from
+                 AND model    = COALESCE(ma.canonical, events.model)) AS earliest_valid_from
            FROM events
            JOIN sources ON sources.kind = events.source
-          GROUP BY provider, model
-          ORDER BY provider, model",
+           -- D1: map alias model IDs to their canonical row key. events.model
+           -- stays raw for grouping/display; only resolution uses the mapping.
+           LEFT JOIN model_aliases ma
+                  ON ma.provider = sources.provider
+                 AND ma.raw = events.model
+          GROUP BY sources.provider, events.model
+          ORDER BY sources.provider, events.model",
     )
     .fetch_all(database.pool())
     .await?;

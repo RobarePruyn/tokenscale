@@ -260,6 +260,18 @@ async fn command_serve(config_path: &std::path::Path, bind_override: Option<Stri
              \"seed\" do NOT trip the gate; legitimate methodology prose may use them.)"
         );
     }
+    // D1 (v0.1.20): an alias whose raw key is also a model row key would
+    // make model-ID resolution self-referential. Refuse to serve rather
+    // than let the alias table silently shadow (or be shadowed by) a row.
+    let alias_conflicts = pricing.alias_conflicts();
+    if !alias_conflicts.is_empty() {
+        anyhow::bail!(
+            "pricing.toml [providers.<provider>.aliases] maps a raw ID that is ALSO a model \
+             row key ({}). An alias key must not be a canonical row; remove either the alias \
+             or the row before starting.",
+            alias_conflicts.join(", ")
+        );
+    }
     // v0.1.13: pricing also lives in a DB table now (the table was
     // provisioned in v0.1.0's initial migration but never populated).
     // pricing_sync rewrites the table from pricing.toml on every start,

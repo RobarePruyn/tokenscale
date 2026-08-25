@@ -1,6 +1,6 @@
 # Roadmap: full model coverage, every Anthropic model ever released
 
-**Status**: SIGNED OFF 2026-08-02. All nine D-decisions confirmed as recommended. Maintainer calls on the open judgment items: one release (v0.1.20 carries code, migration, full backfill, and frontend together); historical energy-factor derivation approach accepted for the build with a separate research pass tracked as a filed issue; build-time row-by-row source verification accepted; Issue #7 closes when D1 ships. Build in progress.
+**Status**: SIGNED OFF 2026-08-02. All nine D-decisions confirmed as recommended. Maintainer calls on the open judgment items: one release (v0.1.20 carries code, migration, full backfill, and frontend together); historical energy-factor derivation approach accepted for the build with a separate research pass tracked as a filed issue; build-time row-by-row source verification accepted; Issue #7 closes when D1 ships. Build complete; release-gate smoke against the real DB passed clean (see §5). Awaiting maintainer clearance for the v0.1.20 tag.
 
 **Companions**: `docs/assessment-full-codebase-2026-06.md` (codebase audit; its §8 is the code-side work list), `docs/roadmap-model-additions-fable-opus48.md` (v0.1.19 predecessor), [Issue #7](https://github.com/RobarePruyn/tokenscale/issues/7) (model-ID normalization, subsumed by D1).
 
@@ -134,3 +134,17 @@ All rows use sourced dates; ID-encoded snapshot dates win when earlier than anno
 ## 4. Gates carried forward
 
 Release-gate framing verbatim (smoke is the gate; bug-find is the expected outcome). Empirical before speculative (every rate traces to a source or carries a labeled estimate). No em-dashes in repo prose. Explicit sign-off on D1 through D9 before any code or data lands.
+
+## 5. Smoke findings (v0.1.20 §4 release gate)
+
+Smoke ran against an isolated copy of the maintainer's production DB (48,293 events, 752 MB) with the built release binary pointed at the repo's `pricing.toml` v1.2 and `environmental-factors.toml` v0.5 via config overrides. Migrations applied cleanly (the D1 `model_aliases` table created); `serve` startup synced 28 pricing rows / 26 models / 26 aliases and 37 model-factor rows (26 anthropic) with zero conflicts.
+
+Results, all green:
+
+1. **Coverage (D5).** Every real emitted model in the DB (opus-4-7, opus-4-8, fable-5, opus-4-6, haiku-4-5-20251001, sonnet-4-6, opus-5, sonnet-5) resolves to a canonical row and is both priced and factored. The only unpriced and unfactored model is `<synthetic>`, which is the coverage-exempt admin-API aggregate. The unpriced/unfactored sets are exactly `{<synthetic>}`.
+2. **No double-counting (D1 + UNIQUE guard).** Non-synthetic raw event count (48,135) equals the time-anchored pricing-join row count (48,135). The alias LEFT JOIN followed by the pricing JOIN produces exactly one row per event; the UNIQUE indexes from the quick pass hold. This was the primary risk of the largest data change in the project's history and it is clean.
+3. **Audit gate.** `audit pricing-launch-dates` exits 0: zero pre-launch events across all eight priced pairs. Every model's earliest observed event is at or after its `valid_from` (sonnet-5 `2026-07-02 >= 2026-06-30`; opus-5 `2026-07-25 >= 2026-07-24`; the tightest margin is opus-4-7 at `2026-04-18 >= 2026-04-16`).
+
+**One procedural finding (not a code defect, not a blocker).** `tokenscale scan` does not run the pricing/factor/alias sync; only `serve` startup and the `audit` command do. An initial smoke pass using `scan` therefore showed the copy's pre-existing 7 pricing rows unchanged, which looked like a sync failure until traced to the command path. The behavior is pre-existing and consistent with the "replace-on-startup" contract in the config docs (the dashboard always runs under `serve`, which syncs). It is worth a follow-up decision: should `scan` also re-sync pricing/factors/aliases so a local-research-mode user who edits a TOML and runs a one-shot `scan` sees fresh rates without restarting `serve`? Filed as a candidate, not actioned this release (no sign-off to change command semantics here). The smoke checklist for any future pricing/factor/alias release must exercise the sync via `serve` or `audit`, not `scan`.
+
+Unlike v0.1.13 through v0.1.19, this release's smoke surfaced no code bug. The coverage, double-count, and audit checks that would have caught a D1 resolution error, a fan-out regression, or a launch-date slip all passed against real data. The exhaustive-hunt bar is met: the three checks most likely to expose the D1/D7/backfill changes were run against the full production event set and are clean.

@@ -80,8 +80,8 @@ pub struct SessionSummaryRow {
     pub cache_write_5m_tokens: i64,
     pub cache_write_1h_tokens: i64,
 
-    pub energy_wh: f64,
-    pub facility_wh: f64,
+    pub energy_wh: Option<f64>,
+    pub facility_wh: Option<f64>,
     pub co2e_g: Option<f64>,
     pub water_l: Option<f64>,
     pub indirect_water_l: Option<f64>,
@@ -289,22 +289,27 @@ pub async fn list_sessions_with_totals(
             COUNT(*)                                         AS events_count
            FROM events
            JOIN sources ON sources.kind = events.source
+           -- D1: map alias model IDs to their canonical row key. events.model
+           -- stays raw for grouping/display; only resolution uses the mapping.
+           LEFT JOIN model_aliases ma
+                  ON ma.provider = sources.provider
+                 AND ma.raw = events.model
            LEFT JOIN env_factors ef
                   ON ef.provider = sources.provider
-                 AND ef.model = events.model
+                 AND ef.model = COALESCE(ma.canonical, events.model)
                  AND ef.valid_from = (
                      SELECT MAX(valid_from) FROM env_factors
                       WHERE provider = sources.provider
-                        AND model = events.model
+                        AND model = COALESCE(ma.canonical, events.model)
                         AND valid_from <= date(events.occurred_at)
                  )
            LEFT JOIN pricing pr
                   ON pr.provider = sources.provider
-                 AND pr.model = events.model
+                 AND pr.model = COALESCE(ma.canonical, events.model)
                  AND pr.valid_from = (
                      SELECT MAX(valid_from) FROM pricing
                       WHERE provider = sources.provider
-                        AND model = events.model
+                        AND model = COALESCE(ma.canonical, events.model)
                         AND valid_from <= date(events.occurred_at)
                  )
            LEFT JOIN grid_factors gf
@@ -448,8 +453,8 @@ impl RawSessionRow {
             cache_read_tokens: self.cache_read_tokens,
             cache_write_5m_tokens: self.cache_write_5m_tokens,
             cache_write_1h_tokens: self.cache_write_1h_tokens,
-            energy_wh: self.energy_wh,
-            facility_wh: self.facility_wh,
+            energy_wh: if self.events_missing_env_factor < self.events_count { Some(self.energy_wh) } else { None },
+            facility_wh: if self.events_missing_env_factor < self.events_count { Some(self.facility_wh) } else { None },
             co2e_g,
             water_l,
             indirect_water_l,

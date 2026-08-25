@@ -68,6 +68,15 @@ fn expand_project_filter_via_resolver(
 /// Used by both `daily_handler` and `sessions_handler`. The
 /// time-anchored `pricing.lookup` stays in `daily_handler` for the
 /// billable-multiplier computation, which IS correctly per-bucket.
+/// D5: the `<synthetic>` sentinel is the Admin-API aggregate model string
+/// Claude Code emits with zero tokens; it is not a real model and can never
+/// have a pricing or factor row. Excluding it from the coverage banners
+/// keeps them a signal of actionable gaps rather than permanent noise. It
+/// still appears in the launch-date audit's unpriced line.
+fn is_coverage_exempt_model(model: &str) -> bool {
+    model == "<synthetic>"
+}
+
 fn model_has_pricing_row(pricing: &PricingFile, provider: &str, model: &str) -> bool {
     pricing
         .providers
@@ -211,11 +220,14 @@ pub struct ModelTokens {
 /// minus the dimensions used for grouping.
 #[derive(Serialize)]
 pub struct ModelImpact {
-    /// Pre-PUE per-token energy summed across events.
-    pub energy_wh: f64,
+    /// Pre-PUE per-token energy summed across events. `null` when no
+    /// event in the cell had a factor row (D7): an unfactored model
+    /// renders as missing, not as a silent 0 Wh.
+    pub energy_wh: Option<f64>,
     /// Energy after PUE multiplier — the "facility-side" energy a
-    /// data center actually drew, including overhead.
-    pub facility_wh: f64,
+    /// data center actually drew, including overhead. Same `null`
+    /// convention as `energy_wh`.
+    pub facility_wh: Option<f64>,
     /// Grams of CO₂-equivalent. `null` when no event in the bucket had
     /// a usable grid `co2e_kg_per_kwh` — the dashboard renders that as
     /// "—" rather than 0 g.
@@ -454,7 +466,12 @@ pub async fn daily_handler(
         // even though it WAS priced (just not yet). Per-event
         // missingness is already surfaced per cell via
         // `eventsMissingPricing` in `ModelImpact`.
-        if !model_has_pricing_row(&state.pricing, provider_for_pricing, &row.model) {
+        // D1: structural checks run on the canonical key; the banner still
+        // names the raw emitted ID because that is what the user sees.
+        let canonical_model = state.pricing.canonical_model(provider_for_pricing, &row.model);
+        if !is_coverage_exempt_model(&row.model)
+            && !model_has_pricing_row(&state.pricing, provider_for_pricing, canonical_model)
+        {
             models_without_pricing.insert(row.model.clone());
         }
 
@@ -511,7 +528,13 @@ pub async fn daily_handler(
     // answer for dashboard banners ("Claude Opus 4.7: factor data unavailable").
     let models_without_factors: Vec<String> = visible_models
         .iter()
-        .filter(|model_id| !model_has_factor_row(&state.factors, provider_for_pricing, model_id))
+        .filter(|model_id| {
+            if is_coverage_exempt_model(model_id) {
+                return false;
+            }
+            let canonical = state.pricing.canonical_model(provider_for_pricing, model_id);
+            !model_has_factor_row(&state.factors, provider_for_pricing, canonical)
+        })
         .cloned()
         .collect();
     let mut models_without_factors = models_without_factors;
@@ -714,9 +737,9 @@ pub struct SessionRow {
     pub cache_write_1h: i64,
 
     #[serde(rename = "energyWh")]
-    pub energy_wh: f64,
+    pub energy_wh: Option<f64>,
     #[serde(rename = "facilityWh")]
-    pub facility_wh: f64,
+    pub facility_wh: Option<f64>,
     #[serde(rename = "co2eG")]
     pub co2e_g: Option<f64>,
     #[serde(rename = "waterL")]
@@ -814,10 +837,14 @@ pub async fn sessions_handler(
     for model_row in &models_in_window {
         // v0.1.15 1B-iii: shared structural helpers — same check
         // used by daily_handler. See module-top doc comments.
-        if !model_has_pricing_row(&state.pricing, provider_for_factors, &model_row.model) {
+        if is_coverage_exempt_model(&model_row.model) {
+            continue;
+        }
+        let canonical = state.pricing.canonical_model(provider_for_factors, &model_row.model);
+        if !model_has_pricing_row(&state.pricing, provider_for_factors, canonical) {
             models_without_pricing.insert(model_row.model.clone());
         }
-        if !model_has_factor_row(&state.factors, provider_for_factors, &model_row.model) {
+        if !model_has_factor_row(&state.factors, provider_for_factors, canonical) {
             models_without_factors.insert(model_row.model.clone());
         }
     }

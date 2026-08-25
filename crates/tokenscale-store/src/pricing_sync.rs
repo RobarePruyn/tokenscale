@@ -33,6 +33,9 @@ pub struct PricingSyncSummary {
     /// Number of distinct `(provider, model)` keys covered. Differs from
     /// `pricing_rows` once any model has more than one row.
     pub distinct_models: usize,
+    /// D1 (v0.1.20): number of `(provider, raw -> canonical)` alias rows
+    /// synced into `model_aliases`.
+    pub alias_rows: usize,
 }
 
 /// Replace the contents of the `pricing` table with what the in-memory
@@ -83,6 +86,26 @@ pub async fn sync_pricing(
                 .await?;
                 summary.pricing_rows += 1;
             }
+        }
+    }
+
+    // D1: alias table, same replace-on-startup posture. Synced inside the
+    // same transaction so pricing rows and their alias map can never be
+    // observed out of step.
+    sqlx::query("DELETE FROM model_aliases")
+        .execute(&mut *transaction)
+        .await?;
+    for (provider_id, provider) in &pricing_file.providers {
+        for (raw, canonical) in &provider.aliases {
+            sqlx::query(
+                "INSERT INTO model_aliases (provider, raw, canonical) VALUES (?, ?, ?)",
+            )
+            .bind(provider_id)
+            .bind(raw)
+            .bind(canonical)
+            .execute(&mut *transaction)
+            .await?;
+            summary.alias_rows += 1;
         }
     }
 
@@ -283,5 +306,147 @@ source_accessed_at = "2026-05-18"
         let summary = sync_pricing(&database, &pricing).await.unwrap();
         assert_eq!(summary.pricing_rows, 1);
         assert_eq!(summary.distinct_models, 1);
+    }
+}
+
+#[cfg(test)]
+mod alias_sync_tests {
+    use super::*;
+    use chrono::TimeZone;
+    use crate::impact_query::ImpactQueryFactors;
+    use crate::queries::{Granularity, ALL_PROVIDERS};
+    use crate::{aggregate_impact_by_bucket, insert_events, sync_environmental_factors};
+    use tokenscale_core::{EnvironmentalFactorsFile, Event};
+
+    /// Pricing keyed on the CANONICAL dated Haiku ID plus an alias for the
+    /// undated form. The event below emits the undated alias.
+    const ALIASED_PRICING: &str = r#"
+schema_version = 1
+file_status = "production"
+[providers.anthropic]
+display_name = "Anthropic"
+[providers.anthropic.aliases]
+"claude-haiku-4-5" = "claude-haiku-4-5-20251001"
+[[providers.anthropic.models."claude-haiku-4-5-20251001"]]
+display_name = "Claude Haiku 4.5"
+valid_from = "2025-10-01"
+input_usd_per_mtok = 1.00
+output_usd_per_mtok = 5.00
+cache_read_usd_per_mtok = 0.10
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url = "x"
+source_accessed_at = "2026-08-02"
+"#;
+
+    /// Factors also keyed on the canonical dated ID only.
+    const ALIASED_FACTORS: &str = r#"
+schema_version = 1
+file_status = "production"
+[providers.anthropic]
+display_name = "Anthropic"
+[providers.anthropic.models."claude-haiku-4-5-20251001"]
+display_name = "Claude Haiku 4.5"
+valid_from = "2025-10-01"
+source_doc = "test"
+wh_per_mtok_input = 70
+wh_per_mtok_output = 330
+wh_per_mtok_cache_read = 7
+wh_per_mtok_cache_write_5m = 88
+wh_per_mtok_cache_write_1h = 140
+uncertainty_range_pct = 30
+confidence = "secondary"
+[grid_factors."us-east-1"]
+display_name = "AWS US East"
+valid_from = "2026-01-01"
+source_accessed_at = "2026-01-01"
+co2e_kg_per_kwh = 0.30
+water_l_per_kwh = 0.20
+pue = 1.15
+egrid_subregion = "SRVC"
+egrid_subregion_full_name = "SERC Virginia/Carolina"
+"#;
+
+    #[tokio::test]
+    async fn sync_lands_alias_rows() {
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let pricing = PricingFile::parse(ALIASED_PRICING).unwrap();
+        let summary = sync_pricing(&database, &pricing).await.unwrap();
+        assert_eq!(summary.alias_rows, 1);
+        let row: (String, String) = sqlx::query_as(
+            "SELECT raw, canonical FROM model_aliases WHERE provider = 'anthropic'",
+        )
+        .fetch_one(database.pool())
+        .await
+        .unwrap();
+        assert_eq!(row, ("claude-haiku-4-5".to_owned(), "claude-haiku-4-5-20251001".to_owned()));
+        // Re-sync replaces, never duplicates.
+        sync_pricing(&database, &pricing).await.unwrap();
+        let n: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM model_aliases")
+            .fetch_one(database.pool())
+            .await
+            .unwrap();
+        assert_eq!(n.0, 1);
+    }
+
+    /// D1 end-to-end: an event emitting an ALIAS model ID resolves to the
+    /// canonical pricing AND factor rows through the aggregate join. This
+    /// is the dated-ID-to-canonical regression the assessment flagged as
+    /// missing; without the alias join it renders unpriced and unfactored.
+    #[tokio::test]
+    async fn event_emitting_alias_resolves_to_canonical_pricing_and_factors() {
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        sync_pricing(&database, &PricingFile::parse(ALIASED_PRICING).unwrap())
+            .await
+            .unwrap();
+        sync_environmental_factors(
+            &database,
+            &EnvironmentalFactorsFile::parse(ALIASED_FACTORS).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let event = Event {
+            source: "claude_code".to_owned(),
+            occurred_at: chrono::Utc.with_ymd_and_hms(2026, 4, 21, 12, 0, 0).unwrap(),
+            model: "claude-haiku-4-5".to_owned(), // the alias, not the canonical
+            input_tokens: 1_000_000,
+            output_tokens: 100_000,
+            cache_read_tokens: 0,
+            cache_write_5m_tokens: 0,
+            cache_write_1h_tokens: 0,
+            request_id: Some("req-alias".to_owned()),
+            content_hash: None,
+            session_id: Some("sess-alias".to_owned()),
+            project_id: Some("/repo".to_owned()),
+            workspace_id: None,
+            api_key_id: None,
+            uuid: None,
+            parent_uuid: None,
+            git_branch: None,
+            raw: None,
+        };
+        insert_events(&database, std::slice::from_ref(&event)).await.unwrap();
+
+        let factors = ImpactQueryFactors {
+            region: "us-east-1",
+            fallback_pue: 1.15,
+            fallback_wue_l_per_kwh: Some(0.15),
+        };
+        let rows = aggregate_impact_by_bucket(
+            &database, "2026-04-01", "2026-04-30", ALL_PROVIDERS, &[], Granularity::Day, &factors,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        // Display key stays RAW (the alias the source emitted).
+        assert_eq!(row.model, "claude-haiku-4-5");
+        // Resolution went through the canonical row: priced and factored.
+        assert_eq!(row.events_missing_pricing, 0, "alias must resolve to the canonical pricing row");
+        assert_eq!(row.events_missing_env_factor, 0, "alias must resolve to the canonical factor row");
+        // 1M input at $1 + 100K output at $5 = $1.00 + $0.50
+        let cost = row.cost_usd_total.expect("priced");
+        assert!((cost - 1.5).abs() < 1e-9, "cost_usd_total={cost}");
     }
 }

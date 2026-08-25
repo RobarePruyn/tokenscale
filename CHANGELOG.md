@@ -6,7 +6,43 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
-## Unreleased
+## v0.1.20, 2026-08-25
+
+**Full historical and current model coverage, model-ID normalization (D1), and nullable energy (D7).** The largest data change in the project's history: `pricing.toml` and `environmental-factors.toml` now carry every Anthropic model from Claude 1 through Opus 5 and Fable 5, each rate traced to a source or carrying a labeled estimate; model IDs normalize through an alias table so a form mismatch can no longer silently drop a model from cost and impact; and energy now distinguishes "zero" from "not disclosed". Design pass, sign-off, and smoke findings in `docs/roadmap-full-model-coverage.md` (D1 through D9, §5 release gate); codebase audit that scoped the code-side work in `docs/assessment-full-codebase-2026-06.md`.
+
+### Full model universe (26 models)
+
+`pricing.toml` (file_version 1.1 to 1.2) and `environmental-factors.toml` (0.4 to 0.5) now cover the complete Anthropic lineage: Claude 1.x and Instant, Claude 2.0/2.1, Claude 3 (Opus/Sonnet/Haiku), 3.5 and 3.7 Sonnet, 3.5 Haiku, the 4.x generation (Opus 4.6/4.7/4.8, Sonnet 4.6, Haiku 4.5), Opus 5, Sonnet 5, and Fable 5. 28 pricing rows across 26 canonical models (two models carry a second time-anchored row for a real mid-life price change: 3.5 Haiku on 2024-12-03, Sonnet 5 on 2026-09-01). Every rate is sourced to Anthropic's published pricing (live page or the archived Nov 2023 PDF at `www-cdn.anthropic.com`); the sole exception is Claude 1.x, which has no surviving primary card and ships as a clearly-labeled ESTIMATE at Claude 2.0 rates (D8a). Unpriced-but-used is not unfactored: environmental factors cover every model regardless of billability, via an interim pricing-proxy energy method whose uncertainty bands widen with era distance from the disclosed-data anchor, pending a dedicated research pass.
+
+### D1: model-ID normalization (closes Issue #7)
+
+New `model_aliases` table (`migrations/20260802000001_model_aliases.sql`) maps raw emitted IDs (dated pre-4.6 snapshots, dateless 4.6+ forms, `-latest` and convenience variants) to canonical row keys. All seven resolution sites (two aggregate joins across two files, two single-row helpers, the audit subquery, and the two in-memory lookups) resolve with `COALESCE(ma.canonical, events.model)`; `events.model` itself and every `GROUP BY` stay raw so display keys remain faithful to what the source emitted. Replace-on-startup sync from `pricing.toml`'s `[providers.<provider>.aliases]` table, same posture as pricing and factors; a startup gate rejects any alias whose raw key is also a canonical row. Pinned end to end by `event_emitting_alias_resolves_to_canonical_pricing_and_factors`. This also collapses the v0.1.19 duplicated dated-Haiku workaround to one canonical dated row plus one alias.
+
+### D7: energy zero-vs-missing
+
+`energy_wh` and `facility_wh` are now `Option<f64>` end to end (core cook, store queries, server payloads, frontend types). A window with no disclosed factor for any of its events renders an em-dash sentinel instead of a misleading 0 Wh. Aggregation surfaces `Some` only when at least one event has a real factor.
+
+### D4: drift-detector scope
+
+The nightly pricing-drift detector's tracking axis is now page presence: `TRACKED_MODELS` holds only models on the live pricing page (adds `claude-opus-5`), historical models are never tracked and cannot flip the run to exit-2, and the retired-skip mechanism stays as the standing defense for the next lifecycle pull. Snapshot fixture and page sample updated with the Opus 5 row.
+
+### D9: frontend at scale
+
+`modelDisplayName` now covers the full ID space: family-first (`claude-opus-5`, `claude-fable-5`), dated snapshots (`claude-haiku-4-5-20251001`), version-first historical IDs (`claude-3-5-sonnet-20241022` renders "Claude Sonnet 3.5"), Instant, bare early generations (`claude-2.1`), and named variants (`claude-mythos-preview`). Model ordering is now deterministic (family, then newest version first), which makes color assignment independent of window contents; family palettes widened to eight shades each so the full history gets distinct hues before the modulo wraps; fable and mythos families added. Coverage footnotes cap at a count plus list instead of rendering a wall of names in a 26-model window.
+
+### Corrections (docs/cost-methodology.md)
+
+Opus 4.6 `valid_from` 2025-09-01 corrected to 2026-02-05, Sonnet 4.6 to 2026-02-17 (both now sourced; the old conservative estimates were deliberately early). Zero numeric impact: rates are identical on both sides of each boundary and every observed event postdates the corrected dates, so the audit gate stays green.
+
+### Schema posture
+
+The `model_aliases` table is additive DDL with replace-on-startup sync (no rows touched, no backfill); it is not a forward-only data migration and warrants no three-place statement. The pricing and factor additions are replace-on-sync as always. No destructive change ships in this release.
+
+### Smoke (§5 release gate)
+
+Real-DB smoke against an isolated copy of the maintainer's production DB (48,293 events) passed clean: coverage resolves every emitted model to a priced and factored canonical row with only `<synthetic>` exempt; the non-synthetic event count equals the time-anchored pricing-join count (48,135 = 48,135, no fan-out from the alias join); and `audit pricing-launch-dates` exits 0 with zero pre-launch events. Unlike v0.1.13 through v0.1.19 this release surfaced no code bug in smoke; the three checks that would catch a D1 resolution error, a fan-out regression, or a launch-date slip all ran against the full production event set and are clean. One procedural finding recorded (sync runs on `serve`/`audit`, not `scan`); see §5.
+
+---
 
 **Quick-pass hardening** from the 2026-06-16 full-codebase assessment (`docs/assessment-full-codebase-2026-06.md`); mechanical, verified fixes only, ahead of the full-model-coverage workstream (`docs/roadmap-full-model-coverage.md`).
 

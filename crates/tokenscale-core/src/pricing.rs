@@ -104,6 +104,12 @@ fn default_file_status() -> String {
 pub struct ProviderPricing {
     pub display_name: String,
     pub models: BTreeMap<String, Vec<ModelPricing>>,
+    /// D1 (v0.1.20): alias model ID -> canonical row key. Real emitted IDs
+    /// vary in form (dated snapshots before the 4.6 generation, dateless
+    /// from 4.6 on, convenience aliases like `claude-sonnet-4-5` that
+    /// resolve to a dated snapshot). Every resolution site maps through
+    /// this before matching a row; `events.model` itself stays raw.
+    pub aliases: BTreeMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +138,9 @@ struct ProviderPricingToml {
     display_name: String,
     #[serde(default)]
     models: BTreeMap<String, ModelPricingEntry>,
+    /// `[providers.<provider>.aliases]` table: `"raw-id" = "canonical-id"`.
+    #[serde(default)]
+    aliases: BTreeMap<String, String>,
 }
 
 /// Each model entry is either a single `ModelPricing` (legacy single-row
@@ -218,6 +227,7 @@ impl PricingFile {
                 ProviderPricing {
                     display_name: provider_toml.display_name,
                     models,
+                    aliases: provider_toml.aliases,
                 },
             );
         }
@@ -229,6 +239,36 @@ impl PricingFile {
             file_published: toml_form.file_published,
             providers,
         })
+    }
+
+    /// D1: resolve a raw model ID to its canonical row key through the
+    /// provider's alias table. Unknown IDs and canonical IDs pass through
+    /// unchanged, so callers can apply this unconditionally before any
+    /// structural `contains_key` check or lookup. The DB-side joins
+    /// apply the same mapping via the `model_aliases` table.
+    #[must_use]
+    pub fn canonical_model<'a>(&'a self, provider: &str, model: &'a str) -> &'a str {
+        self.providers
+            .get(provider)
+            .and_then(|p| p.aliases.get(model))
+            .map_or(model, String::as_str)
+    }
+
+    /// D1 startup guard: an alias whose raw key is ALSO a model row key
+    /// would make resolution self-referential (which row wins?). Returns
+    /// every such conflict as `"provider/raw"`; empty means the file is
+    /// consistent. The CLI refuses to serve on a non-empty result.
+    #[must_use]
+    pub fn alias_conflicts(&self) -> Vec<String> {
+        let mut conflicts = Vec::new();
+        for (provider_id, provider) in &self.providers {
+            for raw in provider.aliases.keys() {
+                if provider.models.contains_key(raw) {
+                    conflicts.push(format!("{provider_id}/{raw}"));
+                }
+            }
+        }
+        conflicts
     }
 
     /// Time-anchored lookup mirroring `lookup_environmental_factors` on the
@@ -245,7 +285,12 @@ impl PricingFile {
         model: &str,
         as_of_date: &str,
     ) -> Option<&ModelPricing> {
-        let rows = self.providers.get(provider)?.models.get(model)?;
+        let provider_pricing = self.providers.get(provider)?;
+        let canonical = provider_pricing
+            .aliases
+            .get(model)
+            .map_or(model, String::as_str);
+        let rows = provider_pricing.models.get(canonical)?;
         // Rows are sorted ascending by valid_from at parse time, so walking
         // in reverse yields the latest qualifying row first.
         rows.iter()
@@ -679,5 +724,77 @@ notes = "{notes}"
             .providers
             .get("anthropic")
             .is_some_and(|p| !p.models.is_empty()));
+    }
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::*;
+
+    const ALIASED: &str = r#"
+schema_version = 1
+file_status = "production"
+
+[providers.anthropic]
+display_name = "Anthropic"
+
+[providers.anthropic.aliases]
+"claude-haiku-4-5" = "claude-haiku-4-5-20251001"
+"claude-sonnet-4-5" = "claude-sonnet-4-5-20250929"
+
+[[providers.anthropic.models."claude-haiku-4-5-20251001"]]
+display_name = "Claude Haiku 4.5"
+valid_from = "2025-10-01"
+input_usd_per_mtok = 1.00
+output_usd_per_mtok = 5.00
+cache_read_usd_per_mtok = 0.10
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url = "https://example.test"
+source_accessed_at = "2026-08-02"
+"#;
+
+    #[test]
+    fn alias_resolves_to_canonical_row_in_lookup() {
+        let f = PricingFile::parse(ALIASED).unwrap();
+        // Undated alias resolves to the dated canonical row.
+        let via_alias = f.lookup("anthropic", "claude-haiku-4-5", "2026-01-01");
+        let direct = f.lookup("anthropic", "claude-haiku-4-5-20251001", "2026-01-01");
+        assert!(via_alias.is_some());
+        assert!((via_alias.unwrap().input_usd_per_mtok - direct.unwrap().input_usd_per_mtok).abs() < f64::EPSILON);
+        // Alias to a model with no rows (sonnet-4-5 here) resolves to None, not a panic.
+        assert!(f.lookup("anthropic", "claude-sonnet-4-5", "2026-01-01").is_none());
+    }
+
+    #[test]
+    fn canonical_model_passes_unknown_and_canonical_through() {
+        let f = PricingFile::parse(ALIASED).unwrap();
+        assert_eq!(f.canonical_model("anthropic", "claude-haiku-4-5"), "claude-haiku-4-5-20251001");
+        assert_eq!(f.canonical_model("anthropic", "claude-haiku-4-5-20251001"), "claude-haiku-4-5-20251001");
+        assert_eq!(f.canonical_model("anthropic", "claude-never-heard-of"), "claude-never-heard-of");
+        assert_eq!(f.canonical_model("nope", "claude-haiku-4-5"), "claude-haiku-4-5");
+    }
+
+    #[test]
+    fn alias_conflicts_flags_self_referential_alias() {
+        let f = PricingFile::parse(ALIASED).unwrap();
+        assert!(f.alias_conflicts().is_empty());
+        let conflicting = ALIASED.replace(
+            r#""claude-sonnet-4-5" = "claude-sonnet-4-5-20250929""#,
+            r#""claude-haiku-4-5-20251001" = "claude-haiku-4-5""#,
+        );
+        let f2 = PricingFile::parse(&conflicting).unwrap();
+        assert_eq!(f2.alias_conflicts(), vec!["anthropic/claude-haiku-4-5-20251001".to_owned()]);
+    }
+
+    #[test]
+    fn files_without_an_aliases_table_still_parse() {
+        let plain = ALIASED.replace(
+            "[providers.anthropic.aliases]\n\"claude-haiku-4-5\" = \"claude-haiku-4-5-20251001\"\n\"claude-sonnet-4-5\" = \"claude-sonnet-4-5-20250929\"\n",
+            "",
+        );
+        let f = PricingFile::parse(&plain).unwrap();
+        assert!(f.providers["anthropic"].aliases.is_empty());
+        assert_eq!(f.canonical_model("anthropic", "claude-haiku-4-5"), "claude-haiku-4-5");
     }
 }
