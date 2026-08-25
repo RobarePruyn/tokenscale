@@ -1,6 +1,6 @@
 # Roadmap: full model coverage, every Anthropic model ever released
 
-**Status**: scoping complete (research pass finished 2026-08-02); D1 through D9 below await maintainer sign-off before build. Target release: v0.1.20.
+**Status**: SIGNED OFF 2026-08-02. All nine D-decisions confirmed as recommended. Maintainer calls on the open judgment items: one release (v0.1.20 carries code, migration, full backfill, and frontend together); historical energy-factor derivation approach accepted for the build with a separate research pass tracked as a filed issue; build-time row-by-row source verification accepted; Issue #7 closes when D1 ships. Build in progress.
 
 **Companions**: `docs/assessment-full-codebase-2026-06.md` (codebase audit; its §8 is the code-side work list), `docs/roadmap-model-additions-fable-opus48.md` (v0.1.19 predecessor), [Issue #7](https://github.com/RobarePruyn/tokenscale/issues/7) (model-ID normalization, subsumed by D1).
 
