@@ -12,7 +12,7 @@ use std::path::Path;
 use std::str::FromStr;
 use tracing::info;
 
-use crate::error::Result;
+use crate::error::{Result, StoreError};
 
 /// Workspace-relative path to the migrations directory. `sqlx::migrate!`
 /// resolves it relative to `CARGO_MANIFEST_DIR`, so this is two levels up
@@ -58,7 +58,7 @@ impl Database {
 
         info!(path = %database_file_path.display(), "opened SQLite database");
 
-        sqlx::migrate!("../../migrations").run(&pool).await?;
+        run_migrations(&pool).await?;
         info!("migrations applied");
 
         Ok(Self { pool })
@@ -72,7 +72,7 @@ impl Database {
             .max_connections(1)
             .connect_with(connect_options)
             .await?;
-        sqlx::migrate!("../../migrations").run(&pool).await?;
+        run_migrations(&pool).await?;
         Ok(Self { pool })
     }
 
@@ -86,5 +86,111 @@ impl Database {
     #[must_use]
     pub fn migrations_path() -> &'static str {
         MIGRATIONS_PATH
+    }
+}
+
+/// This crate's version, which is the workspace version every tokenscale
+/// crate shares. Recorded in `_tokenscale_meta` after each migration run.
+pub const BINARY_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// `_tokenscale_meta` key holding the version that last ran migrations.
+const META_LAST_MIGRATED_BY: &str = "last_migrated_by_version";
+
+/// Run embedded migrations, then record this binary's version in
+/// `_tokenscale_meta`. If the database already contains a migration this
+/// binary does not know (it was migrated by a newer tokenscale), map
+/// sqlx's `VersionMissing` to [`StoreError::SchemaNewerThanBinary`],
+/// naming the recording version when one exists. sqlx validates applied
+/// migrations before applying any new ones, so this path writes nothing.
+async fn run_migrations(pool: &SqlitePool) -> Result<()> {
+    match sqlx::migrate!("../../migrations").run(pool).await {
+        Ok(()) => {
+            record_migrated_by(pool).await?;
+            Ok(())
+        }
+        Err(sqlx::migrate::MigrateError::VersionMissing(migration)) => {
+            let migrated_by = read_migrated_by(pool).await;
+            Err(StoreError::SchemaNewerThanBinary {
+                migration,
+                migrated_by,
+                binary_version: BINARY_VERSION,
+            })
+        }
+        Err(other) => Err(other.into()),
+    }
+}
+
+/// Best-effort read of the last-migrating version. `None` when the meta
+/// table does not exist yet (databases last migrated before v0.1.22) or
+/// has no row.
+async fn read_migrated_by(pool: &SqlitePool) -> Option<String> {
+    sqlx::query_scalar::<_, String>("SELECT value FROM _tokenscale_meta WHERE key = ?")
+        .bind(META_LAST_MIGRATED_BY)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+}
+
+async fn record_migrated_by(pool: &SqlitePool) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO _tokenscale_meta (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind(META_LAST_MIGRATED_BY)
+    .bind(BINARY_VERSION)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod schema_guard_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn fresh_database_records_the_migrating_version() {
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        let recorded = read_migrated_by(database.pool()).await;
+        assert_eq!(recorded.as_deref(), Some(BINARY_VERSION));
+    }
+
+    #[tokio::test]
+    async fn unknown_applied_migration_maps_to_schema_newer_than_binary() {
+        let database = Database::open_in_memory_for_tests().await.unwrap();
+        // Simulate a newer build having applied a migration this binary
+        // does not ship, and having recorded itself as the migrator.
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, installed_on, success, checksum, execution_time)
+             VALUES (99991231000001, 'from the future', CURRENT_TIMESTAMP, 1, X'00', 0)",
+        )
+        .execute(database.pool())
+        .await
+        .unwrap();
+        sqlx::query("UPDATE _tokenscale_meta SET value = '9.9.9' WHERE key = ?")
+            .bind(META_LAST_MIGRATED_BY)
+            .execute(database.pool())
+            .await
+            .unwrap();
+
+        let error = run_migrations(database.pool()).await.unwrap_err();
+        match error {
+            StoreError::SchemaNewerThanBinary {
+                migration,
+                migrated_by,
+                binary_version,
+            } => {
+                assert_eq!(migration, 99991231000001);
+                assert_eq!(migrated_by.as_deref(), Some("9.9.9"));
+                assert_eq!(binary_version, BINARY_VERSION);
+            }
+            other => panic!("expected SchemaNewerThanBinary, got {other:?}"),
+        }
+        // The guard must not have touched the recorded version.
+        assert_eq!(
+            read_migrated_by(database.pool()).await.as_deref(),
+            Some("9.9.9")
+        );
     }
 }

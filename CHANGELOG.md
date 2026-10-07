@@ -6,6 +6,24 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.22, 2026-10-07
+
+**Packaging and upgrade-path hardening** after a stale Homebrew install crash-looped under launchd (41,095 restarts, 529 MB log) against a database that newer builds had migrated. Full account and the on-demand service decision in `docs/packaging-and-service.md`.
+
+### Fail-safe on a newer-than-binary database
+
+Opening a database that a newer tokenscale migrated now prints which version migrated it and which migration is unknown, states that nothing was changed, names the fix (`brew upgrade tokenscale-cli`), and exits with code **3** (reserved). Every command that opens the database goes through the same path. The migrating version is recorded in a new `_tokenscale_meta` table after each successful migration run (`migrations/20261007000001_tokenscale_meta.sql`; forward-only, additive, one table, no existing rows touched; stated here, in the migration header, and in the runbook). Databases migrated before this release report "a newer version (not recorded)". Pinned by `unknown_applied_migration_maps_to_schema_newer_than_binary` and `fresh_database_records_the_migrating_version`.
+
+### Release chain visibility
+
+The release workflow failed for v0.1.19, v0.1.20, and v0.1.21 at macOS notarization (Apple: a developer agreement expired) and nobody noticed for six weeks, so no release or formula existed past 0.1.18. `release.yml` now opens or updates a `release-failure` issue when any release job fails, and the notarization step names the agreement fix in its error. Those three tags are superseded by this release rather than re-run.
+
+### Homebrew service posture
+
+tokenscale is on-demand by default; nothing runs at login unless the user opts in with `brew services start tokenscale-cli`. The opt-in service (tap repo `amend-formula.yml`) restarts only after a crash (`KeepAlive = {Crashed = true}`), at most once per 5 minutes (`ThrottleInterval = 300`), and logs at WARN. Caveats rewritten to lead with on-demand use. Homebrew 7's tap trust gate (`brew trust robarepruyn/tokenscale`) documented; it had silently blocked upgrades.
+
+---
+
 ## v0.1.21, 2026-08-25
 
 **Sweep #3: per-model energy anchors for historical Claude models (closes Issue #8).** The dedicated research pass the v0.1.20 sign-off deferred. Full audit trail in `docs/research-log.md` (Sweep #3 entry); sources in `docs/sources.md` A.4, C.1.1, C.4-C.6, D.5, G.4-G.6.

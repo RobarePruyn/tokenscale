@@ -138,6 +138,30 @@ If something goes wrong: the release is in your control. `gh release delete vX.Y
 
 ---
 
+## When a release fails
+
+The `notify-failure` job in `release.yml` opens (or comments on) an issue labeled `release-failure` whenever any release job fails on a tag push. Until the failed jobs are re-run successfully, no GitHub Release exists for that tag and the Homebrew formula stays on the previous version. Re-run with:
+
+```
+gh run rerun <run-id> --failed
+```
+
+Do not re-run an older tag's release after a newer tag has published: the tap formula is overwritten on every publish, so the older run would downgrade the formula.
+
+### Notarization failures
+
+`HTTP 403: A required agreement is missing or has expired` from `notarytool` means Apple is waiting for the account holder to accept an updated agreement. Nothing in this repository can fix it. Sign in at https://developer.apple.com/account (Agreements, Tax, and Banking under App Store Connect may also show a pending agreement), accept, then re-run the failed jobs. The workflow prints this guidance in the step error since v0.1.22. Three tags (v0.1.19 to v0.1.21, 2026-08-25) failed this way and were superseded by v0.1.22 rather than re-run.
+
+If the App Store Connect API key is ever rotated, update the `APP_STORE_CONNECT_KEY_ID` and `APP_STORE_CONNECT_PRIVATE_KEY` secrets together; the issuer ID does not change.
+
+### Where the signing material lives
+
+The `.p8` App Store Connect key and the Developer ID `.p12` exist only in GitHub Actions secrets (base64) and in the maintainer's password manager. They must not sit in a synced folder, in plain files, or as base64 text files on disk. A `.p8` cannot be downloaded again after creation; if the password-manager copy is lost, revoke the key and create a new one.
+
+## Homebrew tap trust (per machine)
+
+Homebrew 7 will not load this tap until the machine trusts it: `brew trust robarepruyn/tokenscale`. Without it, `brew upgrade tokenscale-cli` silently does nothing. See `docs/packaging-and-service.md`.
+
 ## When `dist` config changes
 
 If you ever edit `dist-workspace.toml` or `.github/workflows/build-setup.yml`:

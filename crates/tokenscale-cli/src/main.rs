@@ -27,7 +27,7 @@ use tokenscale_store::{
     audit_pricing_launch_dates, clear_file_state_for_source, delete_events_for_source,
     delete_file_snapshots_for_source, delete_session_commits_for_source,
     delete_tool_results_for_source, delete_tool_uses_for_source, sync_environmental_factors,
-    sync_pricing, Database, PricingLaunchDateAuditRow,
+    sync_pricing, Database, PricingLaunchDateAuditRow, StoreError,
 };
 
 /// Source-kind constant the scan paths key off — mirrors the constant
@@ -172,7 +172,9 @@ async fn main() -> Result<()> {
             }
         },
         TopLevelCommand::Audit { action } => match action {
-            AuditAction::PricingLaunchDates => command_audit_pricing_launch_dates(&config_path).await,
+            AuditAction::PricingLaunchDates => {
+                command_audit_pricing_launch_dates(&config_path).await
+            }
         },
     }
 }
@@ -184,6 +186,47 @@ fn initialize_tracing() {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .with_target(false)
         .init();
+}
+
+/// Exit code when the database schema is newer than this binary. Distinct
+/// from a generic failure (1) so service managers configured to restart
+/// only on crashes leave a deliberate refusal alone, and so operators can
+/// recognise the condition from the code alone.
+pub const EXIT_CODE_SCHEMA_NEWER_THAN_BINARY: i32 = 3;
+
+/// Open the database, or refuse clearly when a newer tokenscale migrated
+/// it. Every command that touches the database goes through here so the
+/// refusal message and exit code are uniform.
+async fn open_database_or_refuse(database_path: &std::path::Path) -> Result<Database> {
+    match Database::open(database_path).await {
+        Ok(database) => Ok(database),
+        Err(StoreError::SchemaNewerThanBinary {
+            migration,
+            migrated_by,
+            binary_version,
+        }) => {
+            let migrated_by =
+                migrated_by.unwrap_or_else(|| "a newer version (not recorded)".to_owned());
+            eprintln!(
+                "tokenscale {binary_version}: refusing to open {}\n\
+                 \n\
+                 This database was migrated by tokenscale {migrated_by} and contains migration \
+                 {migration}, which this build does not know. Opening it could corrupt data, so \
+                 nothing was changed.\n\
+                 \n\
+                 Fix: upgrade tokenscale to {migrated_by} or later (for Homebrew: brew upgrade \
+                 tokenscale-cli), then run this command again. To keep using this build instead, \
+                 point [storage].database_path in the config at a different file.\n\
+                 \n\
+                 Exit code {EXIT_CODE_SCHEMA_NEWER_THAN_BINARY} is reserved for this condition.",
+                database_path.display()
+            );
+            std::process::exit(EXIT_CODE_SCHEMA_NEWER_THAN_BINARY);
+        }
+        Err(other) => {
+            Err(other).with_context(|| format!("opening database at {}", database_path.display()))
+        }
+    }
 }
 
 /// Implementation of `tokenscale init`.
@@ -211,9 +254,7 @@ async fn command_init(config_path: &std::path::Path) -> Result<()> {
 
     let config = Config::load_or_default(config_path)?;
     let database_path = config.effective_database_path()?;
-    let database = Database::open(&database_path)
-        .await
-        .with_context(|| format!("opening database at {}", database_path.display()))?;
+    let database = open_database_or_refuse(&database_path).await?;
     drop(database);
     info!(path = %database_path.display(), "database initialized");
     println!("Database initialized at {}", database_path.display());
@@ -228,9 +269,7 @@ async fn command_init(config_path: &std::path::Path) -> Result<()> {
 async fn command_serve(config_path: &std::path::Path, bind_override: Option<String>) -> Result<()> {
     let config = Config::load_or_default(config_path)?;
     let database_path = config.effective_database_path()?;
-    let database = Database::open(&database_path)
-        .await
-        .with_context(|| format!("opening database at {}", database_path.display()))?;
+    let database = open_database_or_refuse(&database_path).await?;
 
     let pricing = load_pricing(&config)?;
     // Hard gate: pricing must be production-verified and no row may
@@ -533,9 +572,7 @@ fn load_factors(config: &Config) -> Result<EnvironmentalFactorsFile> {
 async fn command_scan(config_path: &std::path::Path, mode: ScanMode) -> Result<()> {
     let config = Config::load_or_default(config_path)?;
     let database_path = config.effective_database_path()?;
-    let database = Database::open(&database_path)
-        .await
-        .with_context(|| format!("opening database at {}", database_path.display()))?;
+    let database = open_database_or_refuse(&database_path).await?;
 
     if matches!(mode, ScanMode::Rebuild) {
         // v0.1.18 / Issue #6 fix: the wipe set now covers all five
@@ -626,9 +663,7 @@ async fn command_scan(config_path: &std::path::Path, mode: ScanMode) -> Result<(
 async fn command_audit_pricing_launch_dates(config_path: &std::path::Path) -> Result<()> {
     let config = Config::load_or_default(config_path)?;
     let database_path = config.effective_database_path()?;
-    let database = Database::open(&database_path)
-        .await
-        .with_context(|| format!("opening database at {}", database_path.display()))?;
+    let database = open_database_or_refuse(&database_path).await?;
 
     // Sync pricing first so the audit reflects the on-disk pricing.toml,
     // not whatever the last `serve` happened to load.
@@ -669,7 +704,10 @@ async fn command_audit_pricing_launch_dates(config_path: &std::path::Path) -> Re
     let unpriced_pair_count = rows.len() - priced_pair_count;
 
     println!();
-    println!("Total events: {total_events} across {} pair(s).", rows.len());
+    println!(
+        "Total events: {total_events} across {} pair(s).",
+        rows.len()
+    );
     println!(
         "  Priced pairs ({priced_pair_count}): {priced_pre_launch} event(s) predate their pair's earliest valid_from."
     );
