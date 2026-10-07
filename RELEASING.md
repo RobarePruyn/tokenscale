@@ -44,6 +44,8 @@ The tap name in `dist-workspace.toml` (`tap = "RobarePruyn/homebrew-tokenscale"`
 
 Without this secret, the `publish-homebrew-formula` job fails with a permissions error and the Formula doesn't get pushed (everything else still works — the GitHub Release with binaries still gets created).
 
+**Fine-grained PATs expire.** GitHub caps them at one year and defaults to much less. When the token lapses, `publish-homebrew-formula` fails at checkout with `Bad credentials` while the Release itself succeeds (v0.1.22, 2026-10-07: the token from 2026-05-11 had expired). Record the expiry date when you create it, and on failure: create a new PAT with the same scope, `gh secret set HOMEBREW_TAP_TOKEN`, then either re-run the failed job or commit the generated formula to the tap by hand. The generated formula with post-notarization checksums is in the run's build-global artifact (`gh run download <run-id> -n <artifacts-build-global...>`); committing it to `Formula/tokenscale-cli.rb` on the tap's `main` is exactly what the publish job would have done, and the tap's amend workflow adds the caveats and service blocks.
+
 ### 3. Create the six macOS notarization secrets (optional but recommended)
 
 The release workflow signs and notarizes macOS binaries with Apple so first-launch on a user's Mac doesn't trigger Gatekeeper's "unidentified developer" block. Requires an Apple Developer Program membership (~$99/yr) and six GitHub Actions secrets.
