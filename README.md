@@ -52,7 +52,9 @@ Install via your platform's native package manager (or the shell installer):
 
 ```bash
 # macOS via Homebrew
-brew tap RobarePruyn/tokenscale && brew install tokenscale-cli
+brew tap RobarePruyn/tokenscale && brew trust robarepruyn/tokenscale && brew install tokenscale-cli
+# (Homebrew 7 will not load third-party taps it has not been told to trust;
+#  without `brew trust`, `brew upgrade` silently does nothing for this formula.)
 
 # macOS / Linux via shell installer (any POSIX shell)
 curl --proto '=https' --tlsv1.2 -LsSf \
@@ -88,21 +90,23 @@ Open `http://127.0.0.1:8787`. The server keeps scanning in the background (every
 
 Direct archive downloads available on the [latest release page](https://github.com/RobarePruyn/tokenscale/releases/latest) — extract the `tokenscale` binary (or `tokenscale.exe`) onto your `$PATH`.
 
-## Running as a service
+## Running as a service (optional)
 
-`tokenscale serve` runs in the foreground and exits when you close the terminal. To keep the dashboard available without leaving a terminal open — and to auto-start it on login / boot — register it as a background service:
+tokenscale is designed to run on demand: `tokenscale serve` when you want the dashboard, Ctrl-C when you are done. The scan is incremental and runs at startup, so nothing is missed between sessions, and nothing runs at login unless you opt in. Most people never need the rest of this section. The reasoning, the upgrade procedure, and the 2026-10-07 incident that shaped these settings are in `docs/packaging-and-service.md`.
 
-### macOS — `brew services`
+If you do want it resident, two rules keep a service from turning a refusal into a loop: restart only after a crash, never after a deliberate exit (tokenscale exits with code **3** when its database was migrated by a newer version; the fix is to upgrade, not to retry), and never more often than every few minutes.
 
-The Homebrew formula declares a service block, so `brew services` manages everything:
+### macOS — `brew services` (opt in)
+
+The Homebrew formula's service block already encodes both rules (`KeepAlive = {Crashed = true}`, `ThrottleInterval = 300`, logs at WARN):
 
 ```bash
-brew services start tokenscale-cli   # start now + auto-start on login
-brew services stop  tokenscale-cli   # stop + disable auto-start
+brew services start tokenscale-cli   # opt in: start now + start at login
+brew services stop  tokenscale-cli   # stop + disable
 brew services info  tokenscale-cli   # check status
 ```
 
-Logs land in `$(brew --prefix)/var/log/tokenscale.log`. If you installed v0.1.4 before the service block landed (May 2026), run `brew update && brew reinstall tokenscale-cli` once to pick it up.
+Logs land in `$(brew --prefix)/var/log/tokenscale.log`. Homebrew does not rotate them (Issue #9). Formulae installed before 2026-10-07 carry an older service block that restarts on every exit; run `brew update && brew reinstall tokenscale-cli` once to pick up the current one.
 
 ### Linux — `systemd` (user unit)
 
@@ -115,8 +119,13 @@ After=network.target
 
 [Service]
 ExecStart=%h/.cargo/bin/tokenscale serve
-Restart=on-failure
-RestartSec=5
+Environment=RUST_LOG=warn
+# Restart after a crash (signal, timeout), not after a deliberate non-zero
+# exit such as exit code 3 (database newer than binary: upgrade instead).
+Restart=on-abnormal
+RestartSec=300
+StartLimitIntervalSec=3600
+StartLimitBurst=5
 
 [Install]
 WantedBy=default.target
@@ -130,7 +139,7 @@ systemctl --user enable --now tokenscale.service
 journalctl --user -u tokenscale -f      # follow logs
 ```
 
-The user unit runs at login, not boot — that's almost always what you want for a personal dashboard. If you need it at boot (multi-user host, kiosk, etc.), install a system-wide unit at `/etc/systemd/system/tokenscale.service` with `User=youruser` instead.
+The user unit runs at login, not boot. Only enable it if you actually want the dashboard resident; `systemctl --user start tokenscale.service` without `enable` runs it until logout. For boot-time on a multi-user host or kiosk, install a system-wide unit at `/etc/systemd/system/tokenscale.service` with `User=youruser` instead.
 
 ### Windows — NSSM
 
