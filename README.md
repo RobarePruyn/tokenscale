@@ -96,7 +96,7 @@ tokenscale is designed to run on demand: `tokenscale serve` when you want the da
 
 If you do want it resident, two rules keep a service from turning a refusal into a loop: restart only after a crash, never after a deliberate exit (tokenscale exits with code **3** when its database was migrated by a newer version; the fix is to upgrade, not to retry), and never more often than every few minutes.
 
-### macOS — `brew services` (opt in)
+### macOS: `brew services` (opt in)
 
 The Homebrew formula's service block already encodes both rules (`KeepAlive = {Crashed = true}`, `ThrottleInterval = 300`, logs at WARN):
 
