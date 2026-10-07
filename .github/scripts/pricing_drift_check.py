@@ -22,7 +22,8 @@ to drift vs. detector-degradation):
 
 Design constraints (all locked in v0.1.12 sign-off, do not change without
 re-asking):
-  * Source URL pinned to https://platform.claude.com/docs/en/about-claude/pricing.
+  * Source URL pinned to https://platform.claude.com/docs/en/about-claude/pricing;
+    the detector fetches its markdown source at that path plus ".md" (2026-10-07).
     NOT claude.com/pricing (marketing). NOT models/overview (informational).
   * Parser pinned to the `## Model pricing` table specifically. Fast Mode
     ($30/$150), Batch (50% off), and US Data Residency (1.1x) live in
@@ -61,6 +62,16 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 PRICING_PAGE_URL = "https://platform.claude.com/docs/en/about-claude/pricing"
+# What the detector actually fetches. The docs site serves the page's source
+# markdown at the same path plus ".md": the full Model pricing table in the
+# documented column order (input, 5m write, 1h write, cache read, output),
+# every model including legacy ones, and the same shape as the test fixture.
+# The rendered HTML changed on 2026-10-07 to a current-lineup view with a
+# two-level header, a description cell between the name and the prices, and
+# the columns reordered (input, output, 5m, 1h, reads); parsing that with
+# a fixed cell order would mis-assign rates silently, which is worse than a
+# parse failure. The human-facing URL stays the one cited in pricing.toml.
+PRICING_FETCH_URL = PRICING_PAGE_URL + ".md"
 USER_AGENT = "tokenscale-pricing-drift-check/0.1 (+https://github.com/RobarePruyn/tokenscale)"
 FETCH_TIMEOUT_SECS = 30
 SNAPSHOT_STALE_AFTER_DAYS = 90
@@ -69,33 +80,44 @@ SNAPSHOT_STALE_AFTER_DAYS = 90
 # means: (1) update pricing.toml with verified rates, (2) re-capture
 # pricing-rate-card.snapshot.json, (3) add the model ID here.
 TRACKED_MODELS = {
+    # Page-presence is the tracking axis (v0.1.20 D4): every model on the
+    # live Model pricing table that pricing.toml prices. Historical models
+    # that have left the page are never tracked. Order follows the page.
+    "claude-fable-5-1": "Claude Fable 5.1",
+    "claude-mythos-5-1": "Claude Mythos 5.1",
+    "claude-fable-5": "Claude Fable 5",
+    "claude-opus-5-5": "Claude Opus 5.5",
     "claude-opus-5": "Claude Opus 5",
     "claude-opus-4-8": "Claude Opus 4.8",
     "claude-opus-4-7": "Claude Opus 4.7",
     "claude-opus-4-6": "Claude Opus 4.6",
+    "claude-sonnet-5-5": "Claude Sonnet 5.5",
+    # Sonnet 5 was deferred in v0.1.20 (D4a) while it carried two-row
+    # introductory pricing. Anthropic made the introductory price
+    # permanent on 2026-10-07, so it is a single-rate row and tracked.
+    "claude-sonnet-5": "Claude Sonnet 5",
     "claude-sonnet-4-6": "Claude Sonnet 4.6",
+    # Haiku 5.5 is priced by prompt length and appears twice on the page.
+    # The row regex matches the first occurrence in page order, which is
+    # the under-100k-token tier that pricing.toml carries (Issue #11).
+    "claude-haiku-5-5": "Claude Haiku 5.5",
     "claude-haiku-4-5": "Claude Haiku 4.5",
-    # Fable 5 is retired (pulled 2026-06-12 by a US export-control
-    # directive, ~3 days after launch). It is still on the pricing page
-    # today, so we verify its rates while they last. Once Anthropic
-    # delists it, `status = "retired"` in pricing.toml tells the detector
-    # to skip it rather than raise ParseFailure. See load_retired_model_ids
-    # and the retired-skip guard in parse_anthropic_page.
-    "claude-fable-5": "Claude Fable 5",
-    # D4a: claude-sonnet-5 is intentionally NOT tracked yet. The live page
-    # renders it as two qualifier-suffixed rows ("through August 31, 2026" /
-    # "starting September 1, 2026") that the row regex does not match; adding
-    # it now would flip the run to exit-2. Add it after 2026-09-01 when the
-    # page collapses to a single standard Sonnet 5 row. Priced + factored
-    # meanwhile; only drift-tracking is deferred.
-    # Historical models (Claude 1 through 4.x snapshots, Mythos) are priced
-    # and factored but never tracked here: most were never on the live page,
-    # and a missing tracked model degrades the whole run to exit-2 (D4).
 }
 
 # Anthropic's published cache multipliers (per ### Prompt caching prose).
 # The detector validates pricing.toml's stored multipliers match these AND
 # that the per-row absolute cache columns equal input × multiplier.
+# Models whose cache-read price is not the standard 0.1x of input. Anthropic
+# publishes these as footnotes on the Model pricing table (2026-10-07: Fable
+# 5.1 and Mythos 5.1 at 0.025x, Opus 5.5 at 0.05x). The upstream absolute
+# comparison needs no change (pricing.toml stores cache_read as an absolute
+# rate); only the internal-consistency check consults this map.
+CACHE_READ_MULTIPLIER_OVERRIDES = {
+    "claude-fable-5-1": 0.025,
+    "claude-mythos-5-1": 0.025,
+    "claude-opus-5-5": 0.05,
+}
+
 EXPECTED_CACHE_MULTIPLIERS = {
     "cache_read": 0.1,
     "cache_write_5m": 1.25,
@@ -136,8 +158,13 @@ def _normalize(text: str) -> str:
 
         Model pricing The following table shows ... Claude Opus 4.7 $5 / MTok $6.25 ...
     """
-    # Strip HTML tags.
-    stripped = re.sub(r"<[^>]+>", " ", text)
+    # Drop footnote markers WITH their digit first: the live page writes
+    # cells like `$0.25 / MTok<sup>1</sup>`, and plain tag stripping would
+    # leave a stray "1" between cells that breaks the five-cell row match
+    # (first seen 2026-10-07).
+    stripped = re.sub(r"<sup>.*?</sup>", " ", text, flags=re.DOTALL)
+    # Strip remaining HTML tags.
+    stripped = re.sub(r"<[^>]+>", " ", stripped)
     # Decode the small set of HTML entities that actually appear in
     # Anthropic's pricing copy. `html.unescape` from stdlib would be
     # more general but adds an import for two characters.
@@ -194,8 +221,11 @@ def parse_anthropic_page(
             end_idx = min(end_idx, candidate)
     section = normalized[start_idx:end_idx]
 
-    # Step 3: confirm column headers.
-    if "Base Input Tokens" not in section or "Output Tokens" not in section:
+    # Step 3: confirm column headers. Case-insensitive: the page moved from
+    # "Base Input Tokens" to "Base input tokens" (observed 2026-10-07), and
+    # casing carries no meaning here.
+    section_lower = section.lower()
+    if "base input tokens" not in section_lower or "output tokens" not in section_lower:
         raise ParseFailure(
             "`Model pricing` table is missing expected column headers "
             "(`Base Input Tokens` and/or `Output Tokens`). "
@@ -209,7 +239,7 @@ def parse_anthropic_page(
     rates: dict[str, ModelRates] = {}
     for model_id, display_name in TRACKED_MODELS.items():
         pattern = (
-            rf"{re.escape(display_name)}\b\s*(?:\(.*?\)\s*)?"
+            rf"{re.escape(display_name)}(?![.\d])\s*(?:\(.*?\)\s*)?"
             r"\$([\d.]+)\s*/\s*MTok\s*"
             r"\$([\d.]+)\s*/\s*MTok\s*"
             r"\$([\d.]+)\s*/\s*MTok\s*"
@@ -292,7 +322,7 @@ def fetch_live_page() -> str:
     errors. Parse-failures bubble up separately as ParseFailure from the
     callers."""
     req = urllib.request.Request(
-        PRICING_PAGE_URL,
+        PRICING_FETCH_URL,
         headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*"},
     )
     try:
@@ -322,9 +352,21 @@ def load_pricing_toml() -> dict[str, dict[str, float]]:
         data = tomllib.load(f)
     out: dict[str, dict[str, float]] = {}
     for provider_id, provider in data.get("providers", {}).items():
-        for model_id, model in provider.get("models", {}).items():
-            if model_id not in TRACKED_MODELS:
+        models = provider.get("models", {})
+        # v0.1.20 D1: rows are keyed on the ID real usage emits (dated
+        # snapshots before the 4.6 generation), and the undated page name
+        # (e.g. claude-haiku-4-5) lives in [providers.<p>.aliases] pointing
+        # at the dated row. Resolve tracked IDs through that table so the
+        # detector compares the live page against the row that actually
+        # prices the model. Without this, claude-haiku-4-5 reported as
+        # "missing from pricing.toml" on every run (latent since v0.1.20;
+        # unnoticed because the schedule was disabled).
+        aliases = provider.get("aliases", {})
+        for tracked_id in TRACKED_MODELS:
+            row_key = tracked_id if tracked_id in models else aliases.get(tracked_id)
+            if row_key is None or row_key not in models:
                 continue
+            model = models[row_key]
             # Normalize single-table-form (dict) and multi-row-form (list)
             # into the same shape, then pick the row with the latest
             # valid_from. `valid_from` is ISO YYYY-MM-DD so lexical max
@@ -333,7 +375,7 @@ def load_pricing_toml() -> dict[str, dict[str, float]]:
                 latest = max(model, key=lambda row: row.get("valid_from", ""))
             else:
                 latest = model
-            out[model_id] = {
+            out[tracked_id] = {
                 "input": float(latest["input_usd_per_mtok"]),
                 "output": float(latest["output_usd_per_mtok"]),
                 "cache_read": float(latest["cache_read_usd_per_mtok"]),
@@ -416,11 +458,15 @@ def check_drift(
                 f"Anthropic publishes ${up.cache_write_1h}"
             )
 
-        # Internal consistency: cache_read should be 10% of input.
-        if not _close(lo["cache_read"], lo["input"] * 0.1):
+        # Internal consistency: cache_read should be the model's published
+        # multiple of input (0.1 by default; see CACHE_READ_MULTIPLIER_OVERRIDES).
+        read_multiplier = CACHE_READ_MULTIPLIER_OVERRIDES.get(
+            model_id, EXPECTED_CACHE_MULTIPLIERS["cache_read"]
+        )
+        if not _close(lo["cache_read"], lo["input"] * read_multiplier):
             drift.append(
                 f"{model_id} INTERNAL: cache_read ${lo['cache_read']} ≠ "
-                f"input × 0.1 = ${lo['input'] * 0.1:.2f}. "
+                f"input × {read_multiplier} = ${lo['input'] * read_multiplier:.3f}. "
                 "pricing.toml is internally inconsistent."
             )
 

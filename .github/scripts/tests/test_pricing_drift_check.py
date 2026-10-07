@@ -12,6 +12,8 @@ broken to make drift calls.
 from __future__ import annotations
 
 import sys
+import pathlib
+import re
 import unittest
 from pathlib import Path
 
@@ -86,6 +88,49 @@ class ParseModelPricingTests(unittest.TestCase):
         self.assertEqual(set(self.rates.keys()), set(detector.TRACKED_MODELS.keys()))
 
 
+class PageShape2026_10Tests(unittest.TestCase):
+    """The 2026-10-07 page added footnote markers inside cells, models whose
+    names are prefixes of newer models, per-model cache-read multipliers,
+    and a model listed twice (Haiku 5.5 prompt-length tiers)."""
+
+    def setUp(self):
+        self.rates = detector.parse_anthropic_page(load_fixture())
+
+    def test_footnote_markers_do_not_break_the_five_cell_match(self):
+        fable51 = self.rates["claude-fable-5-1"]
+        self.assertEqual(fable51.cache_read, 0.25)   # cell was `$0.25 / MTok<sup>1</sup>`
+        self.assertEqual(fable51.output, 50.0)
+        sonnet5 = self.rates["claude-sonnet-5"]       # input and output cells carry <sup>3</sup>
+        self.assertEqual((sonnet5.base_input, sonnet5.output), (2.0, 10.0))
+
+    def test_name_prefix_does_not_anchor_on_newer_model(self):
+        # "Claude Opus 5" must not match inside "Claude Opus 5.5" (4/20).
+        self.assertEqual(self.rates["claude-opus-5"].base_input, 5.0)
+        self.assertEqual(self.rates["claude-opus-5-5"].base_input, 4.0)
+        self.assertEqual(self.rates["claude-sonnet-5-5"].output, 10.0)
+        self.assertEqual(self.rates["claude-fable-5"].cache_read, 1.0)
+
+    def test_haiku_5_5_resolves_to_first_tier_row(self):
+        haiku55 = self.rates["claude-haiku-5-5"]
+        self.assertEqual((haiku55.base_input, haiku55.output, haiku55.cache_read), (0.10, 0.50, 0.01))
+
+    def test_internal_consistency_uses_per_model_cache_read_multiplier(self):
+        upstream = {"claude-fable-5-1": self.rates["claude-fable-5-1"],
+                    "claude-opus-5-5": self.rates["claude-opus-5-5"]}
+        multipliers = {"cache_read": 0.1, "cache_write_5m": 1.25, "cache_write_1h": 2.0}
+        local_ok = {
+            "claude-fable-5-1": {"input": 10.0, "output": 50.0, "cache_read": 0.25,
+                                 "cache_write_5m_multiplier": 1.25, "cache_write_1h_multiplier": 2.0},
+            "claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.20,
+                                "cache_write_5m_multiplier": 1.25, "cache_write_1h_multiplier": 2.0},
+        }
+        self.assertEqual(detector.check_drift(upstream, multipliers, local_ok), [])
+        # A row that wrongly used the standard 0.1x is flagged as internally inconsistent.
+        local_bad = {**local_ok, "claude-opus-5-5": {**local_ok["claude-opus-5-5"], "cache_read": 0.40}}
+        problems = detector.check_drift(upstream, multipliers, local_bad)
+        self.assertTrue(any("claude-opus-5-5" in d and "INTERNAL" in d for d in problems), problems)
+
+
 class ParseCacheMultipliersTests(unittest.TestCase):
     def setUp(self) -> None:
         self.page = load_fixture()
@@ -147,10 +192,13 @@ class RetiredModelGuardTests(unittest.TestCase):
     pull/delisting cannot cry-wolf the detector. Fable 5 is the case."""
 
     def _page_without_fable(self) -> str:
+        # Drop only the Fable 5 row. "Claude Fable 5.1" also contains the
+        # substring, so match the row by name followed by a non-version
+        # character (the same boundary the parser uses).
         return "\n".join(
             line
             for line in FIXTURE_PATH.read_text().splitlines()
-            if "Claude Fable 5" not in line
+            if not re.search(r"Claude Fable 5(?![.\d])", line)
         )
 
     def test_retired_model_missing_from_page_raises_without_guard(self):
@@ -168,10 +216,34 @@ class RetiredModelGuardTests(unittest.TestCase):
         self.assertIn("claude-opus-4-8", rates)
         self.assertIn("claude-opus-4-7", rates)
 
-    def test_load_retired_model_ids_reads_fable_from_pricing_toml(self):
-        retired = detector.load_retired_model_ids()
-        self.assertIn("claude-fable-5", retired)
-        self.assertNotIn("claude-opus-4-8", retired)  # live model, not retired
+    def test_load_retired_model_ids_reads_status_from_pricing_toml(self):
+        # Self-contained: the repo's pricing.toml has no retired rows since
+        # Fable 5 was restored (v0.1.20), so point the loader at a temp file
+        # that exercises the mechanism.
+        import tempfile
+        toml_text = (
+            '[providers.anthropic.models."claude-pulled-1"]\n'
+            'display_name = "Pulled"\nvalid_from = "2026-01-01"\n'
+            'input_usd_per_mtok = 1.0\noutput_usd_per_mtok = 5.0\n'
+            'cache_read_usd_per_mtok = 0.1\ncache_write_5m_multiplier = 1.25\n'
+            'cache_write_1h_multiplier = 2.0\nstatus = "retired"\n'
+            '[providers.anthropic.models."claude-live-1"]\n'
+            'display_name = "Live"\nvalid_from = "2026-01-01"\n'
+            'input_usd_per_mtok = 1.0\noutput_usd_per_mtok = 5.0\n'
+            'cache_read_usd_per_mtok = 0.1\ncache_write_5m_multiplier = 1.25\n'
+            'cache_write_1h_multiplier = 2.0\n'
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as fh:
+            fh.write(toml_text)
+            tmp = pathlib.Path(fh.name)
+        original = detector.PRICING_TOML
+        try:
+            detector.PRICING_TOML = tmp
+            retired = detector.load_retired_model_ids()
+        finally:
+            detector.PRICING_TOML = original
+            tmp.unlink()
+        self.assertEqual(retired, frozenset({"claude-pulled-1"}))
 
 
 class DriftCheckTests(unittest.TestCase):

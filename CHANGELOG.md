@@ -6,6 +6,28 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.23, 2026-10-07
+
+**Claude 5.5 generation and 5.1 flagships; Sonnet 5 price correction; drift detector revived.** Triggered by the first audit after the v0.1.22 upgrade, which showed Opus 5.5 and Fable 5.1 in use with no pricing or factor rows. Design pass and sign-off in `docs/roadmap-model-additions-5-5-generation.md`.
+
+### Five models added (pricing 1.2 to 1.3, factors 0.6 to 0.7)
+
+`claude-fable-5-1` and `claude-mythos-5-1` (2026-09-01, 10 / 50, cache read 0.25), `claude-opus-5-5` (2026-09-22, 4 / 20, cache read 0.20), `claude-sonnet-5-5` (2026-09-28, 2 / 10), `claude-haiku-5-5` (2026-10-07, under-100k-token tier 0.10 / 0.50; the over-100k tier is not applied until tier-aware pricing lands, Issue #11; the row is labeled PARTIAL RATE CARD). All rates sourced to Anthropic's pricing page on 2026-10-07; launch dates from the deprecations page's launch-plus-one-year commitments, the Opus 5.5 announcement, and press. Factor rows follow the file's pricing-proxy conventions: Fable 5.1, Mythos 5.1, Sonnet 5.5 held flat versus their predecessors; Opus 5.5 at 0.8x Opus 5 on Anthropic's efficiency framing; Haiku 5.5 held flat versus Haiku 4.5 despite its 10x price cut, per the Sweep #3 finding that the Haiku price proxy underestimates.
+
+### Correction: Sonnet 5 stays at 2 / 10
+
+Anthropic cancelled the planned 2026-09-01 increase to 3 / 15; the pre-encoded row is removed. Sonnet 5 usage since 2026-09-01 was priced 1.5x too high in v0.1.21 and v0.1.22. Entry in the `docs/cost-methodology.md` corrections log.
+
+### Drift detector
+
+GitHub had disabled the nightly schedule for inactivity (last run 2026-07-28); re-enabled. The detector now strips footnote markers from table cells, uses per-model cache-read multipliers (0.025x Fable 5.1 and Mythos 5.1, 0.05x Opus 5.5), no longer lets "Claude Opus 5" anchor on "Claude Opus 5.5", and tracks the five new models plus Sonnet 5. It now fetches the page's markdown source (`pricing.md`) instead of the rendered HTML, which on 2026-10-07 became a reordered current-lineup view that a fixed-order parser would have mis-read silently. Snapshot and fixture re-captured against the 2026-10-07 page; a live dry run exits 0 with all 13 tracked models matching.
+
+### Lifecycle
+
+Sonnet 4.5 deprecated 2026-09-30 (retires 2026-11-30); noted on its row. No schema migration in this release.
+
+---
+
 ## v0.1.22, 2026-10-07
 
 **Packaging and upgrade-path hardening** after a stale Homebrew install crash-looped under launchd (41,095 restarts, 529 MB log) against a database that newer builds had migrated. Full account and the on-demand service decision in `docs/packaging-and-service.md`.

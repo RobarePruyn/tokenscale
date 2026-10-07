@@ -6,6 +6,35 @@ Newest entries appear at the top.
 
 ---
 
+## 2026-10-07 — Model additions: Claude 5.5 generation and 5.1 flagships (v0.1.23)
+
+### Question
+
+Five models appeared on Anthropic's pricing page since Sweep #3 (Fable 5.1, Mythos 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5); two of them were already in the maintainer's usage with no factor rows. What energy values should their rows carry?
+
+### Methodology
+
+Pricing-proxy conventions of this file, applied from the nearest sibling, with the launch posts and pricing page as the only inputs (fetched 2026-10-07). A search for third-party measurements of any 5-generation model found none; the Sweep #3 finding that no measurement exists for Fable 5 or Opus 5 still holds for their successors.
+
+### Findings and values
+
+- Fable 5.1, Mythos 5.1: same 10 / 50 rate card as Fable 5; held flat at 720 / 3,600 Wh per MTok (in/out), band 55. The 0.025x cache-read price is a caching-infrastructure price, not a compute signal.
+- Opus 5.5: Anthropic's launch post says it "costs 40% less to run than Opus 5" and generates output "more than 30% faster", with a 20% price cut to 4 / 20. Applied 0.8x Opus 5 (288 / 1,440), band 45, following the file's Opus 4.5 precedent for efficiency-framed price cuts. The 40% figure was not used: it includes the cache-read cut (60% cheaper reads), which is pricing, not energy.
+- Sonnet 5.5: same 2 / 10 as Sonnet 5; held flat (195 / 965), band 40.
+- Haiku 5.5: priced 10x below Haiku 4.5 for prompts under 100k tokens. Deliberately held flat at Haiku 4.5's Couch anchor (70 / 330) with band 55 rather than scaled to 7 / 33: Sweep #3 showed the Haiku price proxy underestimated 3.5 Haiku's output energy about 5x against measurement, and a tiered price is a positioning signal. Recorded as the decision most likely to need revision when any 5.5-generation measurement appears.
+- Sonnet 5 note corrected: the introductory 2 / 10 price is now permanent (pricing page, 2026-10-07); the energy value was never tied to the price and is unchanged.
+
+### What changed in `environmental-factors.toml`
+
+file_version 0.6 to 0.7: five new rows as above; Sonnet 5 note rewritten. No existing numeric value changed.
+
+### Carry-forward
+
+- First measurement of any 5.x model: revisit Haiku 5.5 first, then Opus 5.5's 0.8x step.
+- Tier-aware pricing (Issue #11) is a cost-side item but affects how Haiku 5.5 events are grouped; no factor-side action.
+
+---
+
 ## 2026-08-25 — Sweep #3: per-model energy anchors for historical Claude models (Issue #8)
 
 ### Question

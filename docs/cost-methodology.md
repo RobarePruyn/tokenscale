@@ -66,6 +66,18 @@ UTC. All `date(occurred_at)` extraction in the SQL aggregation uses UTC YYYY-MM-
 
 This section dates every correction applied to the cost factor file (`pricing.toml`). It is the cost-side analog to `docs/research-log.md`. Append-only; never rewrite or delete an entry.
 
+### 2026-10-07: v0.1.23, Sonnet 5 pre-encoded price increase removed; five models added
+
+**What changed**: `pricing.toml` 1.2 to 1.3. The `claude-sonnet-5` row with `valid_from = "2026-09-01"` at 3 / 15 USD per MTok (cache read 0.30) was removed. Anthropic's pricing page now states that the introductory 2 / 10 price "is now the standard price" and that "the previously scheduled increase to $3/$15 ... on September 1, 2026 will not occur." The surviving row (2 / 10, cache read 0.20, `valid_from = "2026-06-30"`) is unchanged.
+
+**Why it was wrong**: v1.2 (2026-08-02) encoded the pre-announced increase as a future-dated row, which was correct on the day it was written and became wrong when Anthropic cancelled the increase. There is no mechanism that would have caught it: the drift detector did not track Sonnet 5 (the v0.1.20 D4a deferral) and its nightly schedule had been disabled by GitHub for inactivity since 2026-07-28.
+
+**Impact**: any Sonnet 5 usage dated 2026-09-01 or later was priced 1.5x too high (input, output, and cache read) in every v0.1.21 and v0.1.22 dashboard until this release. The maintainer's database has no Sonnet 5 events after 2026-07-03, so no figure moved there. Other users' historical Sonnet 5 cost since September drops by one third on upgrade; impact figures are unaffected (energy rows never used the 3 / 15 price).
+
+**Lesson applied**: future-dated pricing rows are a liability when the announced change can be withdrawn. Prefer adding the row when the change takes effect, or track the model in the detector so the withdrawal is caught the night it is published. Sonnet 5 is tracked as of this release and the detector schedule is re-enabled.
+
+**Also in v1.3 (additions, not corrections)**: `claude-fable-5-1`, `claude-mythos-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` (under-100k-token tier only; see Issue #11), all sourced to the pricing page on 2026-10-07; Sonnet 4.5 lifecycle note (deprecated 2026-09-30). Design pass: `docs/roadmap-model-additions-5-5-generation.md`.
+
 ### 2026-05-18 — v0.1.13: time-anchoring backfill + multi-row schema
 
 **What changed**: `pricing.toml` rewritten in multi-row form (array-of-tables per model) with each row's `valid_from` rewritten from the v0.1.0 placeholder `2026-04-28` to the model's actual launch date. Adds a `launch_date_source` field per row carrying the URL or rationale backing the date. Also adds top-level `file_version = "1.0"` and `file_published = "2026-05-18"`.
@@ -139,6 +151,8 @@ The companion to the cost-side time-anchoring item on the [open research queue](
 - **`claude.com/pricing#api`**: marketing landing page. Subscription tiers + a link to the reference page, but no per-model rate table.
 - **`platform.claude.com/docs/en/about-claude/models/overview`**: the model comparison page. Has a pricing column but as informational metadata, not as the canonical rate-card source.
 - **`platform.claude.com/docs/en/about-claude/pricing`**: the canonical reference. Includes the full `Model pricing` table plus separate sections for Prompt caching, Fast Mode, Batch, Data Residency.
+
+**Fetch target (2026-10-07):** the detector fetches the page's markdown source at the same path plus `.md`, not the rendered HTML. On 2026-10-07 the rendered page became a current-lineup view with a two-level header, a description cell between the model name and its prices, and reordered columns (input, output, 5m write, 1h write, cache read). A fixed-cell-order parser would have assigned rates to the wrong columns without raising, which is worse than the parse failure it did raise. The markdown source keeps the documented column order and lists every model, including legacy rows, and matches the test fixture's shape.
 
 ### What the detector validates
 

@@ -27,8 +27,13 @@
 
 schema_version = 1
 file_status = "production"
-file_version = "0.6"
-file_published = "2026-08-25"
+file_version = "0.7"
+file_published = "2026-10-07"
+# v0.7 (2026-10-07): Claude 5.5 generation plus the 5.1 flagships, per
+# docs/roadmap-model-additions-5-5-generation.md D2. No measurement exists for
+# any of them; rows use the file's pricing-proxy conventions (held flat where
+# the price is unchanged; Opus 5.5 at 0.8x on Anthropic's efficiency framing;
+# Haiku 5.5 deliberately NOT scaled by its 10x price cut, see its note).
 # v0.6 (2026-08-25): Sweep #3 (research-log entry of the same date; Issue #8).
 # Jegham et al. v6 direct measurements imported as RELATIVE structure for the
 # three Claude models the paper covers (3.7 Sonnet, 3.5 Sonnet, 3.5 Haiku),
@@ -87,6 +92,83 @@ disclosure_status_accessed = "2026-08-25"  # re-verified Sweep #3; still nothing
 # disclosed, so the AWS assumption stays, flagged. See
 # docs/request-for-research.md "Claude serving-mix apportionment".
 
+# ---- Claude 5.5 generation and 5.1 flagships (v0.7, 2026-10-07) ----
+
+[providers.anthropic.models."claude-fable-5-1"]
+display_name = "Claude Fable 5.1"
+released_at = "2026-09-01"
+valid_from = "2026-09-01"
+source_doc = "docs/sources.md#G.1"
+confidence = "estimated"
+notes = "ESTIMATE (pricing-as-proxy, zero anchor): held flat versus Fable 5. Same 10/50 rate card; the cache-read cut to 0.025x is a caching-infrastructure price, not a per-token compute signal, so it does not scale energy. Inherits Fable 5's wide band and its up-tier proxy caveat (a 2x price may not mean 2x compute). No third-party measurement exists for any 5-generation model as of 2026-10-07."
+wh_per_mtok_input = 720
+wh_per_mtok_output = 3600
+wh_per_mtok_cache_read = 72
+wh_per_mtok_cache_write_5m = 900
+wh_per_mtok_cache_write_1h = 1440
+uncertainty_range_pct = 55
+tokenizer_token_count_inflation_factor = 1.175
+
+[providers.anthropic.models."claude-mythos-5-1"]
+display_name = "Claude Mythos 5.1"
+released_at = "2026-09-01"
+valid_from = "2026-09-01"
+source_doc = "docs/sources.md#G.1"
+confidence = "estimated"
+notes = "ESTIMATE: same underlying model and rate card as Fable 5.1 per Anthropic's pricing and models pages; carries the Fable 5.1 pricing-proxy estimate and band. Limited availability through Anthropic's verification programs."
+wh_per_mtok_input = 720
+wh_per_mtok_output = 3600
+wh_per_mtok_cache_read = 72
+wh_per_mtok_cache_write_5m = 900
+wh_per_mtok_cache_write_1h = 1440
+uncertainty_range_pct = 55
+tokenizer_token_count_inflation_factor = 1.175
+
+[providers.anthropic.models."claude-opus-5-5"]
+display_name = "Claude Opus 5.5"
+released_at = "2026-09-22"
+valid_from = "2026-09-22"
+source_doc = "docs/sources.md#G.1"
+confidence = "estimated"
+notes = "ESTIMATE: 0.8x Opus 5 on the pricing proxy with Anthropic's own efficiency framing (launch post 2026-09-22: 'costs 40% less to run than Opus 5', output 'more than 30% faster', price cut 20% to 4/20). The file's precedent (Opus 4.5) treats an efficiency-framed price cut as a compute signal; the 20% price move, not the 40% workload figure (which includes the cache-read cut), is applied. Band widened to 45 because the step is inferred from a price, not measured."
+wh_per_mtok_input = 288
+wh_per_mtok_output = 1440
+wh_per_mtok_cache_read = 29
+wh_per_mtok_cache_write_5m = 360
+wh_per_mtok_cache_write_1h = 576
+uncertainty_range_pct = 45
+tokenizer_token_count_inflation_factor = 1.175
+
+[providers.anthropic.models."claude-sonnet-5-5"]
+display_name = "Claude Sonnet 5.5"
+released_at = "2026-09-28"
+valid_from = "2026-09-28"
+source_doc = "docs/sources.md#G.1"
+confidence = "estimated"
+notes = "ESTIMATE: held flat versus Sonnet 5 on the pricing-unchanged proxy (2/10, identical). Anthropic reports output about 30% faster than Sonnet 5, a latency claim, not a per-token energy disclosure. Estimate range: -10% to +10% versus Sonnet 5."
+wh_per_mtok_input = 195
+wh_per_mtok_output = 965
+wh_per_mtok_cache_read = 20
+wh_per_mtok_cache_write_5m = 244
+wh_per_mtok_cache_write_1h = 390
+uncertainty_range_pct = 40
+tokenizer_token_count_inflation_factor = 1.175
+
+[providers.anthropic.models."claude-haiku-5-5"]
+display_name = "Claude Haiku 5.5"
+released_at = "2026-10-07"
+valid_from = "2026-10-07"
+source_doc = "docs/sources.md#G.1"
+confidence = "estimated"
+notes = "ESTIMATE: held flat versus Haiku 4.5 (the Couch direct anchor) DESPITE a 10x lower under-100k-token price (0.10/0.50 vs 1/5). The pricing proxy is deliberately not applied downward here: Sweep #3 (2026-08-25) found the Haiku price proxy had underestimated 3.5 Haiku's output energy by about 5x against Jegham et al.'s measurement, and a prompt-length-tiered price is a positioning signal more than a compute one. If the true value is lower, this row overstates; the wide band records that. Revisit on the first measurement of any 5.5-generation model."
+wh_per_mtok_input = 70
+wh_per_mtok_output = 330
+wh_per_mtok_cache_read = 7
+wh_per_mtok_cache_write_5m = 88
+wh_per_mtok_cache_write_1h = 140
+uncertainty_range_pct = 55
+tokenizer_token_count_inflation_factor = 1.175
+
 # ---- Claude 5 generation ----
 
 [providers.anthropic.models."claude-opus-5"]
@@ -110,7 +192,7 @@ released_at = "2026-06-30"
 valid_from = "2026-06-30"
 source_doc = "docs/sources.md#G.1"
 confidence = "secondary"
-notes = "ESTIMATE: held flat versus Sonnet 4.6 on the pricing proxy (standard rate 3/15, identical; the 2/10 introductory window through 2026-08-31 is commercial, not a compute signal). Uses the 4.7+ tokenizer. Estimate range: -10% to +10% versus Sonnet 4.6."
+notes = "ESTIMATE: held flat versus Sonnet 4.6 on the predecessor-equivalence proxy. Launched at 2/10 as an introductory rate; on 2026-10-07 Anthropic made 2/10 permanent and cancelled the planned 3/15. The file treats that as commercial positioning, not a per-token compute signal, so the energy value is unchanged. Uses the 4.7+ tokenizer. Estimate range: -10% to +10% versus Sonnet 4.6."
 wh_per_mtok_input = 195
 wh_per_mtok_output = 965
 wh_per_mtok_cache_read = 20

@@ -10,6 +10,16 @@ Format: each entry has a status, the question, why it matters, what good answers
 
 ## Open
 
+### Prompt-length-tiered pricing (Haiku 5.5)
+
+**Status**: Open (filed 2026-10-07; implementation tracked as Issue #11).
+
+**Question**: How should tokenscale represent and apply per-request price tiers keyed on prompt length, now that Claude Haiku 5.5 charges 5x more for prompts over 100,000 tokens?
+
+**Why it matters**: the pricing schema has one rate per (provider, model, valid_from). v0.1.23 ships the under-100k tier only, so long-context Haiku 5.5 requests are underpriced 5x. We already record per-event input and cache token counts, so the tier is computable; the open questions are representation (second rate set on the row vs a tier table) and whether Anthropic's threshold counts cached tokens as part of the prompt.
+
+---
+
 ### Claude serving-mix apportionment (AWS vs Google TPU vs xAI Colossus)
 
 **Status**: Open (filed Sweep #3, 2026-08-25).
