@@ -66,6 +66,16 @@ UTC. All `date(occurred_at)` extraction in the SQL aggregation uses UTC YYYY-MM-
 
 This section dates every correction applied to the cost factor file (`pricing.toml`). It is the cost-side analog to `docs/research-log.md`. Append-only; never rewrite or delete an entry.
 
+### 2026-11-06: v0.1.24, Sonnet 5.5 cache-read price change (Issue #12)
+
+**What changed**: `pricing.toml` 1.3 to 1.4. A second time-anchored `claude-sonnet-5-5` row from 2026-10-08 carries cache read 0.10 USD per MTok (0.05x input); the launch row (2026-09-28, cache read 0.20) stays. Input and output are unchanged.
+
+**Why**: Anthropic's pricing page extended footnote 2 (0.05x cache reads) from Opus 5.5 to Sonnet 5.5. The page showed 0.20 when v1.3 was captured on 2026-10-07; the revived nightly detector flagged 0.10 on 2026-10-08 and opened Issue #12. The effective date is the first observation, not an announcement, and the row says so.
+
+**Impact**: Sonnet 5.5 cache-read tokens from 2026-10-08 onward were priced 2x too high in v0.1.23. Cache reads are typically the largest token class in Claude Code sessions, so Sonnet 5.5 session costs since October drop noticeably on upgrade. Energy rows are unaffected.
+
+**Note**: the detector did its job on its first night back. The month between the alert and this fix is a process gap (nobody was reading the issue tracker), not a tooling one.
+
 ### 2026-10-07: v0.1.23, Sonnet 5 pre-encoded price increase removed; five models added
 
 **What changed**: `pricing.toml` 1.2 to 1.3. The `claude-sonnet-5` row with `valid_from = "2026-09-01"` at 3 / 15 USD per MTok (cache read 0.30) was removed. Anthropic's pricing page now states that the introductory 2 / 10 price "is now the standard price" and that "the previously scheduled increase to $3/$15 ... on September 1, 2026 will not occur." The surviving row (2 / 10, cache read 0.20, `valid_from = "2026-06-30"`) is unchanged.

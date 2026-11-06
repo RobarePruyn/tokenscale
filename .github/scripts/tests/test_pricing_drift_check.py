@@ -116,13 +116,16 @@ class PageShape2026_10Tests(unittest.TestCase):
 
     def test_internal_consistency_uses_per_model_cache_read_multiplier(self):
         upstream = {"claude-fable-5-1": self.rates["claude-fable-5-1"],
-                    "claude-opus-5-5": self.rates["claude-opus-5-5"]}
+                    "claude-opus-5-5": self.rates["claude-opus-5-5"],
+                    "claude-sonnet-5-5": self.rates["claude-sonnet-5-5"]}
         multipliers = {"cache_read": 0.1, "cache_write_5m": 1.25, "cache_write_1h": 2.0}
         local_ok = {
             "claude-fable-5-1": {"input": 10.0, "output": 50.0, "cache_read": 0.25,
                                  "cache_write_5m_multiplier": 1.25, "cache_write_1h_multiplier": 2.0},
             "claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.20,
                                 "cache_write_5m_multiplier": 1.25, "cache_write_1h_multiplier": 2.0},
+            "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_read": 0.10,
+                                  "cache_write_5m_multiplier": 1.25, "cache_write_1h_multiplier": 2.0},
         }
         self.assertEqual(detector.check_drift(upstream, multipliers, local_ok), [])
         # A row that wrongly used the standard 0.1x is flagged as internally inconsistent.

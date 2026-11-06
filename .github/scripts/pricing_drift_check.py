@@ -108,14 +108,17 @@ TRACKED_MODELS = {
 # The detector validates pricing.toml's stored multipliers match these AND
 # that the per-row absolute cache columns equal input × multiplier.
 # Models whose cache-read price is not the standard 0.1x of input. Anthropic
-# publishes these as footnotes on the Model pricing table (2026-10-07: Fable
-# 5.1 and Mythos 5.1 at 0.025x, Opus 5.5 at 0.05x). The upstream absolute
+# publishes these as footnotes on the Model pricing table (Fable 5.1 and
+# Mythos 5.1 at 0.025x; Opus 5.5 and, from 2026-10-08, Sonnet 5.5 at 0.05x). The upstream absolute
 # comparison needs no change (pricing.toml stores cache_read as an absolute
 # rate); only the internal-consistency check consults this map.
 CACHE_READ_MULTIPLIER_OVERRIDES = {
     "claude-fable-5-1": 0.025,
     "claude-mythos-5-1": 0.025,
     "claude-opus-5-5": 0.05,
+    # Sonnet 5.5 moved to 0.05x on 2026-10-08 (Issue #12); footnote 2 now
+    # names both Opus 5.5 and Sonnet 5.5.
+    "claude-sonnet-5-5": 0.05,
 }
 
 EXPECTED_CACHE_MULTIPLIERS = {

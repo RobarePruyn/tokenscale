@@ -6,6 +6,12 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.24, 2026-11-06
+
+**Sonnet 5.5 cache-read correction (Issue #12).** Anthropic moved Sonnet 5.5 cache reads to 0.05x input (0.10 USD per MTok) on or about 2026-10-08; v0.1.23 carried 0.20. `pricing.toml` 1.3 to 1.4 adds a time-anchored row from the first observed date; the launch row is unchanged. Sonnet 5.5 cache-read costs since 2026-10-08 were 2x too high. Detector override, snapshot, and fixture updated; corrections-log entry in `docs/cost-methodology.md`. No schema change.
+
+---
+
 ## v0.1.23, 2026-10-07
 
 **Claude 5.5 generation and 5.1 flagships; Sonnet 5 price correction; drift detector revived.** Triggered by the first audit after the v0.1.22 upgrade, which showed Opus 5.5 and Fable 5.1 in use with no pricing or factor rows. Design pass and sign-off in `docs/roadmap-model-additions-5-5-generation.md`.
