@@ -1,6 +1,6 @@
 # TokenScale as an engineering-cost service: product spec, schema, API, attribution gaps
 
-**Status**: DRAFT for sign-off, 2026-11-06. Decisions D1 to D8 below need explicit sign-off before any code or migration lands (project rule). Nothing in this document is built.
+**Status**: SIGNED OFF 2026-11-11 ("Yes to all", D1 through D8 as recommended). Nothing is built yet; sequencing in section 8.
 
 **Brief (verbatim intent)**: TokenScale exists to answer one question: what does each unit of Mediacast engineering output cost in model spend, and is that trending the right way. It will feed a business-ops/BI application, so everything it computes must be reachable via a stable API, not just rendered in the dashboard.
 
