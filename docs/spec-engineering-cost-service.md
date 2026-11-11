@@ -4,6 +4,8 @@
 
 **Brief (verbatim intent)**: TokenScale exists to answer one question: what does each unit of Mediacast engineering output cost in model spend, and is that trending the right way. It will feed a business-ops/BI application, so everything it computes must be reachable via a stable API, not just rendered in the dashboard.
 
+**Consumers already building against section 2**: Mediacastnet/model-eval (PR #1) logs gateway and API eval calls in the `usage_events` shape; its first 226 rows (2026-11-11) validated field-for-field and added `served_by`.
+
 **Grounding**: written against the v0.1.24 codebase (inventory in section 7) and the maintainer's production database on 2026-11-06 (96,552 Claude Code events, 236 sessions, 1,704 captured commits). Every attribution claim below is measured, not assumed.
 
 ---
@@ -89,6 +91,7 @@ usage_events (
   input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens, cache_write_1h_tokens  bigint,
   prompt_tokens   bigint,                   -- input + cache_read + cache writes; the key for prompt-length pricing
   service_tier    text,                     -- provider-reported (JSONL service_tier), kept raw
+  served_by       text,                     -- the infrastructure provider that served the call when a gateway reports it (OpenRouter: DeepInfra, Amazon Bedrock, ...); NULL for first-party; feeds the serving-mix caveat in the impact model
   cost_usd        numeric(14,6),            -- API list-rate cost at occurred_at, materialized at ingest; NULL = unpriced
   cost_rate_id    bigint FK price_rates,    -- which rate priced it (audit trail; NULL = unpriced)
   session_id      text,
