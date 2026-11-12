@@ -86,3 +86,12 @@ allow-dirty = ["ci"]
 # customization when bumping `cargo-dist-version` above; if dist gains native
 # notarization, drop the manual step.
 # ----------------------------------------------------------------------------
+
+# GitHub retired every macos-14 runner image on 2026-11-02; dist 0.31's
+# default for aarch64-apple-darwin is still macos-14, so the arm64 macOS
+# build job is cancelled at start ("configuration macos-14-arm64-us-default
+# is not supported"; v0.1.24 run 43315723602). Pin the arm64 build to the
+# macOS 15 arm64 image. x86_64-apple-darwin already resolves to
+# macos-15-intel. Re-check when bumping cargo-dist-version.
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"

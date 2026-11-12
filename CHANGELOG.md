@@ -6,6 +6,12 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.25, 2026-11-12
+
+**Release pipeline: arm64 macOS runner.** GitHub retired every `macos-14` runner image on 2026-11-02; cargo-dist 0.31 still selects it for `aarch64-apple-darwin`, so the v0.1.24 release run had its arm64 macOS job cancelled at start ("configuration macos-14-arm64-us-default is not supported") and never published. `dist-workspace.toml` now pins `aarch64-apple-darwin` to `macos-15` via `[dist.github-custom-runners]`, verified with `dist plan`. The v0.1.24 tag exists but has no GitHub Release or formula; v0.1.25 carries the same content (Sonnet 5.5 cache-read correction) plus this fix. First release signed and notarized with the rotated App Store Connect key and Developer ID certificate.
+
+---
+
 ## v0.1.24, 2026-11-06
 
 **Sonnet 5.5 cache-read correction (Issue #12).** Anthropic moved Sonnet 5.5 cache reads to 0.05x input (0.10 USD per MTok) on or about 2026-10-08; v0.1.23 carried 0.20. `pricing.toml` 1.3 to 1.4 adds a time-anchored row from the first observed date; the launch row is unchanged. Sonnet 5.5 cache-read costs since 2026-10-08 were 2x too high. Detector override, snapshot, and fixture updated; corrections-log entry in `docs/cost-methodology.md`. No schema change.
