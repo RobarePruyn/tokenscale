@@ -45,8 +45,8 @@
 
 schema_version = 1
 file_status    = "production"
-file_version   = "1.4"
-file_published = "2026-11-06"
+file_version   = "1.5"
+file_published = "2026-11-13"
 # v1.2 (2026-08-02): full model coverage, every Anthropic model ever
 # released, plus the D1 alias table. Every rate below traces to a source
 # named in launch_date_source; rows labeled ESTIMATE in notes say so and why.
@@ -143,6 +143,35 @@ display_name = "Anthropic"
 # 0.025x and Opus 5.5 charges 0.05x (page footnotes 1 and 2). The file stores
 # cache_read as an absolute rate, so nothing structural changes; the drift
 # detector carries per-model overrides for the consistency check.
+
+# ---- Fable 5.2 and Mythos 5.2 (v1.5, 2026-11-13) ----
+# Rates re-verified against the live pricing page (markdown source) on
+# 2026-11-13. Cache read 0.025x input per footnote 1, which now names the 5.2
+# and 5.1 flagships. Priced 20% below the 5.1 generation (8/40 vs 10/50).
+
+[[providers.anthropic.models."claude-fable-5-2"]]
+display_name              = "Claude Fable 5.2"
+valid_from                = "2026-11-09"
+input_usd_per_mtok        = 8.00
+output_usd_per_mtok       = 40.00
+cache_read_usd_per_mtok   = 0.20
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-11-13"
+launch_date_source        = "Launch 2026-11-09: the model-deprecations page's retirement commitment 'not sooner than November 9, 2027' (launch plus one year, the pattern every 5-generation model has followed) and press coverage of the launch day (https://www.implicator.ai/anthropic-fable-5-2-mythos-5-2-price-cut/, https://letsdatascience.com/news/anthropic-releases-claude-fable-52-and-mythos-52-models-06ebb34e). No first-party announcement URL was indexed when this row was written. Sourced, exact. Cache read 0.025x input per pricing page footnote 1."
+
+[[providers.anthropic.models."claude-mythos-5-2"]]
+display_name              = "Claude Mythos 5.2"
+valid_from                = "2026-11-09"
+input_usd_per_mtok        = 8.00
+output_usd_per_mtok       = 40.00
+cache_read_usd_per_mtok   = 0.20
+cache_write_5m_multiplier = 1.25
+cache_write_1h_multiplier = 2.00
+source_url                = "https://platform.claude.com/docs/en/about-claude/pricing"
+source_accessed_at        = "2026-11-13"
+launch_date_source        = "Same launch and rate card as Fable 5.2 (same underlying model; limited availability through Anthropic's verification programs). Deprecations page: Active, retirement not sooner than 2027-11-09. Sourced, exact."
 
 [[providers.anthropic.models."claude-fable-5-1"]]
 display_name              = "Claude Fable 5.1"

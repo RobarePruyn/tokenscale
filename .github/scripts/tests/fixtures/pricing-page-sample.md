@@ -14,6 +14,8 @@ The following table shows pricing for all Claude models:
 
 | Model             | Base input tokens | 5m cache writes | 1h cache writes | Cache hits and refreshes | Output tokens |
 |-------------------|-------------------|-----------------|-----------------|----------------------|---------------|
+| Claude Fable 5.2    | $8 / MTok         | $10 / MTok      | $16 / MTok      | $0.20 / MTok<sup>1</sup> | $40 / MTok    |
+| Claude Mythos 5.2 ([limited availability](https://support.claude.com/en/articles/14604842)) | $8 / MTok | $10 / MTok | $16 / MTok | $0.20 / MTok<sup>1</sup> | $40 / MTok |
 | Claude Fable 5.1    | $10 / MTok        | $12.50 / MTok   | $20 / MTok      | $0.25 / MTok<sup>1</sup> | $50 / MTok    |
 | Claude Mythos 5.1 ([limited availability](https://support.claude.com/en/articles/14604842)) | $10 / MTok | $12.50 / MTok | $20 / MTok | $0.25 / MTok<sup>1</sup> | $50 / MTok |
 | Claude Fable 5      | $10 / MTok        | $12.50 / MTok   | $20 / MTok      | $1 / MTok | $50 / MTok    |
@@ -29,7 +31,7 @@ The following table shows pricing for all Claude models:
 | Claude Haiku 5.5 (for prompts over 100,000 tokens)  | $0.50 / MTok | $0.625 / MTok | $1 / MTok    | $0.05 / MTok | $2.50 / MTok |
 | Claude Haiku 4.5  | $1 / MTok         | $1.25 / MTok    | $2 / MTok       | $0.10 / MTok | $5 / MTok     |
 
-*<sup>1 Cache hits and refreshes on Claude Fable 5.1 and Claude Mythos 5.1 are priced at 0.025x the base input price.</sup>*
+*<sup>1 Cache hits and refreshes on Claude Fable 5.2, Claude Mythos 5.2, Claude Fable 5.1, and Claude Mythos 5.1 are priced at 0.025x the base input price.</sup>*
 
 *<sup>2 Cache hits and refreshes on Claude Opus 5.5 and Claude Sonnet 5.5 are priced at 0.05x the base input price.</sup>*
 

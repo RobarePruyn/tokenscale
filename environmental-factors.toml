@@ -27,8 +27,13 @@
 
 schema_version = 1
 file_status = "production"
-file_version = "0.7"
-file_published = "2026-10-07"
+file_version = "0.8"
+file_published = "2026-11-13"
+# v0.8 (2026-11-13): Fable 5.2 and Mythos 5.2 rows, held flat versus the 5.1
+# flagships. The 20% price cut arrived with a speed claim only (output up to
+# 30% faster than 5.1 per press), not an Anthropic statement about cost to
+# run, so the file's Opus 5.5 precedent (efficiency-framed cut scales energy)
+# does not apply and the price move is treated as positioning.
 # v0.7 (2026-10-07): Claude 5.5 generation plus the 5.1 flagships, per
 # docs/roadmap-model-additions-5-5-generation.md D2. No measurement exists for
 # any of them; rows use the file's pricing-proxy conventions (held flat where
@@ -93,6 +98,36 @@ disclosure_status_accessed = "2026-08-25"  # re-verified Sweep #3; still nothing
 # docs/request-for-research.md "Claude serving-mix apportionment".
 
 # ---- Claude 5.5 generation and 5.1 flagships (v0.7, 2026-10-07) ----
+
+[providers.anthropic.models."claude-fable-5-2"]
+display_name = "Claude Fable 5.2"
+released_at = "2026-11-09"
+valid_from = "2026-11-09"
+source_doc = "docs/sources.md#G.1"
+confidence = "estimated"
+notes = "ESTIMATE (pricing-as-proxy, zero anchor): held flat versus Fable 5.1 (720 / 3,600 Wh per MTok). Priced 20% below 5.1 (8/40 vs 10/50) with press reporting output up to 30% faster; neither is a per-token energy disclosure and no Anthropic cost-to-run statement was found, unlike Opus 5.5, so the cut is not applied to energy. Inherits the Fable up-tier proxy caveat and wide band. No third-party measurement exists for any 5-generation model as of 2026-11-13."
+wh_per_mtok_input = 720
+wh_per_mtok_output = 3600
+wh_per_mtok_cache_read = 72
+wh_per_mtok_cache_write_5m = 900
+wh_per_mtok_cache_write_1h = 1440
+uncertainty_range_pct = 55
+tokenizer_token_count_inflation_factor = 1.175
+
+[providers.anthropic.models."claude-mythos-5-2"]
+display_name = "Claude Mythos 5.2"
+released_at = "2026-11-09"
+valid_from = "2026-11-09"
+source_doc = "docs/sources.md#G.1"
+confidence = "estimated"
+notes = "ESTIMATE: same underlying model and rate card as Fable 5.2 per Anthropic's pricing and models pages; carries the Fable 5.2 estimate and band. Limited availability through Anthropic's verification programs."
+wh_per_mtok_input = 720
+wh_per_mtok_output = 3600
+wh_per_mtok_cache_read = 72
+wh_per_mtok_cache_write_5m = 900
+wh_per_mtok_cache_write_1h = 1440
+uncertainty_range_pct = 55
+tokenizer_token_count_inflation_factor = 1.175
 
 [providers.anthropic.models."claude-fable-5-1"]
 display_name = "Claude Fable 5.1"

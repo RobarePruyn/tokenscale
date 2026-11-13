@@ -6,6 +6,12 @@ Newest releases on top. Unreleased changes accumulate under `## Unreleased`.
 
 ---
 
+## v0.1.26, 2026-11-13
+
+**Fable 5.2 and Mythos 5.2** (launched 2026-11-09; 8 / 40 USD per MTok, cache reads 0.025x) added to `pricing.toml` (1.4 to 1.5) and `environmental-factors.toml` (0.7 to 0.8), tracked by the drift detector, snapshot and fixture re-captured. Factor rows held flat versus the 5.1 flagships: the 20% price cut came with a speed claim, not a cost-to-run statement, so the Opus 5.5 precedent does not apply. Launch date from the deprecations page's launch-plus-one-year commitment, corroborated by press; no first-party post was indexed yet. Requested by the model-eval integration, whose phase-2c calibration moves to Fable 5.2.
+
+---
+
 ## v0.1.25, 2026-11-12
 
 **Release pipeline: arm64 macOS runner.** GitHub retired every `macos-14` runner image on 2026-11-02; cargo-dist 0.31 still selects it for `aarch64-apple-darwin`, so the v0.1.24 release run had its arm64 macOS job cancelled at start ("configuration macos-14-arm64-us-default is not supported") and never published. `dist-workspace.toml` now pins `aarch64-apple-darwin` to `macos-15` via `[dist.github-custom-runners]`, verified with `dist plan`. The v0.1.24 tag exists but has no GitHub Release or formula; v0.1.25 carries the same content (Sonnet 5.5 cache-read correction) plus this fix. First release signed and notarized with the rotated App Store Connect key and Developer ID certificate.

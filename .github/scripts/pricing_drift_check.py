@@ -83,6 +83,8 @@ TRACKED_MODELS = {
     # Page-presence is the tracking axis (v0.1.20 D4): every model on the
     # live Model pricing table that pricing.toml prices. Historical models
     # that have left the page are never tracked. Order follows the page.
+    "claude-fable-5-2": "Claude Fable 5.2",
+    "claude-mythos-5-2": "Claude Mythos 5.2",
     "claude-fable-5-1": "Claude Fable 5.1",
     "claude-mythos-5-1": "Claude Mythos 5.1",
     "claude-fable-5": "Claude Fable 5",
@@ -113,6 +115,8 @@ TRACKED_MODELS = {
 # comparison needs no change (pricing.toml stores cache_read as an absolute
 # rate); only the internal-consistency check consults this map.
 CACHE_READ_MULTIPLIER_OVERRIDES = {
+    "claude-fable-5-2": 0.025,
+    "claude-mythos-5-2": 0.025,
     "claude-fable-5-1": 0.025,
     "claude-mythos-5-1": 0.025,
     "claude-opus-5-5": 0.05,
